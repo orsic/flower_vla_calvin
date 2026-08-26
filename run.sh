@@ -3,7 +3,10 @@
 # Usage:
 #   ./run.sh build              Build the container image (flower-vla-eval:latest)
 #   ./run.sh shell              Interactive bash session inside the container
-#   ./run.sh download           Download the LIBERO-10 checkpoint from HuggingFace
+#   ./run.sh download           Download the LIBERO-10 eval checkpoint from HuggingFace
+#   ./run.sh download-pret      Download the general pretrained checkpoint (for training)
+#   ./run.sh download-data      Download the LIBERO-10 demo hdf5 files (for training)
+#   ./run.sh train              Fine-tune on LIBERO-10 (~15-22 h, 4 GPUs)
 #   ./run.sh eval               Run the LIBERO-10 evaluation
 #   ./run.sh smoke              Run the smoke test (verifies env before full eval)
 #
@@ -49,6 +52,18 @@ case "$CMD" in
     podman-compose -f "$COMPOSE" run --rm download
     ;;
 
+  download-pret)
+    podman-compose -f "$COMPOSE" run --rm download-pret
+    ;;
+
+  download-data)
+    podman-compose -f "$COMPOSE" run --rm download-data
+    ;;
+
+  train)
+    podman-compose -f "$COMPOSE" run --rm train
+    ;;
+
   eval)
     podman-compose -f "$COMPOSE" run --rm eval
     ;;
@@ -58,13 +73,16 @@ case "$CMD" in
     ;;
 
   help|*)
-    echo "Usage: ./run.sh <build|shell|download|eval|smoke>"
+    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|train|eval|smoke>"
     echo ""
-    echo "  build     Build the container image (flower-vla-eval:latest)"
-    echo "  shell     Interactive bash inside the container"
-    echo "  download  Download LIBERO-10 checkpoint from HuggingFace"
-    echo "  eval      Run LIBERO-10 evaluation (./run.sh download first)"
-    echo "  smoke     Quick sanity check: CUDA + imports + model load + 1 env step"
+    echo "  build          Build the container image (flower-vla-eval:latest)"
+    echo "  shell          Interactive bash inside the container"
+    echo "  download       Download LIBERO-10 eval checkpoint from HuggingFace"
+    echo "  download-pret  Download general pretrained checkpoint (for fine-tuning)"
+    echo "  download-data  Download LIBERO-10 demo hdf5 files (for fine-tuning)"
+    echo "  train          Fine-tune on LIBERO-10, 4 GPUs, ~15-22 h"
+    echo "  eval           Run LIBERO-10 evaluation (./run.sh download first)"
+    echo "  smoke          Quick sanity check: CUDA + imports + model load + 1 env step"
     if [[ "$CMD" != "help" ]]; then
         exit 1
     fi
