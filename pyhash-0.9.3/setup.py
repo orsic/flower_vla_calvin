@@ -19,7 +19,7 @@ include_dirs = [
 ]
 library_dirs = []
 libraries = []
-extra_compile_args = ["-msse4.2", "-maes", "-mavx", "-mavx2", "-march=native"]
+extra_compile_args = ["-msse4.2", "-maes", "-mavx", "-mavx2"]
 extra_link_args = []
 
 if os.name != "nt":
@@ -51,13 +51,13 @@ elif os.name == "posix" and sys.platform == "darwin":
         '/usr/local/include'
     ]
 
-    extra_compile_args += ["-msse4.2", "-maes", "-mavx", "-mavx2", "-march=native"]
+    extra_compile_args += ["-msse4.2", "-maes", "-mavx", "-mavx2"]
 elif os.name == "posix":
     import platform
 
     libraries += ["rt", "gcc"]
 
-    extra_compile_args += ["-msse4.2", "-maes", "-mavx", "-mavx2", "-march=native"]
+    extra_compile_args += ["-msse4.2", "-maes", "-mavx", "-mavx2"]
 
 c_libraries = [(
     'fnv', {

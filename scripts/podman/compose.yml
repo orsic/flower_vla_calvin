@@ -1,0 +1,69 @@
+# podman-compose service definitions for FlowerVLA.
+# Run via run.sh (e.g. ./run.sh build | shell | download | eval).
+# Host-specific variables (paths, MEM_LIMIT, keys) come from vars.env — see vars.env.example.
+
+version: "3.8"
+
+# Memory cap anchor: applied to every service so a runaway training/eval process
+# OOM-kills the container rather than crashing the host. Set MEM_LIMIT in vars.env
+# (recommended: ~75% of physical RAM). See vars.env.example for guidance.
+x-limits: &limits
+  mem_limit: "${MEM_LIMIT:-384g}"
+
+x-base: &base
+  image: flower-vla-eval:latest
+  <<: *limits
+  working_dir: /workspace
+  volumes:
+    - ${REPO_ROOT}:/workspace:z
+    - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+    - ${SAVES_DIR}:/saves:z
+    - ${LIBERO_HDF5_DIR:-./data/libero_hdf5}:/libero_hdf5:ro
+  devices:
+    - "nvidia.com/gpu=0"
+  environment:
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    PYTHONPATH: /workspace
+    HYDRA_FULL_ERROR: "1"
+    WANDB_MODE: disabled
+    HF_HOME: /root/.cache/huggingface
+    CUDA_DEVICE_ORDER: PCI_BUS_ID
+    WANDB_API_KEY: ${WANDB_API_KEY:-}
+
+services:
+  # Interactive shell for exploration/debugging (all code runs in container per CLAUDE.md).
+  shell:
+    <<: *base
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+  # Download FlowerVLA LIBERO-10 checkpoint from HuggingFace into /saves/checkpoints/.
+  # Run once before eval: ./run.sh download
+  download:
+    <<: *base
+    command:
+      - bash
+      - -c
+      - |
+        huggingface-cli download mbreuss/flower_libero_10 \
+          --local-dir /saves/checkpoints/libero_10
+
+  # Run the standalone LIBERO-10 evaluation.
+  # Results are printed to stdout and written to /saves/eval_logs/.
+  # Target: ~94.5% average success rate across 10 tasks (README).
+  eval:
+    <<: *base
+    command:
+      - python
+      - flower/evaluation/flower_eval_libero.py
+      - benchmark_name=libero_10
+      - train_folder=/saves/checkpoints/libero_10
+      - checkpoint=/saves/checkpoints/libero_10
+      - dataset_path=/workspace
+      - log_dir=/saves/eval_logs
+      - n_eval=20
+      - num_videos=3
+      - log_wandb=True
+      - "hydra.run.dir=/saves/hydra_outputs/${now:%Y-%m-%d_%H-%M-%S}"

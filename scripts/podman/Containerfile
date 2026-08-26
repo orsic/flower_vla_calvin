@@ -1,0 +1,71 @@
+FROM docker.io/nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+# ----- system packages -----
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common curl git \
+        build-essential g++ cmake \
+        libgl1-mesa-glx libegl1 libosmesa6 patchelf \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.9 python3.9-dev python3.9-distutils \
+    && curl -sS https://bootstrap.pypa.io/pip/3.9/get-pip.py | python3.9 \
+    && update-alternatives --install /usr/bin/python  python  /usr/bin/python3.9 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.9 1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ----- layer 1: torch (large, changes rarely) -----
+RUN python -m pip install --no-cache-dir \
+    torch==2.2.2 torchvision \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# ----- layer 2: LIBERO sim deps (robosuite / robomimic / MuJoCo) -----
+# Installed before flower deps so flower's pinned versions win on any overlap.
+# Skips version-conflicting LIBERO packages (hydra, transformers, wandb, numpy,
+# opencv, einops, matplotlib) which are covered by layer 3 with flower's pins.
+RUN python -m pip install --no-cache-dir \
+    "mujoco==2.3.7" \
+    "robosuite==1.4.0" \
+    "robomimic==0.2.0" \
+    "bddl==1.0.1" \
+    "easydict==1.9" \
+    "thop>=0.1.1" \
+    "cloudpickle>=2.0.0" \
+    "gym==0.25.2" \
+    "future>=0.18.2"
+
+# ----- layer 3: flower requirements + HuggingFace ecosystem -----
+# The --find-links cu116 line in requirements.txt is stale (torch 2.2.2 uses cu121);
+# strip it so pip uses the default index for all packages except torch (installed above).
+COPY requirements.txt /tmp/requirements.txt
+RUN grep -v "find-links" /tmp/requirements.txt > /tmp/requirements_filtered.txt \
+    && python -m pip install --no-cache-dir -r /tmp/requirements_filtered.txt \
+    && python -m pip install --no-cache-dir \
+        "transformers==4.48.3" accelerate safetensors "huggingface_hub>=0.19"
+
+# ----- layer 4: pyhash (vendored native build, needs setuptools==57.5.0) -----
+# -march=native was removed from pyhash-0.9.3/setup.py to keep the binary
+# portable across CPUs. setuptools is restored to modern version afterwards.
+COPY pyhash-0.9.3/ /tmp/pyhash-0.9.3/
+RUN python -m pip install --no-cache-dir "setuptools==57.5.0" \
+    && cd /tmp/pyhash-0.9.3 && python setup.py build && python setup.py install \
+    && python -m pip install --no-cache-dir "setuptools>=68"
+
+# ----- layer 5: pin numpy last -----
+# LIBERO and robomimic need numpy 1.23.x; pinning last prevents later installs
+# from bumping it back up.
+RUN python -m pip install --no-cache-dir "numpy~=1.23"
+
+# Offscreen rendering via NVIDIA EGL (CDI provides the GPU/EGL libraries).
+# libosmesa6 is installed above as an osmesa fallback if EGL is unavailable.
+ENV MUJOCO_GL=egl
+ENV PYOPENGL_PLATFORM=egl
+
+WORKDIR /workspace
+# The entrypoint is baked into the image (not bind-mounted) because the OCI
+# runtime resolves the entrypoint path before bind mounts are activated.
+# The script itself references /workspace paths which ARE available at run time.
+COPY scripts/podman/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
