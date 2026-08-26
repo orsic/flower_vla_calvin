@@ -111,6 +111,7 @@ services:
       - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
       - devices=4
       - log_dir=/saves/train_logs
+      - num_workers=8
       - seed=42
       - "hydra.run.dir=/saves/train_logs/libero_10/${now:%Y-%m-%d_%H-%M-%S}"
 

@@ -225,7 +225,7 @@ class FLOWERVLA(pl.LightningModule):
         # Handle language encoder/model naming mismatch
         for key, value in state_dict.items():
             new_key = key.replace("agent.", "")  # Remove 'agent.' if it exists
-            
+
             # Handle language encoder/model naming mismatch
             if "vlm.language_encoder." in new_key:
                 new_key = new_key.replace("vlm.language_encoder.", "vlm.language_model.model.encoder.")

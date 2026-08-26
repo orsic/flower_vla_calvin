@@ -9,6 +9,7 @@ from omegaconf import DictConfig
 import torch
 from pytorch_lightning import Callback, LightningModule, seed_everything, Trainer
 from pytorch_lightning.callbacks import LearningRateMonitor
+from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities import rank_zero_only
 
 
@@ -94,12 +95,17 @@ def train(cfg: DictConfig) -> None:
             "logger": train_logger,
             "callbacks": callbacks,
             "benchmark": False,
-            "strategy": "ddp_find_unused_parameters_true",
+            # static_graph=True: replaces find_unused_parameters without per-step graph
+            # traversal; safe because the used/unused module set is fixed across all steps.
+            # gradient_as_bucket_view=True: avoids an extra gradient buffer copy per allreduce.
+            "strategy": DDPStrategy(
+                static_graph=True,
+                gradient_as_bucket_view=True,
+            ),
             "accelerator": "gpu",
             "devices": cfg.trainer.devices,
             "use_distributed_sampler": True,
             "default_root_dir": work_dir,
-            "sync_batchnorm": True,
         }
         
         # Log configuration
