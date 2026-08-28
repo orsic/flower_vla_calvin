@@ -80,6 +80,20 @@ services:
           --include "libero_10/*" \
           --local-dir /libero_hdf5
 
+  # Shared env block for training services.
+  x-train-env: &train-env
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    PYTHONPATH: /workspace
+    HYDRA_FULL_ERROR: "1"
+    WANDB_MODE: online
+    HF_HOME: /root/.cache/huggingface
+    CUDA_DEVICE_ORDER: PCI_BUS_ID
+    WANDB_API_KEY: ${WANDB_API_KEY:-}
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    TOKENIZERS_PARALLELISM: "true"
+    NCCL_DEBUG: WARN
+
   # Fine-tune FlowerVLA on LIBERO-10 from the general pretrained checkpoint.
   # Prerequisites: ./run.sh download-pret && ./run.sh download-data
   # Expected wall-clock: ~15-22 h on 4x A6000 (40 epochs x 1000 steps).
@@ -93,17 +107,7 @@ services:
       - "nvidia.com/gpu=2"
       - "nvidia.com/gpu=3"
     environment:
-      MUJOCO_GL: egl
-      PYOPENGL_PLATFORM: egl
-      PYTHONPATH: /workspace
-      HYDRA_FULL_ERROR: "1"
-      WANDB_MODE: offline
-      HF_HOME: /root/.cache/huggingface
-      CUDA_DEVICE_ORDER: PCI_BUS_ID
-      WANDB_API_KEY: ${WANDB_API_KEY:-}
-      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
-      TOKENIZERS_PARALLELISM: "true"
-      NCCL_DEBUG: WARN
+      <<: *train-env
     command:
       - python
       - flower/training_libero.py
@@ -114,6 +118,32 @@ services:
       - num_workers=8
       - seed=42
       - "hydra.run.dir=/saves/train_logs/libero_10/${now:%Y-%m-%d_%H-%M-%S}"
+
+  # Ablation: frozen Florence-2 VLM, action expert (DiT) trained from random init.
+  # Isolates how much the action head alone can learn on a fixed pretrained representation.
+  # Prerequisites: same as train (download-pret + download-data).
+  train-frozen-expert:
+    <<: *base
+    shm_size: "16g"
+    devices:
+      - "nvidia.com/gpu=0"
+      - "nvidia.com/gpu=1"
+      - "nvidia.com/gpu=2"
+      - "nvidia.com/gpu=3"
+    environment:
+      <<: *train-env
+    command:
+      - python
+      - flower/training_libero.py
+      - libero_benchmark=libero_10
+      - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
+      - model.freeze_florence=True
+      - model.action_expert_from_scratch=True
+      - devices=4
+      - log_dir=/saves/train_logs
+      - num_workers=8
+      - seed=42
+      - "hydra.run.dir=/saves/train_logs/libero_10_frozen/${now:%Y-%m-%d_%H-%M-%S}"
 
   # Run the standalone LIBERO-10 evaluation.
   # Results are printed to stdout and written to /saves/eval_logs/.

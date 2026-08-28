@@ -7,8 +7,10 @@
 #   ./run.sh download-pret      Download the general pretrained checkpoint (for training)
 #   ./run.sh download-data      Download the LIBERO-10 demo hdf5 files (for training)
 #   ./run.sh train              Fine-tune on LIBERO-10 (~15-22 h, 4 GPUs)
+#   ./run.sh train-frozen       Ablation: frozen Florence VLM, action expert from scratch
 #   ./run.sh eval               Run the LIBERO-10 evaluation
 #   ./run.sh smoke              Run the smoke test (verifies env before full eval)
+#   ./run.sh devenv             Regenerate .devcontainer/.env from vars.env (run after editing vars.env)
 #
 # Configure host-specific paths in vars.env (copied from vars.env.example).
 # Shell environment variables take precedence over vars.env values.
@@ -64,6 +66,10 @@ case "$CMD" in
     podman-compose -f "$COMPOSE" run --rm train
     ;;
 
+  train-frozen)
+    podman-compose -f "$COMPOSE" run --rm train-frozen-expert
+    ;;
+
   eval)
     podman-compose -f "$COMPOSE" run --rm eval
     ;;
@@ -72,8 +78,18 @@ case "$CMD" in
     podman-compose -f "$COMPOSE" run --rm shell python scripts/smoke_test.py
     ;;
 
+  devenv)
+    sed \
+        -e "s|@@HF_HOME@@|$HF_HOME|g" \
+        -e "s|@@SAVES_DIR@@|$SAVES_DIR|g" \
+        -e "s|@@LIBERO_HDF5_DIR@@|$LIBERO_HDF5_DIR|g" \
+        "$REPO_ROOT/.devcontainer/devcontainer.json.template" \
+        > "$REPO_ROOT/.devcontainer/devcontainer.json"
+    echo "Written .devcontainer/devcontainer.json"
+    ;;
+
   help|*)
-    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|train|eval|smoke>"
+    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|train|train-frozen|eval|smoke|devenv>"
     echo ""
     echo "  build          Build the container image (flower-vla-eval:latest)"
     echo "  shell          Interactive bash inside the container"
@@ -81,8 +97,10 @@ case "$CMD" in
     echo "  download-pret  Download general pretrained checkpoint (for fine-tuning)"
     echo "  download-data  Download LIBERO-10 demo hdf5 files (for fine-tuning)"
     echo "  train          Fine-tune on LIBERO-10, 4 GPUs, ~15-22 h"
+    echo "  train-frozen   Ablation: frozen Florence VLM, action expert trained from random init"
     echo "  eval           Run LIBERO-10 evaluation (./run.sh download first)"
     echo "  smoke          Quick sanity check: CUDA + imports + model load + 1 env step"
+    echo "  devenv         Regenerate .devcontainer/.env from vars.env"
     if [[ "$CMD" != "help" ]]; then
         exit 1
     fi

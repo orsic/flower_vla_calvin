@@ -45,8 +45,8 @@ logger:
   name: logger
   group: mode
   log_model: false
-  project: ${benchmark_name}
-  entity: bennoq
+  project: multimodal_policies
+  entity: orsic-university-of-zagreb-faculty-of-electrical-enginee
   id: ???
 
 hydra:

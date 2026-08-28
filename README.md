@@ -80,6 +80,61 @@ pip install -r requirements.txt
 
 ---
 
+## Container Environment
+
+A self-contained Podman environment covers building, training, evaluation, and interactive development — no conda setup required.
+
+**Prerequisites:** Podman with CDI GPU support, `podman-compose`.
+
+### Setup
+
+```bash
+cp vars.env.example vars.env   # fill in DATA_DIR, SAVES_DIR, HF_HOME
+./run.sh build                 # build flower-vla-eval:latest (~11 GB, cached layers)
+./run.sh download-pret         # pretrained FlowerVLA checkpoint → /saves/checkpoints/flower_vla_pret/
+./run.sh download-data         # LIBERO-10 HDF5 demos → DATA_DIR/libero_hdf5/
+```
+
+`vars.env` (gitignored) sets host-specific paths:
+
+| Variable | Mounted at | Purpose |
+|---|---|---|
+| `DATA_DIR` | — | Parent of `libero_hdf5/`; sets `LIBERO_HDF5_DIR` |
+| `HF_HOME` | `/root/.cache/huggingface` | HuggingFace model cache |
+| `SAVES_DIR` | `/saves` | Checkpoints, train logs, eval logs |
+
+### Commands
+
+```bash
+./run.sh train          # Fine-tune on LIBERO-10, 4 GPUs, ~15–22 h
+./run.sh train-frozen   # Ablation: frozen Florence VLM, action expert from random init
+./run.sh eval           # LIBERO-10 evaluation (~94.5% target)
+./run.sh shell          # Interactive bash inside the container
+./run.sh smoke          # Quick sanity check (CUDA + imports + 1 env step)
+./run.sh devenv         # Regenerate .devcontainer/.env after editing vars.env
+```
+
+### VS Code Devcontainer
+
+The devcontainer runs the same `flower-vla-eval` image with GPU, all three mounts, and the LIBERO path config wired up automatically.
+
+**One-time setup on the remote machine:**
+
+```bash
+./run.sh devenv    # generates .devcontainer/devcontainer.json (gitignored) from vars.env
+```
+
+**VS Code user settings** (Settings → Remote [SSH: hostname] → open JSON):
+```json
+{
+    "dev.containers.dockerPath": "podman"
+}
+```
+
+Then open the repo in VS Code and choose **Reopen in Container**. The container starts with all mounts active, `PYTHONPATH` set, and LIBERO paths configured. Re-run `./run.sh devenv` whenever `vars.env` changes.
+
+---
+
 ## Download
 ### CALVIN Dataset
 

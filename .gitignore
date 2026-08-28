@@ -1,5 +1,8 @@
+DIRECTION.md
 vars.env
 .vscode
+.devcontainer/devcontainer.json
+.devcontainer/.env
 dataset
 /outputs/
 # Byte-compiled / optimized / DLL files

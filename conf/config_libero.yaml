@@ -5,7 +5,7 @@ defaults:
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
-root_data_dir: /home/yagmurlu/code/MoDE_Calvin/dataset/task_ABC_D
+root_data_dir: null
 lang_folder: lang_clip_resnet50
 
 log_dir: ./logs
@@ -46,8 +46,8 @@ logger:
   name: logger
   group: mode
   log_model: false
-  project: ${libero_benchmark}
-  entity: bennoq
+  project: multimodal_policies
+  entity: orsic-university-of-zagreb-faculty-of-electrical-enginee
   id: ???
 
 

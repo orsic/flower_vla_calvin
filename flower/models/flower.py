@@ -85,6 +85,7 @@ class FLOWERVLA(pl.LightningModule):
 
         load_pretrained: bool = False,
         pretrained_model_path: str = None,
+        action_expert_from_scratch: bool = False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -152,6 +153,8 @@ class FLOWERVLA(pl.LightningModule):
         self.optimizer_config = optimizer
         self.lr_scheduler_config = lr_scheduler
         self.optimizer_type = optimizer_type
+
+        self.action_expert_from_scratch = action_expert_from_scratch
 
         if load_pretrained and pretrained_model_path is not None:
             self._load_pretrained_weights(pretrained_model_path)
@@ -237,6 +240,12 @@ class FLOWERVLA(pl.LightningModule):
             new_key = new_key.replace(".mlp.c_fc2.", ".mlp.fc2.")
             new_key = new_key.replace(".mlp.c_proj.", ".mlp.proj.")
             new_state_dict[new_key] = value
+
+        # When training the action expert from scratch, load only VLM weights so the
+        # action expert keeps its random initialisation from __init__.
+        if self.action_expert_from_scratch:
+            new_state_dict = {k: v for k, v in new_state_dict.items() if k.startswith("vlm.")}
+            print("action_expert_from_scratch=True: loading VLM weights only; action expert uses random init.")
 
         # Load the state dict with strict=False to handle mismatches
         missing_keys, unexpected_keys = self.load_state_dict(new_state_dict, strict=False)
