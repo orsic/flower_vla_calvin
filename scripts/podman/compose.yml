@@ -145,6 +145,35 @@ services:
       - seed=42
       - "hydra.run.dir=/saves/train_logs/libero_10_frozen/${now:%Y-%m-%d_%H-%M-%S}"
 
+  # Full fine-tune with Dirichlet modality-token dropout (3 groups: static/wrist/language).
+  # Tokens are physically removed pre-encoder per sample; positions corrected analytically.
+  # Rollout eval fires only at the final epoch (rollout_lh_skip_epochs=39).
+  # Prerequisites: same as train (download-pret + download-data).
+  train-dropout:
+    <<: *base
+    shm_size: "16g"
+    devices:
+      - "nvidia.com/gpu=0"
+      - "nvidia.com/gpu=1"
+      - "nvidia.com/gpu=2"
+      - "nvidia.com/gpu=3"
+    environment:
+      <<: *train-env
+    command:
+      - python
+      - flower/training_libero.py
+      - libero_benchmark=libero_10
+      - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
+      - model.modality_dropout=True
+      - model.modality_dropout_keep_fraction=0.5
+      - "model.modality_dropout_alphas=[1.0,1.0,1.0]"
+      - rollout_lh_skip_epochs=39
+      - devices=4
+      - log_dir=/saves/train_logs
+      - num_workers=8
+      - seed=42
+      - "hydra.run.dir=/saves/train_logs/libero_10_dropout/${now:%Y-%m-%d_%H-%M-%S}"
+
   # Run the standalone LIBERO-10 evaluation.
   # Results are printed to stdout and written to /saves/eval_logs/.
   # Target: ~94.5% average success rate across 10 tasks (README).

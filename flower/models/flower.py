@@ -26,8 +26,13 @@ from flower.models.networks.transformers import (
     FreqEmbedder,
     ActionSpaceEmbedderParameter,
     ZeroEncoder,
-    FlowBlock, 
+    FlowBlock,
     stateless_norm
+)
+from flower.models.networks.modality_dropout import (
+    sample_token_budget,
+    build_keep_indices,
+    position_correct,
 )
 from flower.utils.lr_schedulers.tri_stage_scheduler import TriStageLRScheduler
 from flower.callbacks.ema import EMA
@@ -86,6 +91,11 @@ class FLOWERVLA(pl.LightningModule):
         load_pretrained: bool = False,
         pretrained_model_path: str = None,
         action_expert_from_scratch: bool = False,
+
+        # Modality-token dropout (Dirichlet, per-sample, pre-encoder removal)
+        modality_dropout: bool = False,
+        modality_dropout_keep_fraction: float = 0.5,
+        modality_dropout_alphas: tuple = (1.0, 1.0, 1.0),
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -107,6 +117,9 @@ class FLOWERVLA(pl.LightningModule):
             use_proprio=use_proprio,
             return_act_chunk=return_act_chunk,
             second_view_key=second_view_key,
+            modality_dropout=modality_dropout,
+            modality_dropout_keep_fraction=modality_dropout_keep_fraction,
+            modality_dropout_alphas=modality_dropout_alphas,
         )
         self.obs_modalities = []
         # Initialize model dimensions
@@ -697,74 +710,125 @@ class FLOWERVLA(pl.LightningModule):
         return prompt_embed.unsqueeze(0).unsqueeze(0)
 
     def encode_observations(self, batch: Dict) -> torch.Tensor:
-        """Encode observations using Florence-2"""
+        """Encode observations using Florence-2, with optional modality-token dropout."""
         device = self.device
         default_type = next(self.parameters()).dtype
-        
-        
+
         embed_tensor = torch.zeros(len(batch["rgb_obs"]['rgb_static']), 1, 1)
         action_type_tensor = torch.ones(len(batch["rgb_obs"]['rgb_static']), self.act_window_size, 7)
-        # Process primary image
+
+        # --- Encode image tokens (pre-encoder embedding, not yet processed by encoder) ---
         image_tensor = batch["rgb_obs"]['rgb_static']
         B, T, C, H, W = image_tensor.shape
-        
-        # Extract visual features
+
+        # Extract visual features (raw token embeddings from the vision tower).
         image_features = self.vlm._encode_image(
             image_tensor.view(-1, C, H, W).to(device).to(default_type)
         ).to(default_type)
-        image_features = image_features.view(B, T * image_features.shape[1], -1)
-        
-        # Process second view if enabled
+        Ns = T * image_features.shape[1]  # static view token count
+        image_features = image_features.view(B, Ns, -1)
+
         if self.use_second_view:
             image2_tensor = batch["rgb_obs"]['rgb_gripper']
             image2_features = self.vlm._encode_image(
                 image2_tensor.view(-1, C, H, W).to(device).to(default_type)
             ).to(default_type)
-            image2_features = image2_features.view(B, T * image2_features.shape[1], -1)
-            image_features = torch.cat([image_features, image2_features], dim=1)
-        
-        # Get text embeddings
-        # Get text embeddings once to reuse
+            Nw = T * image2_features.shape[1]  # wrist view token count
+            image2_features = image2_features.view(B, Nw, -1)
+        else:
+            Nw = 0
+
+        # --- Text embeddings (raw, before encoder positional add) ---
         constructed_prompts = self.construct_prompts(batch)
-        text_embeds = self._get_text_embeddings(constructed_prompts, device)
-        
-        # Add task prompt and aggregation tokens
-        task_prompt = self.prompt_embeds.expand(B, -1, -1).to(image_features.device)
-        
-        # Merge sequence
-        merged_embeds = torch.cat([
-            image_features,
-            task_prompt,
-            text_embeds.to(image_features.device)
-        ], dim=1)
-        
-        # Create attention mask
-        attention_mask = torch.ones(merged_embeds.shape[:2], device=merged_embeds.device)
-        
-        # Process through encoder
+        text_embeds, text_mask = self._get_text_embeddings(constructed_prompts, device)
+        text_embeds = text_embeds.to(device).to(default_type)
+        text_mask = text_mask.to(device)  # [B, Lt]
+        Lt = text_embeds.shape[1]
+
+        # Always-kept <Flow> prompt token.
+        task_prompt = self.prompt_embeds.expand(B, -1, -1).to(device).to(default_type)
+
+        # --- Merge into a single flat sequence: [static | wrist | <Flow> | text] ---
+        if self.use_second_view:
+            merged_embeds = torch.cat([image_features, image2_features, task_prompt, text_embeds], dim=1)
+        else:
+            merged_embeds = torch.cat([image_features, task_prompt, text_embeds], dim=1)
+        # Prompt is at index Ns+Nw (after both image groups).
+        prompt_idx = Ns + Nw
+
+        if self.modality_dropout and self.training:
+            # --- Per-sample Dirichlet token-budget sampling + physical removal ---
+            # Group spans: static [0, Ns), wrist [Ns, Ns+Nw), language [Ns+Nw+1, Ns+Nw+1+Lt)
+            # (prompt_idx = Ns+Nw is excluded from groups; always kept separately)
+            lang_start = prompt_idx + 1  # first text token absolute index
+            group_spans = [
+                (0, Ns),
+                (Ns, Ns + Nw) if Nw > 0 else (0, 0),
+                (lang_start, lang_start + Lt),
+            ]
+            # Available tokens per group per sample (language limited by real length).
+            avail = torch.zeros(B, 3, dtype=torch.long, device=device)
+            avail[:, 0] = Ns
+            avail[:, 1] = Nw
+            avail[:, 2] = text_mask.sum(dim=1)  # non-pad language tokens
+
+            alphas = torch.tensor(
+                list(self.modality_dropout_alphas), dtype=torch.float, device=device
+            )
+            kept_counts = sample_token_budget(
+                avail, self.modality_dropout_keep_fraction, alphas
+            )  # [B, 3]
+
+            lang_valid_len = text_mask.sum(dim=1).long()  # [B]
+            keep_indices = build_keep_indices(
+                group_spans, kept_counts, lang_valid_len, prompt_idx
+            )  # [B, K]
+
+            # Gather kept embeddings (without positional encoding, which the encoder adds).
+            K = keep_indices.shape[1]
+            keep_idx_exp = keep_indices.unsqueeze(-1).expand(-1, -1, merged_embeds.shape[-1])
+            kept_embeds = torch.gather(merged_embeds, dim=1, index=keep_idx_exp)  # [B, K, D]
+
+            # Position-correct so that the encoder's internal arange-based embed_positions
+            # nets to the absolute position of each retained token.
+            pos_weight = self.vlm.get_encoder().embed_positions.weight.to(default_type)
+            pos_offset = self.vlm.get_encoder().embed_positions.offset  # = 2
+            kept_embeds = position_correct(kept_embeds, keep_indices, pos_weight, pos_offset)
+
+            # All-ones mask: no padding in the compacted sequence.
+            attention_mask = torch.ones(B, K, dtype=torch.long, device=device)
+            inputs_embeds = kept_embeds
+        else:
+            # --- Standard (no dropout) path ---
+            attention_mask = torch.ones(merged_embeds.shape[:2], dtype=torch.long, device=device)
+            # Mask out padding in the language part.
+            lang_start = prompt_idx + 1
+            attention_mask[:, lang_start:lang_start + Lt] = text_mask
+            inputs_embeds = merged_embeds
+
+        # --- Encode through Florence-2 encoder ---
         features = self.vlm.get_encoder()(
-            inputs_embeds=merged_embeds,
-            attention_mask=attention_mask
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
         ).last_hidden_state
 
-        # Apply dropout 
+        # Post-encoder unstructured token dropout (existing regularizer, orthogonal).
         features = self.vlm_token_dropout(features)
 
-        # Prepare frequency and action space embeddings
+        # Prepare frequency and action space embeddings.
         frequency_embeds = self.frequency_embedder(
             torch.ones_like(embed_tensor).to(device) * 3
         )
-        
-        # Get proprioception if enabled
+
         proprio = None
-        if self.use_proprio and 'proprio' in batch[self.obs_modalities]:
+        if self.use_proprio and 'proprio' in batch.get(self.obs_modalities, {}):
             proprio = batch[self.obs_modalities]['proprio'].to(device).to(default_type)
 
         return {
             'features': features,
             'frequency_embeds': frequency_embeds,
             'action_space_embeds': None,
-            'action_type': torch.ones_like(action_type_tensor), # actiont ype is always 1
+            'action_type': torch.ones_like(action_type_tensor),
             'proprio': proprio,
             'attention_mask': attention_mask,
         }
@@ -951,7 +1015,7 @@ class FLOWERVLA(pl.LightningModule):
         return text_prompts
     
     def _get_text_embeddings(self, text, device):
-        """Get text embeddings to use with VLM"""
+        """Get text embeddings and tokenizer attention mask (1=real token, 0=pad)."""
         text_inputs = self.tokenizer(
             text,
             return_tensors="pt",
@@ -959,7 +1023,8 @@ class FLOWERVLA(pl.LightningModule):
             truncation=True,
             max_length=77
         ).to(device)
-        return self.vlm.get_input_embeddings()(text_inputs["input_ids"])
+        embeds = self.vlm.get_input_embeddings()(text_inputs["input_ids"])
+        return embeds, text_inputs["attention_mask"]
     
     def _log_training_metrics(self, total_loss, action_loss, total_bs):
         """

@@ -70,6 +70,10 @@ case "$CMD" in
     podman-compose -f "$COMPOSE" run --rm train-frozen-expert
     ;;
 
+  train-dropout)
+    podman-compose -f "$COMPOSE" run --rm train-dropout
+    ;;
+
   eval)
     podman-compose -f "$COMPOSE" run --rm eval
     ;;
@@ -89,18 +93,19 @@ case "$CMD" in
     ;;
 
   help|*)
-    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|train|train-frozen|eval|smoke|devenv>"
+    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|train|train-frozen|train-dropout|eval|smoke|devenv>"
     echo ""
-    echo "  build          Build the container image (flower-vla-eval:latest)"
-    echo "  shell          Interactive bash inside the container"
-    echo "  download       Download LIBERO-10 eval checkpoint from HuggingFace"
-    echo "  download-pret  Download general pretrained checkpoint (for fine-tuning)"
-    echo "  download-data  Download LIBERO-10 demo hdf5 files (for fine-tuning)"
-    echo "  train          Fine-tune on LIBERO-10, 4 GPUs, ~15-22 h"
-    echo "  train-frozen   Ablation: frozen Florence VLM, action expert trained from random init"
-    echo "  eval           Run LIBERO-10 evaluation (./run.sh download first)"
-    echo "  smoke          Quick sanity check: CUDA + imports + model load + 1 env step"
-    echo "  devenv         Regenerate .devcontainer/.env from vars.env"
+    echo "  build           Build the container image (flower-vla-eval:latest)"
+    echo "  shell           Interactive bash inside the container"
+    echo "  download        Download LIBERO-10 eval checkpoint from HuggingFace"
+    echo "  download-pret   Download general pretrained checkpoint (for fine-tuning)"
+    echo "  download-data   Download LIBERO-10 demo hdf5 files (for fine-tuning)"
+    echo "  train           Fine-tune on LIBERO-10, 4 GPUs, ~15-22 h"
+    echo "  train-frozen    Ablation: frozen Florence VLM, action expert trained from random init"
+    echo "  train-dropout   Full fine-tune with Dirichlet modality-token dropout (3 groups)"
+    echo "  eval            Run LIBERO-10 evaluation (./run.sh download first)"
+    echo "  smoke           Quick sanity check: CUDA + imports + model load + 1 env step"
+    echo "  devenv          Regenerate .devcontainer/.env from vars.env"
     if [[ "$CMD" != "help" ]]; then
         exit 1
     fi

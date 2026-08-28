@@ -7,7 +7,12 @@ vlm_path: microsoft/Florence-2-large
 freeze_florence: False
 freeze_vision_tower: False
 vlm_prompt_style: default
-token_dropout: 0.1  # Added token dropout parameter
+token_dropout: 0.1  # Post-encoder unstructured token dropout (existing regularizer)
+
+# Dirichlet modality-token dropout (pre-encoder physical removal, per-sample)
+modality_dropout: False
+modality_dropout_keep_fraction: 0.5
+modality_dropout_alphas: [1.0, 1.0, 1.0]
 
 # Model Structure
 multistep: ${multistep}

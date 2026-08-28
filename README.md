@@ -106,13 +106,35 @@ cp vars.env.example vars.env   # fill in DATA_DIR, SAVES_DIR, HF_HOME
 ### Commands
 
 ```bash
-./run.sh train          # Fine-tune on LIBERO-10, 4 GPUs, ~15–22 h
-./run.sh train-frozen   # Ablation: frozen Florence VLM, action expert from random init
-./run.sh eval           # LIBERO-10 evaluation (~94.5% target)
-./run.sh shell          # Interactive bash inside the container
-./run.sh smoke          # Quick sanity check (CUDA + imports + 1 env step)
-./run.sh devenv         # Regenerate .devcontainer/.env after editing vars.env
+./run.sh train           # Fine-tune on LIBERO-10, 4 GPUs, ~15–22 h
+./run.sh train-frozen    # Ablation: frozen Florence VLM, action expert from random init
+./run.sh train-dropout   # Full fine-tune with Dirichlet modality-token dropout
+./run.sh eval            # LIBERO-10 evaluation (~94.5% target)
+./run.sh shell           # Interactive bash inside the container
+./run.sh smoke           # Quick sanity check (CUDA + imports + 1 env step)
+./run.sh devenv          # Regenerate .devcontainer/.env after editing vars.env
 ```
+
+### Modality-token dropout (`train-dropout`)
+
+`train-dropout` trains with per-sample, pre-encoder token removal across three modality groups:
+static view, wrist view, and language. For each sample in a batch, a Dirichlet distribution
+(α=1 per group) samples proportions that determine how many tokens from each group to keep;
+the remaining tokens are physically removed from the sequence before it enters the Florence-2
+encoder, providing a real compute saving (not masking).
+
+The position-correction step ensures every retained token's net positional embedding equals
+its absolute position in the original sequence — removal is analytically equivalent to
+attention-masking with positions preserved (verified by a unit test against the masking oracle).
+
+The `<Flow>` prompt token is always kept. Rollout evaluation runs only at the final training
+epoch (rollout_lh_skip_epochs=39). Hyperparameters (model.yaml defaults):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `modality_dropout` | `False` | Enable pre-encoder token removal |
+| `modality_dropout_keep_fraction` | `0.5` | Fraction of total tokens to keep per sample |
+| `modality_dropout_alphas` | `[1.0, 1.0, 1.0]` | Dirichlet α for [static, wrist, language] |
 
 ### VS Code Devcontainer
 
