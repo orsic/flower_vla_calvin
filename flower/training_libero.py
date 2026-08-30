@@ -7,6 +7,7 @@ import wandb
 import hydra
 from omegaconf import DictConfig
 import torch
+import datetime
 from pytorch_lightning import Callback, LightningModule, seed_everything, Trainer
 from pytorch_lightning.callbacks import LearningRateMonitor
 from pytorch_lightning.strategies import DDPStrategy
@@ -101,6 +102,9 @@ def train(cfg: DictConfig) -> None:
             "strategy": DDPStrategy(
                 static_graph=True,
                 gradient_as_bucket_view=True,
+                # 4-hour timeout: MuJoCo rollout gather (all_gather_object) can stall
+                # for >30 min when ranks finish sequences at very different speeds.
+                timeout=datetime.timedelta(hours=4),
             ),
             "accelerator": "gpu",
             "devices": cfg.trainer.devices,
@@ -119,8 +123,10 @@ def train(cfg: DictConfig) -> None:
         # Initialize trainer and train
         trainer = Trainer(**trainer_args)
         
+        ckpt_path = os.environ.get("CKPT_PATH") or None
+
         try:
-            trainer.fit(model, datamodule=datamodule)
+            trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
         except Exception as e:
             log_rank_0("\nDetailed Error Information:")
             log_rank_0("=" * 80)

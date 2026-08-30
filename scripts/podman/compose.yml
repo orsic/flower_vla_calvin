@@ -174,6 +174,34 @@ services:
       - seed=42
       - "hydra.run.dir=/saves/train_logs/libero_10_dropout/${now:%Y-%m-%d_%H-%M-%S}"
 
+  # Resume train-dropout from a PL checkpoint (pass CKPT_PATH env var).
+  # Example: CKPT_PATH=/saves/train_logs/libero_10_dropout/.../last.ckpt ./run.sh train-dropout-resume
+  train-dropout-resume:
+    <<: *base
+    shm_size: "16g"
+    devices:
+      - "nvidia.com/gpu=0"
+      - "nvidia.com/gpu=1"
+      - "nvidia.com/gpu=2"
+      - "nvidia.com/gpu=3"
+    environment:
+      <<: *train-env
+      CKPT_PATH: ${CKPT_PATH:-/saves/train_logs/libero_10_dropout/2026-08-28_15-45-43/seed_42/saved_models/epoch=09_eval_lh/avg_seq_len=0.00.ckpt}
+    command:
+      - python
+      - flower/training_libero.py
+      - libero_benchmark=libero_10
+      - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
+      - model.modality_dropout=True
+      - model.modality_dropout_keep_fraction=0.5
+      - "model.modality_dropout_alphas=[1.0,1.0,1.0]"
+      - rollout_lh_skip_epochs=39
+      - devices=4
+      - log_dir=/saves/train_logs
+      - num_workers=8
+      - seed=42
+      - "hydra.run.dir=/saves/train_logs/libero_10_dropout/${now:%Y-%m-%d_%H-%M-%S}"
+
   # Run the standalone LIBERO-10 evaluation.
   # Results are printed to stdout and written to /saves/eval_logs/.
   # Target: ~94.5% average success rate across 10 tasks (README).
