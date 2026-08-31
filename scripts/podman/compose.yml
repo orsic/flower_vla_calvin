@@ -186,7 +186,7 @@ services:
       - "nvidia.com/gpu=3"
     environment:
       <<: *train-env
-      CKPT_PATH: ${CKPT_PATH:-/saves/train_logs/libero_10_dropout/2026-08-28_15-45-43/seed_42/saved_models/epoch=09_eval_lh/avg_seq_len=0.00.ckpt}
+      CKPT_PATH: ${CKPT_PATH}
     command:
       - python
       - flower/training_libero.py
