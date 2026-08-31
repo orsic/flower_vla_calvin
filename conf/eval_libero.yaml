@@ -21,6 +21,7 @@ wandb_entity: orsic-university-of-zagreb-faculty-of-electrical-enginee
 num_sequences: 50
 max_steps: 520
 n_eval: 20
+eval_batch_size: 10  # episodes per batch; each runs in a separate MuJoCo subprocess
 num_sampling_steps: 4
 multistep: 10
 

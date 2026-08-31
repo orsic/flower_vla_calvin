@@ -2,6 +2,7 @@
 import gc
 import json
 import logging
+import math
 import multiprocessing
 import os
 import sys
@@ -9,7 +10,7 @@ import time
 from collections import Counter, defaultdict
 from itertools import chain
 from pathlib import Path
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 # Third-party imports
 import cv2
@@ -17,6 +18,7 @@ import hydra
 import numpy as np
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as tmp
 import wandb
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Callback, LightningModule, Trainer, seed_everything
@@ -41,6 +43,7 @@ from flower.evaluation.utils import (
     get_default_mode_and_env,
     get_env_state_for_initial_condition,
     join_vis_lang,
+    load_mode_from_safetensor,
 )
 from flower.rollout.rollout_video import RolloutVideo
 
@@ -75,6 +78,8 @@ class EvaluateLibero:
         n_eval,
         task_embedding_format,
         device,
+        eval_batch_size: int = 10,
+        task_indices: Optional[List[int]] = None,
     ):
         self.model = model
         self.transforms = transforms
@@ -93,6 +98,7 @@ class EvaluateLibero:
         self.task_names = self.benchmark_instance.get_task_names()
         self.benchmark = get_benchmark(self.benchmark_name)(self.task_order)
         self.n_eval = n_eval
+        self.eval_batch_size = eval_batch_size
         self.img_h = 224
         self.img_w = 224
         self.rank = None
@@ -117,7 +123,11 @@ class EvaluateLibero:
             task_embs = get_task_embs(self.cfg, self.descriptions)
             self.benchmark_instance.set_task_embs(task_embs)
 
-        self.all_tasks = list(range(self.benchmark_instance.n_tasks))
+        # task_indices restricts which tasks this instance evaluates (used for multi-GPU).
+        if task_indices is not None:
+            self.all_tasks = task_indices
+        else:
+            self.all_tasks = list(range(self.benchmark_instance.n_tasks))
 
     def setup(self) -> None:
         if self.benchmark is None:
@@ -160,6 +170,12 @@ class EvaluateLibero:
         return successes
 
     def evaluate_task(self, model, task_i, task_emb, task_str, idx, sim_states=None, store_video=0):
+        """Evaluate a task, running eval_batch_size parallel episodes per batch.
+
+        Each batch uses a SubprocVectorEnv (one MuJoCo subprocess per episode) so
+        rendering is isolated per process, and model inference is batched across all
+        episodes in the batch.
+        """
         env_args = {
             "bddl_file_name": os.path.join(
                 self.bddl_folder, task_i.problem_folder, task_i.bddl_file
@@ -168,95 +184,102 @@ class EvaluateLibero:
             "camera_widths": self.img_w,
         }
 
-        # Try to handle the frame buffer issue
-        env_creation = False
-        count = 0
-        while not env_creation and count < 5:
-            try:
-                env = OffScreenRenderEnv(**env_args)
-                env_creation = True
-            except:
-                time.sleep(5)
-                count += 1
-        if count >= 5:
-            raise Exception("Failed to create environment")
-
-        ### Evaluation loop
-        # Use LIBERO's native API to get initial states in the correct format
         try:
             initial_states = self.benchmark_instance.get_task_init_states(idx)
-            print(f"Using LIBERO native initial states, count: {len(initial_states)}")
+            n_states = len(initial_states)
+            print(f"Using LIBERO native initial states, count: {n_states}")
         except Exception as e:
-            print(f"Could not get LIBERO initial states: {e}")
-            print("Will use random resets instead")
+            print(f"Could not get LIBERO initial states: {e}, using random resets")
             initial_states = None
-        
+            n_states = 0
+
         num_success = 0
-        for i in tqdm(range(self.n_eval), desc="Evaluating"):
-            store_video_this_rollout = i < store_video
-            if store_video_this_rollout:
-                video_frames = []
-                video_filename = f"rollout_{task_str}_nmp_{i}.mp4"
-                video_path = os.path.join(self.log_dir, video_filename)
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Define the codec for MP4
-                video_writer = cv2.VideoWriter(video_path, fourcc, 20.0, (self.img_w, self.img_h))
+        episode_idx = 0
 
-            # Always reset environment first
-            env.reset()
+        with tqdm(total=self.n_eval, desc="Evaluating") as pbar:
+            while episode_idx < self.n_eval:
+                current_batch_size = min(self.eval_batch_size, self.n_eval - episode_idx)
 
-            done = False
-            steps = 0
-            model.reset()
-            
-            # Simple state setting using LIBERO's native format
-            if initial_states is not None and i < len(initial_states):
-                try:
-                    obs = env.set_init_state(initial_states[i])
-                    print(f"Successfully set initial state for episode {i}")
-                except Exception as e:
-                    print(f"Failed to set initial state: {e}, using reset")
-                    obs = env.get_observation()
-            else:
-                print(f"No initial state available for episode {i}, using reset")
-                obs = env.get_observation()
+                # DummyVectorEnv runs all envs sequentially in the parent process.
+                # This avoids the fork-after-CUDA hazard: SubprocVectorEnv forks the parent
+                # (which has CUDA initialized), and forked children fail with EGL_BAD_ALLOC
+                # when trying to create EGL rendering contexts.  DummyVectorEnv keeps all
+                # OffScreenRenderEnv instances in the same process where EGL + CUDA coexist
+                # fine (same as the original sequential code).  Batched model inference is
+                # still possible since all B observations are stacked into a single forward.
+                env_creation = False
+                count = 0
+                while not env_creation and count < 5:
+                    try:
+                        env = DummyVectorEnv(
+                            [lambda: OffScreenRenderEnv(**env_args)
+                             for _ in range(current_batch_size)]
+                        )
+                        env_creation = True
+                    except Exception:
+                        time.sleep(5)
+                        count += 1
+                if not env_creation:
+                    raise Exception("Failed to create environment")
 
-            # dummy actions [env_num, 7] all zeros for initial physics simulation
-            dummy = np.zeros(7)
-            for _ in range(5):
-                obs, _, _, _ = env.step(dummy)
+                # Reset and set initial states for this batch
+                env.reset()
+                if initial_states is not None:
+                    state_idxs = np.array(
+                        [(episode_idx + k) % n_states for k in range(current_batch_size)]
+                    )
+                    env.set_init_state(initial_states[state_idxs])
 
-            if task_str != "":
-                sim_state = env.get_sim_state()
-                if sim_states is not None:
-                    sim_states[i].append(sim_state)
+                # Dummy warmup steps — obs from last warmup step is the starting obs
+                dummy = np.zeros((current_batch_size, 7))
+                for _ in range(5):
+                    obs, _, _, _ = env.step(dummy)
 
-            while steps < self.max_steps:
-                steps += 1
-                data, goal = self.process_env_obs(obs, task_emb, task_i.language)
-                # data = raw_obs_to_tensor_obs(obs, task_emb, cfg)
-                actions = model.step(data, goal)
-                actions = actions.cpu().numpy()
-                obs, reward, done, info = env.step(actions)
+                # Open video writers for episodes that should be recorded
+                video_writers: Dict[int, cv2.VideoWriter] = {}
+                video_frames: Dict[int, list] = {}
+                for k in range(current_batch_size):
+                    global_ep = episode_idx + k
+                    if global_ep < int(store_video):
+                        video_filename = f"rollout_{task_str}_nmp_{global_ep}.mp4"
+                        video_path = os.path.join(self.log_dir, video_filename)
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        video_writers[k] = cv2.VideoWriter(
+                            video_path, fourcc, 20.0, (self.img_w, self.img_h)
+                        )
+                        video_frames[k] = []
 
-                if store_video_this_rollout:
-                    video_frames.append(obs['agentview_image'])
+                dones = [False] * current_batch_size
+                steps = 0
+                model.reset()
 
-                if done:
-                    break
+                while steps < self.max_steps:
+                    steps += 1
+                    data, goal = self.process_env_obs_batch(obs, task_emb, task_i.language)
+                    actions = model.step_batch(data, goal).cpu().numpy()  # [B, 7]
+                    obs, _, done, _ = env.step(actions)
 
-            if store_video_this_rollout:
-                for frame in video_frames:
-                    video_writer.write(frame)
-                video_writer.release()
+                    for k in range(current_batch_size):
+                        dones[k] = dones[k] or bool(done[k])
+                        if k in video_frames:
+                            video_frames[k].append(obs[k]['agentview_image'])
 
-            # a new form of success record
-            num_success += int(done)
+                    if all(dones):
+                        break
 
-        success_rate = num_success / self.n_eval
-        env.close()
-        gc.collect()
-        # print(f"[info] evaluate task {task_str} takes {t.get_elapsed_time():.1f} seconds")
-        return success_rate
+                # Write videos
+                for k, writer in video_writers.items():
+                    for frame in video_frames[k]:
+                        writer.write(frame)
+                    writer.release()
+
+                num_success += sum(int(d) for d in dones)
+                env.close()
+                gc.collect()
+                episode_idx += current_batch_size
+                pbar.update(current_batch_size)
+
+        return num_success / self.n_eval
 
     def create_cfg_for_libero(self, task_embedding_format):
         self.cfg = DictConfig({'task_embedding_format': task_embedding_format,
@@ -379,6 +402,89 @@ class EvaluateLibero:
 
         return return_obs, goal
 
+    def process_env_obs_batch(self, obs_list, lang_embed, lang_text=None):
+        """Process a list of B obs dicts (from SubprocVectorEnv) into a batched model input.
+
+        Returns data with rgb_obs tensors of shape [B, 1, C, H, W] and goal with
+        lang_text as a list of B identical strings (handled by model.forward).
+        """
+        data_list = [self.process_env_obs(obs, lang_embed, lang_text)[0] for obs in obs_list]
+        batch_data = {
+            'rgb_obs': {
+                key: torch.cat([d['rgb_obs'][key] for d in data_list], dim=0)
+                for key in data_list[0]['rgb_obs']
+            }
+        }
+        goal = {
+            'lang_text': [lang_text] * len(obs_list),
+            'lang': lang_embed,
+        }
+        return batch_data, goal
+
+def _eval_worker(
+    rank: int,
+    cfg_dict: dict,
+    transforms_cfg,
+    task_indices: List[int],
+    log_dir: str,
+    n_gpus: int,
+) -> None:
+    """Worker process: evaluate a subset of tasks on one GPU and write results to JSON.
+
+    Called via torch.multiprocessing.spawn or Process for multi-GPU eval.
+    Each worker points MUJOCO_EGL_DEVICE_ID at the physical GPU that matches its
+    CUDA rank so rendering and inference share the same GPU.
+    """
+    # Map PyTorch rank (index into CUDA_VISIBLE_DEVICES) to physical GPU id for EGL.
+    cuda_vis = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    phys_ids = [int(x.strip()) for x in cuda_vis.split(",") if x.strip()] if cuda_vis else list(range(n_gpus))
+    phys_gpu = phys_ids[rank] if rank < len(phys_ids) else rank
+    os.environ["MUJOCO_EGL_DEVICE_ID"] = str(phys_gpu)
+
+    # Load model on this worker's GPU
+    model_overwrite = cfg_dict.get("eval_cfg_overwrite", {}).get("model", {})
+    model = load_mode_from_safetensor(Path(cfg_dict["checkpoint"]), overwrite_cfg=model_overwrite)
+    model.freeze()
+    model = model.cuda(rank)
+    model.eval()
+
+    # Instantiate transforms (hydra.utils.instantiate does not need GlobalHydra context)
+    transforms = hydra.utils.instantiate(transforms_cfg)
+
+    eval_libero = EvaluateLibero(
+        model=model,
+        transforms=transforms,
+        log_dir=log_dir,
+        benchmark_name=cfg_dict["benchmark_name"],
+        num_sequences=cfg_dict["num_sequences"],
+        num_videos=cfg_dict.get("num_videos", 0) if rank == 0 else 0,
+        max_steps=cfg_dict["max_steps"],
+        n_eval=cfg_dict["n_eval"],
+        task_embedding_format=cfg_dict["task_embedding_format"],
+        device=rank,
+        eval_batch_size=cfg_dict.get("eval_batch_size", 10),
+        task_indices=task_indices,
+    )
+    eval_libero.setup()
+
+    results: Dict[str, float] = {}
+    for idx in task_indices:
+        task_name = eval_libero.task_names[idx]
+        task_i = eval_libero.benchmark_instance.get_task(idx)
+        task_emb = eval_libero.benchmark_instance.task_embs[idx]
+        task_str = f"k{max(task_indices)}_p{idx}"
+        sr = eval_libero.evaluate_task(
+            model, task_i, task_emb, task_str, idx,
+            store_video=cfg_dict.get("num_videos", 0) if rank == 0 else 0,
+        )
+        print(f"[GPU {rank}] Task {task_name} success rate: {sr:.4f}")
+        results[str(idx)] = sr
+
+    result_file = os.path.join(log_dir, f"results_rank_{rank}.json")
+    with open(result_file, "w") as f:
+        json.dump(results, f)
+
+
 @hydra.main(config_path="../../conf", config_name="eval_libero")
 def main(cfg):
     seed_everything(0, workers=True)
@@ -410,6 +516,7 @@ def main(cfg):
         n_eval=cfg.n_eval,
         task_embedding_format=cfg.task_embedding_format,
         device=cfg.device,
+        eval_batch_size=cfg.eval_batch_size,
     )
 
     if cfg.log_wandb:
@@ -420,9 +527,61 @@ def main(cfg):
             config=OmegaConf.to_object(cfg),
         )
 
-    # Add these lines to run the actual evaluation
-    eval_libero.setup()
-    eval_libero.start()
+    n_gpus = torch.cuda.device_count()
+
+    if n_gpus <= 1:
+        # Single-GPU path: all tasks on one GPU
+        eval_libero.setup()
+        eval_libero.start()
+    else:
+        # Multi-GPU path: partition tasks across workers, one process per GPU.
+        all_tasks = list(range(eval_libero.benchmark_instance.n_tasks))
+        task_splits: List[List[int]] = [[] for _ in range(n_gpus)]
+        for i, idx in enumerate(all_tasks):
+            task_splits[i % n_gpus].append(idx)
+
+        # Free the parent's GPU0 model — each worker loads its own copy.
+        eval_libero.model = None
+        del model
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+        transforms_cfg = dm.transforms  # raw OmegaConf DictConfig, picklable
+
+        ctx = tmp.get_context("spawn")
+        processes = []
+        for rank in range(n_gpus):
+            p = ctx.Process(
+                target=_eval_worker,
+                args=(rank, cfg_dict, transforms_cfg, task_splits[rank], str(log_dir), n_gpus),
+            )
+            p.start()
+            processes.append(p)
+
+        for rank, p in enumerate(processes):
+            p.join()
+            if p.exitcode != 0:
+                raise RuntimeError(f"Eval worker rank {rank} exited with code {p.exitcode}")
+
+        # Aggregate per-task results from all workers
+        all_results: Dict[str, float] = {}
+        for rank in range(n_gpus):
+            result_file = os.path.join(str(log_dir), f"results_rank_{rank}.json")
+            with open(result_file) as f:
+                all_results.update(json.load(f))
+
+        task_names = eval_libero.task_names
+        successes = [all_results[str(idx)] for idx in all_tasks]
+        result_array = sum(successes) / len(successes)
+
+        wandb.log({"eval_lh/avg_seq_len": torch.tensor(result_array)})
+        for success, task_name in zip(successes, task_names):
+            wandb.log({f"eval_lh/sr_{task_name}": success})
+        logger.info(f"eval_lh/avg_seq_len success rate {torch.tensor(result_array)}")
+        for success, task_name in zip(successes, task_names):
+            print(f"Task {task_name} success rate: {success:.4f}")
+        print('done')
 
     if cfg.log_wandb:
         run.finish()

@@ -883,13 +883,16 @@ class FLOWERVLA(pl.LightningModule):
         rgb_static = obs["rgb_obs"]['rgb_static']
         rgb_gripper = obs["rgb_obs"]['rgb_gripper']
 
-        # Create batch for observation encoding
+        # Create batch for observation encoding.
+        # goal["lang_text"] may be a single string (single episode) or a list of B
+        # strings (batched episodes via step_batch); handle both.
+        lang_text = goal["lang_text"]
         batch = {
             "rgb_obs": {
                 "rgb_static": rgb_static,
                 "rgb_gripper": rgb_gripper
             },
-            "lang_text": [goal["lang_text"]]
+            "lang_text": [lang_text] if isinstance(lang_text, str) else list(lang_text)
         }
         features = self.encode_observations(batch)
         
@@ -931,6 +934,25 @@ class FLOWERVLA(pl.LightningModule):
         if self.rollout_step_counter == self.multistep:
             self.rollout_step_counter = 0
         
+        return current_action
+
+    def step_batch(self, obs: Dict, goal: Dict) -> torch.Tensor:
+        """
+        Step for a batch of B parallel episodes, handling action chunking.
+
+        Args:
+            obs: Dictionary of batched observations, e.g. rgb_obs tensors [B, T, C, H, W]
+            goal: Dictionary containing goal["lang_text"] as a list of B strings
+
+        Returns:
+            Current action predictions, shape [B, action_dim]
+        """
+        if self.rollout_step_counter % self.multistep == 0:
+            self.pred_action_seq = self(obs, goal)
+        current_action = self.pred_action_seq[:, self.rollout_step_counter]
+        self.rollout_step_counter += 1
+        if self.rollout_step_counter == self.multistep:
+            self.rollout_step_counter = 0
         return current_action
 
     def reset(self):

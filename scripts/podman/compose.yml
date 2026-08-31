@@ -20,7 +20,7 @@ x-base: &base
     - ${SAVES_DIR}:/saves:z
     - ${LIBERO_HDF5_DIR:-./data/libero_hdf5}:/libero_hdf5:ro
   devices:
-    - "nvidia.com/gpu=0"
+    - "nvidia.com/gpu=all"
   environment:
     MUJOCO_GL: egl
     PYOPENGL_PLATFORM: egl
@@ -30,6 +30,19 @@ x-base: &base
     HF_HOME: /root/.cache/huggingface
     CUDA_DEVICE_ORDER: PCI_BUS_ID
     WANDB_API_KEY: ${WANDB_API_KEY:-}
+    # GPU selector: set CUDA_VISIBLE_DEVICES in vars.env (or per-run env) to control
+    # which GPUs are used. Default "0" = single GPU. Examples:
+    #   CUDA_VISIBLE_DEVICES=0,1,2,3  →  training on 4 GPUs, eval partitions across 4
+    #   CUDA_VISIBLE_DEVICES=2,3      →  target physical GPUs 2 and 3 (leave 0,1 free)
+    CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+    # Cap CPU thread pools to 1 per process.  Model inference is GPU-bound; MuJoCo envs
+    # are single-threaded.  Without this, every forked/spawned child (parent + N GPU
+    # workers + N×eval_batch_size MuJoCo subprocs) spins up a 32-thread OpenBLAS pool
+    # and exhausts RLIMIT_NPROC, causing numpy to fail to import in child processes.
+    OMP_NUM_THREADS: "1"
+    OPENBLAS_NUM_THREADS: "1"
+    MKL_NUM_THREADS: "1"
+    TOKENIZERS_PARALLELISM: "false"
 
 services:
   # Interactive shell for exploration/debugging (all code runs in container per CLAUDE.md).
@@ -93,19 +106,16 @@ services:
     PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     TOKENIZERS_PARALLELISM: "true"
     NCCL_DEBUG: WARN
+    CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0,1,2,3}
 
   # Fine-tune FlowerVLA on LIBERO-10 from the general pretrained checkpoint.
   # Prerequisites: ./run.sh download-pret && ./run.sh download-data
   # Expected wall-clock: ~15-22 h on 4x A6000 (40 epochs x 1000 steps).
   # Best checkpoint written to /saves/train_logs/.../saved_models/ by ModelCheckpoint.
+  # GPU count is controlled by CUDA_VISIBLE_DEVICES in vars.env (default: 0,1,2,3 = 4 GPUs).
   train:
     <<: *base
     shm_size: "16g"
-    devices:
-      - "nvidia.com/gpu=0"
-      - "nvidia.com/gpu=1"
-      - "nvidia.com/gpu=2"
-      - "nvidia.com/gpu=3"
     environment:
       <<: *train-env
     command:
@@ -113,7 +123,7 @@ services:
       - flower/training_libero.py
       - libero_benchmark=libero_10
       - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
-      - devices=4
+      - devices=-1
       - log_dir=/saves/train_logs
       - num_workers=8
       - seed=42
@@ -125,11 +135,6 @@ services:
   train-frozen-expert:
     <<: *base
     shm_size: "16g"
-    devices:
-      - "nvidia.com/gpu=0"
-      - "nvidia.com/gpu=1"
-      - "nvidia.com/gpu=2"
-      - "nvidia.com/gpu=3"
     environment:
       <<: *train-env
     command:
@@ -139,7 +144,7 @@ services:
       - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
       - model.freeze_florence=True
       - model.action_expert_from_scratch=True
-      - devices=4
+      - devices=-1
       - log_dir=/saves/train_logs
       - num_workers=8
       - seed=42
@@ -152,11 +157,6 @@ services:
   train-dropout:
     <<: *base
     shm_size: "16g"
-    devices:
-      - "nvidia.com/gpu=0"
-      - "nvidia.com/gpu=1"
-      - "nvidia.com/gpu=2"
-      - "nvidia.com/gpu=3"
     environment:
       <<: *train-env
     command:
@@ -168,7 +168,7 @@ services:
       - model.modality_dropout_keep_fraction=0.5
       - "model.modality_dropout_alphas=[1.0,1.0,1.0]"
       - rollout_lh_skip_epochs=39
-      - devices=4
+      - devices=-1
       - log_dir=/saves/train_logs
       - num_workers=8
       - seed=42
@@ -179,11 +179,6 @@ services:
   train-dropout-resume:
     <<: *base
     shm_size: "16g"
-    devices:
-      - "nvidia.com/gpu=0"
-      - "nvidia.com/gpu=1"
-      - "nvidia.com/gpu=2"
-      - "nvidia.com/gpu=3"
     environment:
       <<: *train-env
       CKPT_PATH: ${CKPT_PATH}
@@ -196,7 +191,7 @@ services:
       - model.modality_dropout_keep_fraction=0.5
       - "model.modality_dropout_alphas=[1.0,1.0,1.0]"
       - rollout_lh_skip_epochs=39
-      - devices=4
+      - devices=-1
       - log_dir=/saves/train_logs
       - num_workers=8
       - seed=42

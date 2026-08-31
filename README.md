@@ -106,7 +106,7 @@ cp vars.env.example vars.env   # fill in DATA_DIR, SAVES_DIR, HF_HOME
 ### Commands
 
 ```bash
-./run.sh train           # Fine-tune on LIBERO-10, 4 GPUs, ~15–22 h
+./run.sh train           # Fine-tune on LIBERO-10 (GPU count = CUDA_VISIBLE_DEVICES length)
 ./run.sh train-frozen    # Ablation: frozen Florence VLM, action expert from random init
 ./run.sh train-dropout   # Full fine-tune with Dirichlet modality-token dropout
 ./run.sh eval            # LIBERO-10 evaluation (~94.5% target)
@@ -114,6 +114,19 @@ cp vars.env.example vars.env   # fill in DATA_DIR, SAVES_DIR, HF_HOME
 ./run.sh smoke           # Quick sanity check (CUDA + imports + 1 env step)
 ./run.sh devenv          # Regenerate .devcontainer/.env after editing vars.env
 ```
+
+**GPU selection** — all services use `CUDA_VISIBLE_DEVICES` from `vars.env` (default `0` for eval,
+`0,1,2,3` for training). Override per-run or set in `vars.env`:
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 ./run.sh train   # 4-GPU training
+CUDA_VISIBLE_DEVICES=2,3     ./run.sh eval    # eval on GPUs 2 & 3, leaving 0 & 1 free
+```
+
+**Batched eval** — `./run.sh eval` runs `eval_batch_size` episodes in parallel per task using
+`SubprocVectorEnv` (one MuJoCo subprocess per episode, EGL offscreen rendering). Model inference
+is batched across all parallel episodes. When `CUDA_VISIBLE_DEVICES` exposes multiple GPUs the
+10 tasks are partitioned across them, each GPU running its own batched eval independently.
+Tune `eval_batch_size` in `conf/eval_libero.yaml` (default 10) to trade RAM vs. parallelism.
 
 ### Modality-token dropout (`train-dropout`)
 
