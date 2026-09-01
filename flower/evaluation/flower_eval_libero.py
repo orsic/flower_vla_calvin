@@ -37,6 +37,15 @@ from libero.lifelong.metric import evaluate_multitask_training_success, raw_obs_
 from libero.lifelong.utils import create_experiment_dir, get_task_embs, safe_device
 
 # Local project imports
+from flower.evaluation.eval_records import (
+    checkpoint_name,
+    merge_rank_csvs,
+    merge_result_csv,
+    read_csv,
+    result_dir,
+    rollout_seed,
+    write_csv,
+)
 from flower.evaluation.multistep_sequences import get_sequences
 from flower.evaluation.utils import (
     LangEmbeddings,
@@ -138,6 +147,25 @@ def aggregate_by_category(
     return {cat: sum(srs) / len(srs) for cat, srs in cat_srs.items()}
 
 
+def load_task_classification(suite_name: str) -> Dict[str, Dict[str, Any]]:
+    """Map task name -> {"category": ..., "difficulty_level": ...} for one suite.
+
+    Returns an empty dict when task_classification.json is absent (e.g. LIBERO_VARIANT=orig).
+    """
+    import libero.libero.benchmark as _bm_mod
+    json_path = os.path.join(os.path.dirname(_bm_mod.__file__), "task_classification.json")
+    if not os.path.exists(json_path):
+        return {}
+
+    with open(json_path) as f:
+        data = json.load(f)
+
+    return {
+        entry["name"]: {"category": entry["category"], "difficulty_level": entry["difficulty_level"]}
+        for entry in data.get(suite_name, [])
+    }
+
+
 def get_log_dir(log_dir):
     if log_dir is not None:
         log_dir = Path(log_dir)
@@ -168,10 +196,17 @@ class EvaluateLibero:
         device,
         eval_batch_size: int = 10,
         task_indices: Optional[List[int]] = None,
+        checkpoint: str = "",
+        base_seed: int = 0,
+        eval_modalities: Optional[Dict[str, bool]] = None,
     ):
         self.model = model
         self.transforms = transforms
         self.log_dir = log_dir
+        self.checkpoint = str(checkpoint)
+        self.base_seed = base_seed
+        self.eval_modalities = eval_modalities or {"rgb_static": True, "rgb_gripper": True, "language": True}
+        self.libero_variant = os.environ.get("LIBERO_VARIANT", "orig")
 
         self.device = device
         self.task_order = 0
@@ -184,6 +219,7 @@ class EvaluateLibero:
         self.num_tasks = self.benchmark_instance.get_num_tasks()
         self.num_videos = num_videos
         self.task_names = self.benchmark_instance.get_task_names()
+        self.task_classification = load_task_classification(self.benchmark_name)
         self.benchmark = get_benchmark(self.benchmark_name)(self.task_order)
         self.n_eval = n_eval
         self.eval_batch_size = eval_batch_size
@@ -218,7 +254,15 @@ class EvaluateLibero:
             self.benchmark = get_benchmark(self.benchmark_name)(self.eval_sequences)
 
     def start(self) -> List[float]:
-        successes = self.evaluate_policy(self.model, store_video=self.num_videos)
+        rows = self.evaluate_policy(self.model, store_video=self.num_videos)
+        self.last_rows = rows
+
+        per_task_success: Dict[int, List[int]] = defaultdict(list)
+        for row in rows:
+            per_task_success[row["task_idx"]].append(row["success"])
+        successes = [
+            sum(per_task_success[idx]) / len(per_task_success[idx]) for idx in self.all_tasks
+        ]
 
         result_array = sum(successes) / len(successes)
         evaluated_names = [self.task_names[idx] for idx in self.all_tasks]
@@ -236,8 +280,9 @@ class EvaluateLibero:
         print()
         return successes
 
-    def evaluate_policy(self, model, store_video=False):
-        successes = []
+    def evaluate_policy(self, model, store_video=False) -> List[Dict[str, Any]]:
+        """Run every task in self.all_tasks; return one row per episode across all tasks."""
+        all_rows: List[Dict[str, Any]] = []
 
         for idx in self.all_tasks:  # Distribute tasks across GPUs
             task_name = self.task_names[idx]
@@ -245,12 +290,13 @@ class EvaluateLibero:
             task_emb = self.benchmark_instance.task_embs[idx]
             task_str = f"k{self.all_tasks[-1]}_p{idx}"
             logger.info(f"starting to evaluate: {task_name}")
-            success_rate = self.evaluate_task(model, task_i, task_emb, task_str, idx, store_video=store_video)
+            rows = self.evaluate_task(model, task_i, task_emb, task_str, idx, store_video=store_video)
+            success_rate = sum(row["success"] for row in rows) / len(rows)
             print(f"Task {task_name} success rate: {success_rate:.4f}")
             logger.info(f"Task {task_name} success rate: {success_rate:.4f}")
-            successes.append(success_rate)
+            all_rows.extend(rows)
 
-        return successes
+        return all_rows
 
     def evaluate_task(self, model, task_i, task_emb, task_str, idx, sim_states=None, store_video=0):
         """Evaluate a task, running eval_batch_size parallel episodes per batch.
@@ -276,7 +322,10 @@ class EvaluateLibero:
             initial_states = None
             n_states = 0
 
-        num_success = 0
+        task_name = self.task_names[idx]
+        task_meta = self.task_classification.get(task_name, {})
+
+        rows: List[Dict[str, Any]] = []
         episode_idx = 0
 
         with tqdm(total=self.n_eval, desc="Evaluating") as pbar:
@@ -307,11 +356,20 @@ class EvaluateLibero:
 
                 # Reset and set initial states for this batch
                 env.reset()
+                state_idxs = None
                 if initial_states is not None:
                     state_idxs = np.array(
                         [(episode_idx + k) % n_states for k in range(current_batch_size)]
                     )
                     env.set_init_state(initial_states[state_idxs])
+
+                # Seed once per batch: the model draws one shared noise tensor for the
+                # whole batch on each replan (flower.py forward()), so a seed narrower
+                # than "one batch" wouldn't change what gets sampled. Recorded as
+                # rollout_seed below so the batch is exactly reproducible.
+                seed = rollout_seed(self.base_seed, idx, episode_idx)
+                torch.manual_seed(seed)
+                np.random.seed(seed % (2**32))
 
                 # Dummy warmup steps — obs from last warmup step is the starting obs
                 dummy = np.zeros((current_batch_size, 7))
@@ -333,6 +391,7 @@ class EvaluateLibero:
                         video_frames[k] = []
 
                 dones = [False] * current_batch_size
+                steps_taken = [0] * current_batch_size
                 steps = 0
                 model.reset()
 
@@ -343,6 +402,8 @@ class EvaluateLibero:
                     obs, _, done, _ = env.step(actions)
 
                     for k in range(current_batch_size):
+                        if not dones[k]:
+                            steps_taken[k] = steps
                         dones[k] = dones[k] or bool(done[k])
                         if k in video_frames:
                             video_frames[k].append(obs[k]['agentview_image'])
@@ -356,13 +417,43 @@ class EvaluateLibero:
                         writer.write(frame)
                     writer.release()
 
-                num_success += sum(int(d) for d in dones)
+                for k in range(current_batch_size):
+                    rows.append({
+                        "libero_variant": self.libero_variant,
+                        "suite": self.benchmark_name,
+                        "task_idx": idx,
+                        "episode_idx": episode_idx + k,
+                        "checkpoint_name": checkpoint_name(self.checkpoint),
+                        "task_name": task_name,
+                        "problem_folder": task_i.problem_folder,
+                        "bddl_file": task_i.bddl_file,
+                        "init_states_file": task_i.init_states_file,
+                        "language": task_i.language,
+                        "task_category": task_meta.get("category", ""),
+                        "difficulty_level": task_meta.get("difficulty_level", ""),
+                        "init_state_idx": int(state_idxs[k]) if state_idxs is not None else -1,
+                        "max_steps": self.max_steps,
+                        "img_h": self.img_h,
+                        "img_w": self.img_w,
+                        "num_sampling_steps": getattr(model, "num_sampling_steps", ""),
+                        "multistep": getattr(model, "multistep", ""),
+                        "eval_batch_size": current_batch_size,
+                        "base_seed": self.base_seed,
+                        "rollout_seed": seed,
+                        "use_rgb_static": int(self.eval_modalities.get("rgb_static", True)),
+                        "use_rgb_gripper": int(self.eval_modalities.get("rgb_gripper", True)),
+                        "use_language": int(self.eval_modalities.get("language", True)),
+                        "checkpoint": self.checkpoint,
+                        "steps_taken": steps_taken[k],
+                        "success": int(dones[k]),
+                    })
+
                 env.close()
                 gc.collect()
                 episode_idx += current_batch_size
                 pbar.update(current_batch_size)
 
-        return num_success / self.n_eval
+        return rows
 
     def create_cfg_for_libero(self, task_embedding_format):
         self.cfg = DictConfig({'task_embedding_format': task_embedding_format,
@@ -510,9 +601,10 @@ def _eval_worker(
     transforms_cfg,
     task_indices: List[int],
     log_dir: str,
+    csv_dir: str,
     n_gpus: int,
 ) -> None:
-    """Worker process: evaluate a subset of tasks on one GPU and write results to JSON.
+    """Worker process: evaluate a subset of tasks on one GPU and write a result CSV shard.
 
     Called via torch.multiprocessing.spawn or Process for multi-GPU eval.
     Each worker points MUJOCO_EGL_DEVICE_ID at the physical GPU that matches its
@@ -547,25 +639,19 @@ def _eval_worker(
         device=rank,
         eval_batch_size=cfg_dict.get("eval_batch_size", 10),
         task_indices=task_indices,
+        checkpoint=cfg_dict["checkpoint"],
+        base_seed=cfg_dict.get("seed", 0),
+        eval_modalities=cfg_dict.get("eval_modalities"),
     )
     eval_libero.setup()
 
-    results: Dict[str, float] = {}
-    for idx in task_indices:
-        task_name = eval_libero.task_names[idx]
-        task_i = eval_libero.benchmark_instance.get_task(idx)
-        task_emb = eval_libero.benchmark_instance.task_embs[idx]
-        task_str = f"k{max(task_indices)}_p{idx}"
-        sr = eval_libero.evaluate_task(
-            model, task_i, task_emb, task_str, idx,
-            store_video=cfg_dict.get("num_videos", 0) if rank == 0 else 0,
-        )
-        print(f"[GPU {rank}] Task {task_name} success rate: {sr:.4f}")
-        results[str(idx)] = sr
-
-    result_file = os.path.join(log_dir, f"results_rank_{rank}.json")
-    with open(result_file, "w") as f:
-        json.dump(results, f)
+    # evaluate_policy already iterates self.all_tasks, which the constructor set to
+    # task_indices, prints a per-task success rate, and returns one row per episode —
+    # reusing the exact same rollout/row-building logic as the single-GPU path.
+    rows = eval_libero.evaluate_policy(
+        model, store_video=cfg_dict.get("num_videos", 0) if rank == 0 else 0
+    )
+    write_csv(os.path.join(csv_dir, f"result_rank{rank}.csv"), rows)
 
 
 @hydra.main(config_path="../../conf", config_name="eval_libero")
@@ -589,6 +675,10 @@ def main(cfg):
     transforms = hydra.utils.instantiate(dm.transforms)
 
     task_category: Optional[str] = OmegaConf.select(cfg, "task_category", default=None)
+    base_seed: int = OmegaConf.select(cfg, "seed", default=0)
+    eval_modalities = OmegaConf.select(cfg, "eval_modalities", default=None)
+    if eval_modalities is not None:
+        eval_modalities = OmegaConf.to_container(eval_modalities, resolve=True)
 
     eval_libero = EvaluateLibero(
         model=model,
@@ -602,7 +692,16 @@ def main(cfg):
         task_embedding_format=cfg.task_embedding_format,
         device=cfg.device,
         eval_batch_size=cfg.eval_batch_size,
+        checkpoint=cfg.checkpoint,
+        base_seed=base_seed,
+        eval_modalities=eval_modalities,
     )
+    csv_dir_override = OmegaConf.select(cfg, "csv_dir", default=None)
+    if csv_dir_override:
+        csv_dir = Path(csv_dir_override)
+        csv_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        csv_dir = result_dir(cfg.train_folder, cfg.checkpoint, eval_libero.libero_variant, cfg.benchmark_name)
 
     # Apply per-category filter (no-op when task_category is None or LIBERO_VARIANT=orig).
     task_subset = select_task_indices(eval_libero.benchmark_instance, task_category)
@@ -623,6 +722,10 @@ def main(cfg):
         # Single-GPU path: all tasks on one GPU
         eval_libero.setup()
         successes = eval_libero.start()
+
+        csv_path = csv_dir / "result.csv"
+        merge_result_csv(csv_path, eval_libero.last_rows)
+        print(f"Wrote {len(eval_libero.last_rows)} episode rows to {csv_path}")
 
         # Per-category breakdown (LIBERO-Plus only; no-op for orig).
         evaluated_names = [eval_libero.task_names[idx] for idx in eval_libero.all_tasks]
@@ -656,7 +759,7 @@ def main(cfg):
         for rank in range(n_gpus):
             p = ctx.Process(
                 target=_eval_worker,
-                args=(rank, cfg_dict, transforms_cfg, task_splits[rank], str(log_dir), n_gpus),
+                args=(rank, cfg_dict, transforms_cfg, task_splits[rank], str(log_dir), str(csv_dir), n_gpus),
             )
             p.start()
             processes.append(p)
@@ -666,16 +769,21 @@ def main(cfg):
             if p.exitcode != 0:
                 raise RuntimeError(f"Eval worker rank {rank} exited with code {p.exitcode}")
 
-        # Aggregate per-task results from all workers
-        all_results: Dict[str, float] = {}
+        # Aggregate per-episode rows from all workers' shards. Read directly (not via
+        # merge_rank_csvs yet) so this run's summary only reflects this run's tasks,
+        # not older rows already accumulated in result.csv from a prior category run.
+        current_rows: List[Dict[str, Any]] = []
         for rank in range(n_gpus):
-            result_file = os.path.join(str(log_dir), f"results_rank_{rank}.json")
-            with open(result_file) as f:
-                all_results.update(json.load(f))
+            current_rows.extend(read_csv(csv_dir / f"result_rank{rank}.csv"))
 
         task_names = eval_libero.task_names
         evaluated_names = [task_names[idx] for idx in all_tasks]
-        successes = [all_results[str(idx)] for idx in all_tasks]
+        per_task_success: Dict[int, List[int]] = defaultdict(list)
+        for row in current_rows:
+            per_task_success[int(row["task_idx"])].append(int(row["success"]))
+        successes = [
+            sum(per_task_success[idx]) / len(per_task_success[idx]) for idx in all_tasks
+        ]
         result_array = sum(successes) / len(successes)
 
         if wandb.run is not None:
@@ -696,6 +804,11 @@ def main(cfg):
                 print(f"  {cat}: {sr:.4f}")
                 if wandb.run is not None:
                     wandb.log({f"eval_lh/cat_{cat.replace(' ', '_').lower()}": sr})
+
+        # Merge this run's shards into the accumulated result.csv, then delete them.
+        merged_rows = merge_rank_csvs(csv_dir, n_gpus)
+        print(f"Wrote {len(current_rows)} episode rows to {csv_dir / 'result.csv'} "
+              f"({len(merged_rows)} rows total)")
 
         print('done')
 

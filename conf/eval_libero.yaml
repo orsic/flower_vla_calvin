@@ -27,3 +27,10 @@ multistep: 10
 
 benchmark_name: libero_10 # [LIBERO_SPATIAL, LIBERO_OBJECT, LIBERO_GOAL, LIBERO_90, LIBERO_10]
 task_category: null  # null = all tasks; LIBERO-Plus only: filter to one perturbation category
+
+seed: 0  # base seed for per-episode rollout seeding (recorded in the result CSV)
+eval_modalities:  # recorded in the result CSV; masking not implemented yet
+  rgb_static: true
+  rgb_gripper: true
+  language: true
+csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<suite>/

@@ -309,13 +309,15 @@ Let `CKPT_BASE=/saves/checkpoints/libero_10` (baseline) and
 **B. LIBERO-Plus — per perturbation category (n_eval=1 per task):**
 ```bash
 # Run a single category (faster, useful for spot-checking):
-./run.sh eval-plus task_category="Camera Viewpoints" checkpoint=$CKPT_BASE
-./run.sh eval-plus task_category="Camera Viewpoints" checkpoint=$CKPT_DROP
+./run.sh eval-plus task_category="Camera Viewpoints" train_folder=$CKPT_BASE checkpoint=$CKPT_BASE
+./run.sh eval-plus task_category="Camera Viewpoints" train_folder=$CKPT_DROP checkpoint=$CKPT_DROP
 
 # Run all categories at once (multi-GPU recommended; set CUDA_VISIBLE_DEVICES in vars.env):
-./run.sh eval-plus checkpoint=$CKPT_BASE
-./run.sh eval-plus checkpoint=$CKPT_DROP
+./run.sh eval-plus train_folder=$CKPT_BASE checkpoint=$CKPT_BASE
+./run.sh eval-plus train_folder=$CKPT_DROP checkpoint=$CKPT_DROP
 ```
+`train_folder` also fixes where results are written (see [Evaluation results (CSV)](#evaluation-results-csv)
+below) — set it to each model's own directory so the two models' CSVs don't collide.
 
 > **Memory note:** always keep `n_eval=1` for LIBERO-Plus. Each Plus task is one
 > deterministic perturbed instance, so higher values add no new perturbations.
@@ -328,6 +330,44 @@ Let `CKPT_BASE=/saves/checkpoints/libero_10` (baseline) and
 > If a full 2519-task run approaches the cap, split it by category (as above)
 > or use multi-GPU (`CUDA_VISIBLE_DEVICES=2,3`) so each spawned worker process
 > releases its address space on exit.
+
+### Evaluation results (CSV)
+
+Every `./run.sh eval` / `./run.sh eval-plus` run writes one row per episode to:
+```
+<train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<benchmark_name>/result.csv
+```
+e.g. `$CKPT_DROP/eval_logs/last/plus_libero_10/result.csv`. `checkpoint_name` is the
+checkpoint file's stem (`last.ckpt` → `last`) or, for a HuggingFace-layout checkpoint
+directory, the directory name. Override the whole path with `csv_dir=<path>` when
+`train_folder` isn't writable (e.g. a shared read-only checkpoint). Re-running (e.g. one `task_category` at a time) **merges**
+into the existing file — a rerun of the same task/episode/checkpoint replaces that row in
+place, everything else is kept — so running all 7 Plus categories separately accumulates
+into one complete `result.csv`. On multi-GPU, each worker writes `result_rank<i>.csv`
+into the same directory; the master merges them into `result.csv` and deletes the shards.
+
+Columns identify every variable that determines the episode: `suite`, `task_idx`,
+`task_name` (LIBERO-Plus encodes the full perturbation — camera angle, robot-init id,
+noise id, etc. — in this name; no separate columns), `task_category` /
+`difficulty_level` (LIBERO-Plus only), `language` (the exact instruction fed to the
+model), `init_state_idx`, `rollout_seed`, `num_sampling_steps`, `multistep`,
+`eval_batch_size`, and the three modality flags `use_rgb_static`, `use_rgb_gripper`,
+`use_language` (currently always `1` — see the note below). Result columns are `success`
+(0/1) and `steps_taken`.
+
+**Reproducibility:** the model draws one shared flow-matching noise tensor for an entire
+batch on each replan, so a rollout is only reproducible at batch granularity, not
+per-episode — `rollout_seed` is derived from `(seed, task_idx, batch_start_episode)` and
+recorded per row along with `eval_batch_size`; reproducing a row requires matching both.
+**Known exception:** LIBERO-Plus Sensor-Noise tasks using motion_blur, fog, or
+glass_blur corruption (noise ids 1-10, 31-40, 41-50) call unseeded `np.random` on every
+rendered frame inside the vendored env, so those specific episodes are not bit-exact
+reproducible even with a matching seed; gaussian_blur/zoom_blur (ids 11-30) are unaffected.
+
+**Modality columns are record-only for now.** They reflect `eval_modalities` in
+`conf/eval_libero.yaml` / `conf/eval_libero_plus.yaml`, but eval-time modality masking
+(actually dropping the static view, wrist view, or language at inference) is not
+implemented yet — this is schema preparation for that ablation.
 
 **Perturbation categories** (pass as `task_category="<name>"`):
 

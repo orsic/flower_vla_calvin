@@ -43,3 +43,10 @@ multistep: 10
 
 benchmark_name: libero_10
 task_category: null  # null = all 7 categories (~2519 tasks); set to one category string to filter
+
+seed: 0  # base seed for per-episode rollout seeding (recorded in the result CSV)
+eval_modalities:  # recorded in the result CSV; masking not implemented yet
+  rgb_static: true
+  rgb_gripper: true
+  language: true
+csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<suite>/
