@@ -390,6 +390,32 @@ python scripts/compare_eval_csvs.py $CKPT_DROP/eval_logs/last/orig_libero_10/res
   --modalities-a static,wrist,lang --modalities-b lang
 ```
 
+**Partial information decomposition (PID).** Success rates say how much each
+modality's presence is worth; PID says *how* that information is shared between two
+modalities — redundant (either alone would do), unique (only that one carries it), or
+synergistic (only the pair together does). `scripts/pid_modality.py` runs this over a
+`result.csv` that has all 7 modality combos evaluated (`static,wrist,lang` full through
+each single modality): for each of the three modality pairs it treats availability of
+the two as sources `X1, X2` and `success` as target `Y`, holding the third modality on
+so all four `(x1, x2)` cells are populated, and decomposes `I(X1, X2 ; Y)` into
+redundancy `R`, unique `U1`/`U2`, and synergy `S`.
+
+Uses [`dit`](https://github.com/dit/dit)'s `PID_CCS` — Ince (2017)'s common-change-in-
+surprisal measure, the same one implemented in MATLAB by
+[`robince/partial-info-decomp`](https://github.com/robince/partial-info-decomp)
+(`Iccs.m`); `dit` is a pure-Python reimplementation, avoiding a MATLAB/Octave
+dependency (Octave lacks the Statistics Toolbox's `changem`, which `Iccs.m` calls).
+Pinned to `dit==1.2.3` — the last release supporting Python 3.9 (this image's
+interpreter); `scripts/pid_modality.py` shims two API changes that library predates
+(networkx's `Graph.node` → `.nodes` rename, scipy's stricter `minimize(x0=...)` shape
+check) without altering what gets computed. `--measure broja` swaps in the
+non-negative Bertschinger et al. BROJA measure as a sanity cross-check, since `I_ccs`
+can go slightly negative.
+
+```bash
+python scripts/pid_modality.py $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv
+```
+
 **Perturbation categories** (pass as `task_category="<name>"`):
 
 | Category | Description |

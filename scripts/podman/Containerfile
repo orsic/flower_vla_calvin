@@ -64,6 +64,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends libmagickwand-d
 # from bumping it back up.
 RUN python -m pip install --no-cache-dir "numpy~=1.23"
 
+# ----- layer 7: dit (partial information decomposition) -----
+# dit>=2.0 requires python>=3.11, incompatible with this image's python3.9;
+# 1.2.3 is the last release supporting py3.9 and still has PID_CCS (Ince 2017
+# common-change-in-surprisal), used by scripts/pid_modality.py. Installed after
+# the numpy pin above so its loose "numpy>=1.11" constraint doesn't bump it.
+RUN python -m pip install --no-cache-dir "dit==1.2.3"
+
 # Offscreen rendering via NVIDIA EGL (CDI provides the GPU/EGL libraries).
 # libosmesa6 is installed above as an osmesa fallback if EGL is unavailable.
 ENV MUJOCO_GL=egl
