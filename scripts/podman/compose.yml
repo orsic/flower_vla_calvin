@@ -43,6 +43,10 @@ x-base: &base
     OPENBLAS_NUM_THREADS: "1"
     MKL_NUM_THREADS: "1"
     TOKENIZERS_PARALLELISM: "false"
+    # LIBERO variant selector: "orig" (default) = upstream LIBERO-10 eval;
+    # "plus" = LIBERO-Plus fork with perturbation variants.
+    # Overridden to "plus" in the eval-plus service.
+    LIBERO_VARIANT: ${LIBERO_VARIANT:-orig}
 
 services:
   # Interactive shell for exploration/debugging (all code runs in container per CLAUDE.md).
@@ -202,6 +206,7 @@ services:
   # Target: ~94.5% average success rate across 10 tasks (README).
   eval:
     <<: *base
+    shm_size: "8g"
     command:
       - python
       - flower/evaluation/flower_eval_libero.py
@@ -213,4 +218,60 @@ services:
       - n_eval=20
       - num_videos=3
       - log_wandb=True
+      - "hydra.run.dir=/saves/hydra_outputs/${now:%Y-%m-%d_%H-%M-%S}"
+
+  # Download LIBERO-Plus simulation assets (3D objects, textures) from HuggingFace.
+  # Run once before eval-plus: ./run.sh download-plus
+  # Assets are extracted into LIBERO-plus/libero/libero/assets/ (gitignored).
+  download-plus:
+    <<: *base
+    volumes:
+      - ${REPO_ROOT}:/workspace:z
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+      - ${SAVES_DIR}:/saves:z
+      - ${LIBERO_HDF5_DIR:-./data/libero_hdf5}:/libero_hdf5:z
+    command:
+      - bash
+      - -c
+      - |
+        huggingface-cli download Sylvest/LIBERO-plus \
+          --repo-type dataset \
+          --include "assets.zip" \
+          --local-dir /tmp/libero_plus_dl
+        python -c 'import zipfile; z=zipfile.ZipFile("/tmp/libero_plus_dl/assets.zip"); z.extractall("/tmp/lp_extracted"); z.close()'
+        assets_src=$(find /tmp/lp_extracted -type d -name assets | head -1)
+        assets_dst=/workspace/LIBERO-plus/libero/libero/assets
+        test -e "$assets_dst" && rm -rf "$assets_dst"
+        mv "$assets_src" "$assets_dst"
+        rm -rf /tmp/lp_extracted
+        echo "LIBERO-Plus assets extracted to LIBERO-plus/libero/libero/assets/"
+
+  # Run the LIBERO-Plus robustness evaluation.
+  # Prerequisites: ./run.sh download (baseline ckpt) && ./run.sh download-plus
+  # Pass overrides as extra args, e.g.:
+  #   ./run.sh eval-plus task_category="Camera Viewpoints" checkpoint=/saves/.../best.ckpt
+  # Perturbation categories: "Objects Layout", "Camera Viewpoints", "Robot Initial States",
+  #   "Language Instructions", "Light Conditions", "Background Textures", "Sensor Noise"
+  eval-plus:
+    <<: *base
+    shm_size: "8g"
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      WANDB_MODE: disabled
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      LIBERO_VARIANT: "plus"
+    command:
+      - python
+      - flower/evaluation/flower_eval_libero.py
+      - --config-name=eval_libero_plus
       - "hydra.run.dir=/saves/hydra_outputs/${now:%Y-%m-%d_%H-%M-%S}"

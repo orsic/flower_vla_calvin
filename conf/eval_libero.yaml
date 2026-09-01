@@ -26,3 +26,4 @@ num_sampling_steps: 4
 multistep: 10
 
 benchmark_name: libero_10 # [LIBERO_SPATIAL, LIBERO_OBJECT, LIBERO_GOAL, LIBERO_90, LIBERO_10]
+task_category: null  # null = all tasks; LIBERO-Plus only: filter to one perturbation category

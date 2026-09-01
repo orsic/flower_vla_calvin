@@ -50,6 +50,94 @@ from flower.rollout.rollout_video import RolloutVideo
 logger = logging.getLogger(__name__)
 
 
+def select_task_indices(
+    benchmark_instance,
+    task_category: Optional[str],
+) -> Optional[List[int]]:
+    """Return task indices matching a LIBERO-Plus perturbation category.
+
+    Returns None when task_category is None (meaning: run all tasks).
+    Matches by task *name* (robust to ordering differences).
+    Requires LIBERO_VARIANT=plus and a valid task_classification.json in the
+    active benchmark package; raises clearly if either precondition fails.
+    """
+    if task_category is None:
+        return None
+
+    import libero.libero.benchmark as _bm_mod
+    json_path = os.path.join(os.path.dirname(_bm_mod.__file__), "task_classification.json")
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(
+            f"task_classification.json not found at {json_path}. "
+            "Is LIBERO_VARIANT=plus and the LIBERO-Plus submodule on PYTHONPATH?"
+        )
+
+    with open(json_path) as f:
+        data = json.load(f)
+
+    suite_name = benchmark_instance.name
+    if suite_name not in data:
+        raise ValueError(
+            f"Suite '{suite_name}' not in task_classification.json. "
+            f"Available suites: {list(data.keys())}"
+        )
+
+    matching_names = {
+        entry["name"]
+        for entry in data[suite_name]
+        if entry["category"] == task_category
+    }
+    if not matching_names:
+        available = sorted({e["category"] for e in data[suite_name]})
+        raise ValueError(
+            f"Category '{task_category}' not found in suite '{suite_name}'. "
+            f"Available categories: {available}"
+        )
+
+    task_names = benchmark_instance.get_task_names()
+    indices = [i for i, name in enumerate(task_names) if name in matching_names]
+    if not indices:
+        raise ValueError(
+            f"No benchmark tasks match category '{task_category}' in suite '{suite_name}'. "
+            "Verify LIBERO_VARIANT=plus."
+        )
+    logger.info(
+        f"Category filter '{task_category}': {len(indices)} tasks selected "
+        f"out of {len(task_names)} in '{suite_name}'."
+    )
+    return indices
+
+
+def aggregate_by_category(
+    task_names: List[str],
+    successes: List[float],
+    suite_name: str,
+) -> Dict[str, float]:
+    """Average success rate per LIBERO-Plus perturbation category.
+
+    Returns an empty dict when task_classification.json is absent (e.g. LIBERO_VARIANT=orig).
+    """
+    import libero.libero.benchmark as _bm_mod
+    json_path = os.path.join(os.path.dirname(_bm_mod.__file__), "task_classification.json")
+    if not os.path.exists(json_path):
+        return {}
+
+    with open(json_path) as f:
+        data = json.load(f)
+
+    if suite_name not in data:
+        return {}
+
+    name_to_cat = {entry["name"]: entry["category"] for entry in data[suite_name]}
+    cat_srs: Dict[str, List[float]] = {}
+    for name, sr in zip(task_names, successes):
+        cat = name_to_cat.get(name)
+        if cat:
+            cat_srs.setdefault(cat, []).append(sr)
+
+    return {cat: sum(srs) / len(srs) for cat, srs in cat_srs.items()}
+
+
 def get_log_dir(log_dir):
     if log_dir is not None:
         log_dir = Path(log_dir)
@@ -113,15 +201,10 @@ class EvaluateLibero:
         self.descriptions = []
         self.create_cfg_for_libero(self.task_embedding_format)
         for i in range(self.num_tasks):
-
-            task_i = self.benchmark_instance.get_task(0)
-
-            self.init_states_paths.append(
-                os.path.join(self.init_states_folder, self.task_names[i], task_i.init_states_file)
-            )
             self.descriptions.append(self.benchmark_instance.get_task(i).language)
+        with torch.no_grad():
             task_embs = get_task_embs(self.cfg, self.descriptions)
-            self.benchmark_instance.set_task_embs(task_embs)
+        self.benchmark_instance.set_task_embs(task_embs)
 
         # task_indices restricts which tasks this instance evaluates (used for multi-GPU).
         if task_indices is not None:
@@ -134,24 +217,24 @@ class EvaluateLibero:
             self.eval_sequences = get_sequences(self.num_sequences)
             self.benchmark = get_benchmark(self.benchmark_name)(self.eval_sequences)
 
-    def start(self) -> None:
+    def start(self) -> List[float]:
         successes = self.evaluate_policy(self.model, store_video=self.num_videos)
-        
+
         result_array = sum(successes) / len(successes)
-        
-        # Fix: Use colon instead of comma for dictionary
-        wandb.log({"eval_lh/avg_seq_len": torch.tensor(result_array)})
-        
-        for success, task_name in zip(successes, self.task_names):
-            wandb.log({f"eval_lh/sr_{task_name}": success})
-            
+        evaluated_names = [self.task_names[idx] for idx in self.all_tasks]
+
+        if wandb.run is not None:
+            wandb.log({"eval_lh/avg_seq_len": torch.tensor(result_array)})
+            for success, task_name in zip(successes, evaluated_names):
+                wandb.log({f"eval_lh/sr_{task_name}": success})
+
         logger.info(f"eval_lh/avg_seq_len success rate {torch.tensor(result_array)}")
-        
-        for success, task_name in zip(successes, self.task_names):
+        for success, task_name in zip(successes, evaluated_names):
             logger.info(f"eval_lh/sr_{task_name} with success {success}")
-        
+
         print('done')
         print()
+        return successes
 
     def evaluate_policy(self, model, store_video=False):
         successes = []
@@ -283,7 +366,7 @@ class EvaluateLibero:
 
     def create_cfg_for_libero(self, task_embedding_format):
         self.cfg = DictConfig({'task_embedding_format': task_embedding_format,
-                               'data': {'max_word_len': 25}})
+                               'data': {'max_word_len': 77}})
 
         self.cfg.policy = OmegaConf.create()
         self.cfg.policy.language_encoder = OmegaConf.create()
@@ -505,6 +588,8 @@ def main(cfg):
     log_dir = get_log_dir(cfg.log_dir)
     transforms = hydra.utils.instantiate(dm.transforms)
 
+    task_category: Optional[str] = OmegaConf.select(cfg, "task_category", default=None)
+
     eval_libero = EvaluateLibero(
         model=model,
         transforms=transforms,
@@ -519,6 +604,11 @@ def main(cfg):
         eval_batch_size=cfg.eval_batch_size,
     )
 
+    # Apply per-category filter (no-op when task_category is None or LIBERO_VARIANT=orig).
+    task_subset = select_task_indices(eval_libero.benchmark_instance, task_category)
+    if task_subset is not None:
+        eval_libero.all_tasks = task_subset
+
     if cfg.log_wandb:
         os.makedirs(log_dir / "wandb", exist_ok=False)
         run = wandb.init(
@@ -532,10 +622,22 @@ def main(cfg):
     if n_gpus <= 1:
         # Single-GPU path: all tasks on one GPU
         eval_libero.setup()
-        eval_libero.start()
+        successes = eval_libero.start()
+
+        # Per-category breakdown (LIBERO-Plus only; no-op for orig).
+        evaluated_names = [eval_libero.task_names[idx] for idx in eval_libero.all_tasks]
+        cat_results = aggregate_by_category(
+            evaluated_names, successes, eval_libero.benchmark_instance.name
+        )
+        if cat_results:
+            print("\nPer-category success rates:")
+            for cat, sr in sorted(cat_results.items()):
+                print(f"  {cat}: {sr:.4f}")
+                if cfg.log_wandb:
+                    wandb.log({f"eval_lh/cat_{cat.replace(' ', '_').lower()}": sr})
     else:
         # Multi-GPU path: partition tasks across workers, one process per GPU.
-        all_tasks = list(range(eval_libero.benchmark_instance.n_tasks))
+        all_tasks = eval_libero.all_tasks  # already filtered by task_subset above
         task_splits: List[List[int]] = [[] for _ in range(n_gpus)]
         for i, idx in enumerate(all_tasks):
             task_splits[i % n_gpus].append(idx)
@@ -572,15 +674,29 @@ def main(cfg):
                 all_results.update(json.load(f))
 
         task_names = eval_libero.task_names
+        evaluated_names = [task_names[idx] for idx in all_tasks]
         successes = [all_results[str(idx)] for idx in all_tasks]
         result_array = sum(successes) / len(successes)
 
-        wandb.log({"eval_lh/avg_seq_len": torch.tensor(result_array)})
-        for success, task_name in zip(successes, task_names):
-            wandb.log({f"eval_lh/sr_{task_name}": success})
+        if wandb.run is not None:
+            wandb.log({"eval_lh/avg_seq_len": torch.tensor(result_array)})
+            for success, task_name in zip(successes, evaluated_names):
+                wandb.log({f"eval_lh/sr_{task_name}": success})
         logger.info(f"eval_lh/avg_seq_len success rate {torch.tensor(result_array)}")
-        for success, task_name in zip(successes, task_names):
+        for success, task_name in zip(successes, evaluated_names):
             print(f"Task {task_name} success rate: {success:.4f}")
+
+        # Per-category breakdown (LIBERO-Plus only; no-op for orig).
+        cat_results = aggregate_by_category(
+            evaluated_names, successes, eval_libero.benchmark_instance.name
+        )
+        if cat_results:
+            print("\nPer-category success rates:")
+            for cat, sr in sorted(cat_results.items()):
+                print(f"  {cat}: {sr:.4f}")
+                if wandb.run is not None:
+                    wandb.log({f"eval_lh/cat_{cat.replace(' ', '_').lower()}": sr})
+
         print('done')
 
     if cfg.log_wandb:

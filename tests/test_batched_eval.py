@@ -1,5 +1,5 @@
 """
-Tests for batched eval rollout (eval_batch_size > 1).
+Tests for batched eval rollout and LIBERO-Plus category filtering.
 
 These tests exercise the new code paths without loading Florence-2 or MuJoCo:
   1. flower.py forward() lang_text dispatch (str vs list)
@@ -7,6 +7,9 @@ These tests exercise the new code paths without loading Florence-2 or MuJoCo:
   3. EvaluateLibero.process_env_obs_batch stacks B observations into [B, 1, C, H, W]
 """
 
+import json
+import os
+import tempfile
 import numpy as np
 import torch
 import pytest
@@ -219,3 +222,153 @@ def test_process_env_obs_batch_values_match_single():
             assert torch.allclose(batch_slice, single_val), (
                 f"Batch slice {k} differs from single-obs result for {key}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 4. LIBERO-Plus: select_task_indices and aggregate_by_category
+# ---------------------------------------------------------------------------
+
+# Fixture task_classification.json used in all Plus tests.
+_FIXTURE_JSON = {
+    "libero_10": [
+        {"id": 1, "name": "task_a_table_1", "category": "Background Textures", "difficulty_level": 1},
+        {"id": 2, "name": "task_a_view_1",  "category": "Camera Viewpoints",   "difficulty_level": 2},
+        {"id": 3, "name": "task_b_table_1", "category": "Background Textures", "difficulty_level": 1},
+        {"id": 4, "name": "task_b_add_1",   "category": "Objects Layout",      "difficulty_level": 3},
+        {"id": 5, "name": "task_c_light_1", "category": "Light Conditions",    "difficulty_level": 2},
+    ]
+}
+_ALL_TASK_NAMES = [e["name"] for e in _FIXTURE_JSON["libero_10"]]
+
+
+def _make_fake_benchmark(suite_name="libero_10", names=None):
+    """Return a mock benchmark_instance with .name and .get_task_names()."""
+    bm = MagicMock()
+    bm.name = suite_name
+    bm.get_task_names.return_value = names if names is not None else list(_ALL_TASK_NAMES)
+    return bm
+
+
+@pytest.fixture()
+def classification_json(tmp_path):
+    """Write fixture JSON to a temp file; return its path."""
+    p = tmp_path / "task_classification.json"
+    p.write_text(json.dumps(_FIXTURE_JSON))
+    return str(p)
+
+
+def _patch_json_path(monkeypatch, json_path):
+    """Patch select_task_indices to find the fixture JSON via libero.libero.benchmark.__file__."""
+    import flower.evaluation.flower_eval_libero as fef
+    # Point the module-level lookup at our temp file directory.
+    fake_bm_mod = MagicMock()
+    fake_bm_mod.__file__ = str(os.path.join(os.path.dirname(json_path), "__init__.py"))
+    monkeypatch.setattr("flower.evaluation.flower_eval_libero.select_task_indices.__module__",
+                        "flower.evaluation.flower_eval_libero", raising=False)
+    return fake_bm_mod
+
+
+class TestSelectTaskIndices:
+    def test_none_category_returns_none(self):
+        """task_category=None means 'all tasks' → returns None (no filter)."""
+        from flower.evaluation.flower_eval_libero import select_task_indices
+        bm = _make_fake_benchmark()
+        result = select_task_indices(bm, task_category=None)
+        assert result is None
+
+    def test_filters_to_matching_category(self, tmp_path):
+        """Returns exactly the indices of tasks with the given category."""
+        from flower.evaluation.flower_eval_libero import select_task_indices
+
+        json_path = tmp_path / "task_classification.json"
+        json_path.write_text(json.dumps(_FIXTURE_JSON))
+
+        bm = _make_fake_benchmark()
+        with patch("libero.libero.benchmark.__file__",
+                   str(tmp_path / "__init__.py"), create=True):
+            import libero.libero.benchmark as bm_mod
+            orig_file = bm_mod.__file__
+            bm_mod.__file__ = str(tmp_path / "__init__.py")
+            try:
+                result = select_task_indices(bm, task_category="Background Textures")
+            finally:
+                bm_mod.__file__ = orig_file
+
+        # task_a_table_1 (idx=0) and task_b_table_1 (idx=2) are Background Textures
+        assert sorted(result) == [0, 2]
+
+    def test_unknown_category_raises(self, tmp_path):
+        """Unknown category raises ValueError with helpful message."""
+        from flower.evaluation.flower_eval_libero import select_task_indices
+
+        json_path = tmp_path / "task_classification.json"
+        json_path.write_text(json.dumps(_FIXTURE_JSON))
+
+        bm = _make_fake_benchmark()
+        import libero.libero.benchmark as bm_mod
+        orig_file = bm_mod.__file__
+        bm_mod.__file__ = str(tmp_path / "__init__.py")
+        try:
+            with pytest.raises(ValueError, match="not found"):
+                select_task_indices(bm, task_category="Nonexistent Category")
+        finally:
+            bm_mod.__file__ = orig_file
+
+    def test_missing_json_raises_file_not_found(self, tmp_path):
+        """FileNotFoundError when task_classification.json doesn't exist."""
+        from flower.evaluation.flower_eval_libero import select_task_indices
+
+        bm = _make_fake_benchmark()
+        import libero.libero.benchmark as bm_mod
+        orig_file = bm_mod.__file__
+        bm_mod.__file__ = str(tmp_path / "__init__.py")  # no json written
+        try:
+            with pytest.raises(FileNotFoundError):
+                select_task_indices(bm, task_category="Background Textures")
+        finally:
+            bm_mod.__file__ = orig_file
+
+
+class TestAggregateByCategory:
+    def _run(self, tmp_path, names, successes):
+        from flower.evaluation.flower_eval_libero import aggregate_by_category
+
+        json_path = tmp_path / "task_classification.json"
+        json_path.write_text(json.dumps(_FIXTURE_JSON))
+
+        import libero.libero.benchmark as bm_mod
+        orig_file = bm_mod.__file__
+        bm_mod.__file__ = str(tmp_path / "__init__.py")
+        try:
+            return aggregate_by_category(names, successes, suite_name="libero_10")
+        finally:
+            bm_mod.__file__ = orig_file
+
+    def test_categories_averaged_correctly(self, tmp_path):
+        """Each category averages its member task success rates."""
+        names = _ALL_TASK_NAMES  # 5 tasks
+        successes = [1.0, 0.0, 0.5, 1.0, 0.0]
+        result = self._run(tmp_path, names, successes)
+        # Background Textures: task_a_table_1=1.0, task_b_table_1=0.5 → avg 0.75
+        assert abs(result["Background Textures"] - 0.75) < 1e-6
+        # Camera Viewpoints: task_a_view_1=0.0 → 0.0
+        assert abs(result["Camera Viewpoints"] - 0.0) < 1e-6
+        # Objects Layout: task_b_add_1=1.0 → 1.0
+        assert abs(result["Objects Layout"] - 1.0) < 1e-6
+        # Light Conditions: task_c_light_1=0.0 → 0.0
+        assert abs(result["Light Conditions"] - 0.0) < 1e-6
+
+    def test_missing_json_returns_empty(self, tmp_path):
+        """Returns empty dict when task_classification.json is absent (orig variant)."""
+        from flower.evaluation.flower_eval_libero import aggregate_by_category
+
+        import libero.libero.benchmark as bm_mod
+        orig_file = bm_mod.__file__
+        bm_mod.__file__ = str(tmp_path / "__init__.py")  # no json written
+        try:
+            result = aggregate_by_category(
+                _ALL_TASK_NAMES, [1.0] * len(_ALL_TASK_NAMES), suite_name="libero_10"
+            )
+        finally:
+            bm_mod.__file__ = orig_file
+        assert result == {}

@@ -272,6 +272,79 @@ FLOWER achieves strong performance across all LIBERO benchmarks:
 | LIBERO-GOAL | 96.9% | 
 
 
+## LIBERO-Plus Robustness Evaluation
+
+[LIBERO-Plus](https://github.com/sylvestf/LIBERO-plus) ([paper](https://huggingface.co/papers/2510.13626))
+extends the LIBERO benchmark with **10,030 perturbed task instances** across 7 categories to measure
+VLA robustness. Its key finding: VLA models collapse from ~95% to <30% under modest perturbations
+and largely ignore language instructions.
+
+We integrate LIBERO-Plus as a side-by-side submodule, enabling direct comparison of the baseline
+and modality-dropout models under controlled perturbations.
+
+### Setup
+
+```bash
+# 1. Download the baseline checkpoint (if not already done)
+./run.sh download
+
+# 2. Download LIBERO-Plus simulation assets (~several GB, one-time)
+./run.sh download-plus
+
+# 3. Build the image (if not already built)
+./run.sh build
+```
+
+### Running the two-model comparison
+
+Let `CKPT_BASE=/saves/checkpoints/libero_10` (baseline) and
+`CKPT_DROP=/saves/train_logs/libero_10_dropout/<run>/saved_models/<best.ckpt>` (dropout model).
+
+**A. Baseline LIBERO-10 (original 10 tasks, n_eval=20):**
+```bash
+./run.sh eval train_folder=$CKPT_BASE checkpoint=$CKPT_BASE
+./run.sh eval train_folder=$CKPT_DROP checkpoint=$CKPT_DROP
+```
+
+**B. LIBERO-Plus — per perturbation category (n_eval=1 per task):**
+```bash
+# Run a single category (faster, useful for spot-checking):
+./run.sh eval-plus task_category="Camera Viewpoints" checkpoint=$CKPT_BASE
+./run.sh eval-plus task_category="Camera Viewpoints" checkpoint=$CKPT_DROP
+
+# Run all categories at once (multi-GPU recommended; set CUDA_VISIBLE_DEVICES in vars.env):
+./run.sh eval-plus checkpoint=$CKPT_BASE
+./run.sh eval-plus checkpoint=$CKPT_DROP
+```
+
+> **Memory note:** always keep `n_eval=1` for LIBERO-Plus. Each Plus task is one
+> deterministic perturbed instance, so higher values add no new perturbations.
+> More importantly, MuJoCo/robosuite offscreen render contexts don't fully free
+> native EGL/GL memory on `env.close()`, so peak RSS grows monotonically with
+> the total env create/destroy cycle count:
+> `n_tasks × ceil(n_eval / eval_batch_size)`.
+> With `n_eval=50` and 419 Camera-Viewpoint tasks that is ~20,950 instantiations,
+> which OOMs under the 64 GB container cap (`MEM_LIMIT` in `vars.env`).
+> If a full 2519-task run approaches the cap, split it by category (as above)
+> or use multi-GPU (`CUDA_VISIBLE_DEVICES=2,3`) so each spawned worker process
+> releases its address space on exit.
+
+**Perturbation categories** (pass as `task_category="<name>"`):
+
+| Category | Description |
+|---|---|
+| `Background Textures` | Table/wall surface variations |
+| `Camera Viewpoints` | Camera angle and position shifts |
+| `Robot Initial States` | Different robot arm start configurations |
+| `Language Instructions` | Paraphrased task descriptions |
+| `Light Conditions` | Lighting intensity and direction changes |
+| `Objects Layout` | Additional distractor objects in the scene |
+| `Sensor Noise` | Simulated image noise |
+
+Each category reports a per-category average success rate (`eval_lh/cat_<category>`).
+The hypothesis is that the modality-dropout model degrades less, especially on `Language Instructions`
+(where LIBERO-Plus shows standard VLAs regress to pure visuomotor control).
+
 #### Common Issues
 
 Sometimes this causes problems for the python env so just delete it:

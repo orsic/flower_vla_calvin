@@ -51,7 +51,15 @@ RUN python -m pip install --no-cache-dir "setuptools==57.5.0" \
     && cd /tmp/pyhash-0.9.3 && python setup.py build && python setup.py install \
     && python -m pip install --no-cache-dir "setuptools>=68"
 
-# ----- layer 5: pin numpy last -----
+# ----- layer 5: LIBERO-Plus extra deps -----
+# wand (Python ImageMagick binding) is imported by LIBERO-plus/libero/libero/envs/env_wrapper.py
+# for camera-viewpoint perturbations. libmagickwand-dev is the system library it wraps.
+# scikit-image is also listed in LIBERO-plus/extra_requirements.txt.
+RUN apt-get update && apt-get install -y --no-install-recommends libmagickwand-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir "wand" "scikit-image"
+
+# ----- layer 6: pin numpy last -----
 # LIBERO and robomimic need numpy 1.23.x; pinning last prevents later installs
 # from bumping it back up.
 RUN python -m pip install --no-cache-dir "numpy~=1.23"
