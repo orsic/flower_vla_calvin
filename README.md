@@ -352,7 +352,9 @@ noise id, etc. — in this name; no separate columns), `task_category` /
 `difficulty_level` (LIBERO-Plus only), `language` (the exact instruction fed to the
 model), `init_state_idx`, `rollout_seed`, `num_sampling_steps`, `multistep`,
 `eval_batch_size`, and the three modality flags `use_rgb_static`, `use_rgb_gripper`,
-`use_language` (currently always `1` — see the note below). Result columns are `success`
+`use_language`. These three are part of the row's merge key (see below), so evaluating
+the same task/episode/checkpoint under a different modality combo adds a new row
+instead of overwriting the previous combo's result. Result columns are `success`
 (0/1) and `steps_taken`.
 
 **Reproducibility:** the model draws one shared flow-matching noise tensor for an entire
@@ -364,10 +366,29 @@ glass_blur corruption (noise ids 1-10, 31-40, 41-50) call unseeded `np.random` o
 rendered frame inside the vendored env, so those specific episodes are not bit-exact
 reproducible even with a matching seed; gaussian_blur/zoom_blur (ids 11-30) are unaffected.
 
-**Modality columns are record-only for now.** They reflect `eval_modalities` in
-`conf/eval_libero.yaml` / `conf/eval_libero_plus.yaml`, but eval-time modality masking
-(actually dropping the static view, wrist view, or language at inference) is not
-implemented yet — this is schema preparation for that ablation.
+**Modality-ablation eval.** `eval_modalities` in `conf/eval_libero.yaml` /
+`conf/eval_libero_plus.yaml` is functional: setting any of `rgb_static`,
+`rgb_gripper`, `language` to `False` physically removes that modality's tokens
+pre-encoder (mirroring how `train-dropout` trains, but with a fixed on/off group
+instead of Dirichlet-sampled proportions — see `FLOWERVLA.eval_modality_mask` in
+`flower/models/flower.py`, `deterministic_keep_counts` in
+`flower/models/networks/modality_dropout.py`). At least one modality must stay on.
+This works on any checkpoint, not just `train-dropout` ones — it's how you'd test
+whether *any* model degrades gracefully when a modality is missing. Example, dropping
+language on the dropout checkpoint:
+```bash
+./run.sh eval train_folder=$CKPT_DROP checkpoint=$CKPT_DROP/seed_42/saved_models/last.ckpt \
+  eval_modalities.language=False
+```
+Compare modality combos — either within one checkpoint's own `result.csv` or across
+two different checkpoints' files — with `scripts/compare_eval_csvs.py`, which takes
+`--modalities-a`/`--modalities-b` (each a comma-separated subset of
+`static,wrist,lang`, default all three):
+```bash
+python scripts/compare_eval_csvs.py $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv \
+                                     $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv \
+  --modalities-a static,wrist,lang --modalities-b lang
+```
 
 **Perturbation categories** (pass as `task_category="<name>"`):
 

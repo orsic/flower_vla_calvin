@@ -33,6 +33,7 @@ from flower.models.networks.modality_dropout import (
     sample_token_budget,
     build_keep_indices,
     position_correct,
+    deterministic_keep_counts,
 )
 from flower.utils.lr_schedulers.tri_stage_scheduler import TriStageLRScheduler
 from flower.callbacks.ema import EMA
@@ -122,6 +123,12 @@ class FLOWERVLA(pl.LightningModule):
             modality_dropout_alphas=modality_dropout_alphas,
         )
         self.obs_modalities = []
+        # Eval-time modality mask: None (default) = unchanged behavior. When set to a
+        # (keep_static, keep_wrist, keep_language) bool 3-tuple, encode_observations
+        # deterministically drops the withheld groups' tokens, mirroring the
+        # modality_dropout training path but without Dirichlet sampling. Orthogonal to
+        # self.modality_dropout — usable on any checkpoint, set by the eval script.
+        self.eval_modality_mask: Optional[Tuple[bool, bool, bool]] = None
         # Initialize model dimensions
         self._init_dimensions(
             dit_dim=dit_dim,
@@ -756,28 +763,34 @@ class FLOWERVLA(pl.LightningModule):
         # Prompt is at index Ns+Nw (after both image groups).
         prompt_idx = Ns + Nw
 
-        if self.modality_dropout and self.training:
-            # --- Per-sample Dirichlet token-budget sampling + physical removal ---
-            # Group spans: static [0, Ns), wrist [Ns, Ns+Nw), language [Ns+Nw+1, Ns+Nw+1+Lt)
-            # (prompt_idx = Ns+Nw is excluded from groups; always kept separately)
-            lang_start = prompt_idx + 1  # first text token absolute index
-            group_spans = [
-                (0, Ns),
-                (Ns, Ns + Nw) if Nw > 0 else (0, 0),
-                (lang_start, lang_start + Lt),
-            ]
+        # Group spans: static [0, Ns), wrist [Ns, Ns+Nw), language [Ns+Nw+1, Ns+Nw+1+Lt)
+        # (prompt_idx = Ns+Nw is excluded from groups; always kept separately). Shared
+        # by both the training-dropout path and the eval-mask path below.
+        lang_start = prompt_idx + 1  # first text token absolute index
+        group_spans = [
+            (0, Ns),
+            (Ns, Ns + Nw) if Nw > 0 else (0, 0),
+            (lang_start, lang_start + Lt),
+        ]
+
+        use_eval_mask = self.eval_modality_mask is not None and not self.training
+        if (self.modality_dropout and self.training) or use_eval_mask:
+            # --- Physical pre-encoder token removal (training-Dirichlet or eval-mask) ---
             # Available tokens per group per sample (language limited by real length).
             avail = torch.zeros(B, 3, dtype=torch.long, device=device)
             avail[:, 0] = Ns
             avail[:, 1] = Nw
             avail[:, 2] = text_mask.sum(dim=1)  # non-pad language tokens
 
-            alphas = torch.tensor(
-                list(self.modality_dropout_alphas), dtype=torch.float, device=device
-            )
-            kept_counts = sample_token_budget(
-                avail, self.modality_dropout_keep_fraction, alphas
-            )  # [B, 3]
+            if use_eval_mask:
+                kept_counts = deterministic_keep_counts(avail, self.eval_modality_mask)
+            else:
+                alphas = torch.tensor(
+                    list(self.modality_dropout_alphas), dtype=torch.float, device=device
+                )
+                kept_counts = sample_token_budget(
+                    avail, self.modality_dropout_keep_fraction, alphas
+                )  # [B, 3]
 
             lang_valid_len = text_mask.sum(dim=1).long()  # [B]
             keep_indices = build_keep_indices(

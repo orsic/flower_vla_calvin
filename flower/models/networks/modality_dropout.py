@@ -10,6 +10,8 @@ after the encoder's internal arange re-add.
 
 from __future__ import annotations
 
+from typing import Sequence
+
 import torch
 from torch import LongTensor, Tensor
 from torch.distributions import Dirichlet
@@ -85,6 +87,27 @@ def sample_token_budget(
         counts[b] = c
 
     return counts
+
+
+def deterministic_keep_counts(avail: LongTensor, keep_mask: Sequence[bool]) -> LongTensor:
+    """
+    Eval-time counterpart to `sample_token_budget`: keep a group entirely or drop it
+    entirely, per a fixed 3-tuple, instead of drawing a Dirichlet budget.
+
+    Rectangularity (constant total across the batch, required by `build_keep_indices`)
+    is the caller's responsibility here — it holds automatically when `avail[:, g]` is
+    itself constant across the batch for every kept group `g` (true for LIBERO eval,
+    where one batch is always one task's episodes sharing an identical instruction).
+
+    Args:
+        avail: [B, 3] available tokens per group.
+        keep_mask: length-3 sequence of bools, one per group (static, wrist, language).
+
+    Returns:
+        counts: [B, 3] int64 tensor — `avail` where kept, 0 where dropped.
+    """
+    mask = torch.tensor([1 if m else 0 for m in keep_mask], dtype=avail.dtype, device=avail.device)
+    return avail * mask.unsqueeze(0)
 
 
 def build_keep_indices(

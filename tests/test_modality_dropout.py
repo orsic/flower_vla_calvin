@@ -16,6 +16,7 @@ from flower.models.networks.modality_dropout import (
     sample_token_budget,
     build_keep_indices,
     position_correct,
+    deterministic_keep_counts,
 )
 
 
@@ -118,6 +119,47 @@ class TestBudget:
         assert indices.shape[1] == expected_K, (
             f"expected K={expected_K}, got {indices.shape[1]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 1b: deterministic_keep_counts (eval-time full-group in/out masking)
+# ---------------------------------------------------------------------------
+
+class TestDeterministicKeepCounts:
+    def test_full_keep_returns_avail_unchanged(self):
+        avail = make_avail()
+        counts = deterministic_keep_counts(avail, [True, True, True])
+        assert torch.equal(counts, avail)
+
+    def test_full_drop_returns_zeros(self):
+        avail = make_avail()
+        counts = deterministic_keep_counts(avail, [False, False, False])
+        assert (counts == 0).all()
+
+    def test_mixed_mask_zeros_only_dropped_groups(self):
+        avail = make_avail()
+        counts = deterministic_keep_counts(avail, [True, False, True])
+        assert torch.equal(counts[:, 0], avail[:, 0])
+        assert (counts[:, 1] == 0).all()
+        assert torch.equal(counts[:, 2], avail[:, 2])
+
+    def test_output_shape(self):
+        avail = make_avail()
+        counts = deterministic_keep_counts(avail, [True, False, True])
+        assert counts.shape == (B, 3)
+
+    def test_usable_with_build_keep_indices(self):
+        """Feeding deterministic counts through the same downstream path as training."""
+        avail = make_avail()
+        counts = deterministic_keep_counts(avail, [True, False, True])  # drop wrist
+        indices = build_keep_indices(
+            make_group_spans(), counts, make_lang_valid_len(), PROMPT_IDX
+        )
+        for b in range(B):
+            sel = set(indices[b].tolist())
+            assert any(i < NS for i in sel), "static tokens missing"
+            assert not any(NS <= i < NS + NW for i in sel), "wrist tokens present despite drop"
+            assert PROMPT_IDX in sel
 
 
 # ---------------------------------------------------------------------------

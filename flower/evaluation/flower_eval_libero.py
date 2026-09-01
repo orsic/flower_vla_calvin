@@ -208,6 +208,23 @@ class EvaluateLibero:
         self.eval_modalities = eval_modalities or {"rgb_static": True, "rgb_gripper": True, "language": True}
         self.libero_variant = os.environ.get("LIBERO_VARIANT", "orig")
 
+        # Physically withhold modalities at inference (see FLOWERVLA.eval_modality_mask).
+        # Full-modality (the default) leaves the model's mask at None, so today's
+        # already-verified numbers are reproduced exactly — this only activates when a
+        # combo omits at least one modality.
+        modality_tuple = (
+            bool(self.eval_modalities.get("rgb_static", True)),
+            bool(self.eval_modalities.get("rgb_gripper", True)),
+            bool(self.eval_modalities.get("language", True)),
+        )
+        if not any(modality_tuple):
+            raise ValueError(
+                "eval_modalities: at least one modality must be enabled "
+                f"(got all-False: {self.eval_modalities})"
+            )
+        if not all(modality_tuple):
+            self.model.eval_modality_mask = modality_tuple
+
         self.device = device
         self.task_order = 0
         self.bddl_folder = get_libero_path("bddl_files")

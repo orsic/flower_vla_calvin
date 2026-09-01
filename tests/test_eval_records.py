@@ -16,7 +16,10 @@ from flower.evaluation.eval_records import (
 )
 
 
-def _row(task_idx, episode_idx, success, checkpoint_name_="last", variant="orig", suite="libero_10"):
+def _row(
+    task_idx, episode_idx, success, checkpoint_name_="last", variant="orig", suite="libero_10",
+    use_rgb_static=1, use_rgb_gripper=1, use_language=1,
+):
     row = {col: "" for col in ALL_COLUMNS}
     row.update(
         libero_variant=variant,
@@ -24,6 +27,9 @@ def _row(task_idx, episode_idx, success, checkpoint_name_="last", variant="orig"
         task_idx=task_idx,
         episode_idx=episode_idx,
         checkpoint_name=checkpoint_name_,
+        use_rgb_static=use_rgb_static,
+        use_rgb_gripper=use_rgb_gripper,
+        use_language=use_language,
         success=success,
     )
     return row
@@ -117,6 +123,25 @@ def test_merge_rows_unrelated_prior_rows_survive():
     merged = merge_rows(category_a, category_b)
     assert len(merged) == 3
     assert {row["task_idx"] for row in merged} == {0, 1, 2}
+
+
+def test_merge_rows_different_modality_combo_does_not_collide():
+    """Same task/episode/checkpoint under a different modality combo is a new row."""
+    full = [_row(0, 0, success=1, use_rgb_static=1, use_rgb_gripper=1, use_language=1)]
+    static_only = [_row(0, 0, success=0, use_rgb_static=1, use_rgb_gripper=0, use_language=0)]
+    merged = merge_rows(full, static_only)
+    assert len(merged) == 2
+    successes = {(r["use_rgb_gripper"], r["use_language"]): r["success"] for r in merged}
+    assert successes[(1, 1)] == 1
+    assert successes[(0, 0)] == 0
+
+
+def test_merge_rows_same_modality_combo_still_overwrites():
+    existing = [_row(0, 0, success=0, use_rgb_gripper=0, use_language=0)]
+    rerun = [_row(0, 0, success=1, use_rgb_gripper=0, use_language=0)]
+    merged = merge_rows(existing, rerun)
+    assert len(merged) == 1
+    assert merged[0]["success"] == 1
 
 
 # ---------------------------------------------------------------------------

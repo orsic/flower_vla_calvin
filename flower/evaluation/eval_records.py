@@ -14,12 +14,18 @@ from pathlib import Path
 from typing import Dict, List, Union
 
 # Columns that together identify one episode. Used as the merge/dedup key.
+# The three use_* modality flags are part of the key so that evaluating the same
+# task/episode/checkpoint under a different modality combo adds a new row instead of
+# overwriting the previous combo's result.
 KEY_COLUMNS = [
     "libero_variant",
     "suite",
     "task_idx",
     "episode_idx",
     "checkpoint_name",
+    "use_rgb_static",
+    "use_rgb_gripper",
+    "use_language",
 ]
 
 # Full column order written to CSV.
@@ -40,9 +46,6 @@ ALL_COLUMNS = KEY_COLUMNS + [
     "eval_batch_size",
     "base_seed",
     "rollout_seed",
-    "use_rgb_static",
-    "use_rgb_gripper",
-    "use_language",
     "checkpoint",
     "eval_timestamp",
     "steps_taken",
