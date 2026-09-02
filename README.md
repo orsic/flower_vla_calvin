@@ -92,7 +92,7 @@ A self-contained Podman environment covers building, training, evaluation, and i
 cp vars.env.example vars.env   # fill in DATA_DIR, SAVES_DIR, HF_HOME
 ./run.sh build                 # build flower-vla-eval:latest (~11 GB, cached layers)
 ./run.sh download-pret         # pretrained FlowerVLA checkpoint → /saves/checkpoints/flower_vla_pret/
-./run.sh download-data         # LIBERO-10 HDF5 demos → DATA_DIR/libero_hdf5/
+./run.sh download-data         # LIBERO-10 HDF5 demos → DATA_DIR/libero_hdf5/ (see below for other benchmarks)
 ```
 
 `vars.env` (gitignored) sets host-specific paths:
@@ -106,14 +106,32 @@ cp vars.env.example vars.env   # fill in DATA_DIR, SAVES_DIR, HF_HOME
 ### Commands
 
 ```bash
-./run.sh train           # Fine-tune on LIBERO-10 (GPU count = CUDA_VISIBLE_DEVICES length)
-./run.sh train-frozen    # Ablation: frozen Florence VLM, action expert from random init
-./run.sh train-dropout   # Full fine-tune with Dirichlet modality-token dropout
-./run.sh eval            # LIBERO-10 evaluation (~94.5% target)
-./run.sh shell           # Interactive bash inside the container
-./run.sh smoke           # Quick sanity check (CUDA + imports + 1 env step)
-./run.sh devenv          # Regenerate .devcontainer/.env after editing vars.env
+./run.sh train                        # Fine-tune on LIBERO-10 (GPU count = CUDA_VISIBLE_DEVICES length)
+./run.sh train-frozen                 # Ablation: frozen Florence VLM, action expert from random init
+./run.sh train-dropout [bench]        # Fine-tune with Dirichlet modality-token dropout (default: libero_10)
+./run.sh train-dropout-resume [bench] # Resume train-dropout from CKPT_PATH env var
+./run.sh eval                         # LIBERO-10 evaluation (~94.5% target)
+./run.sh shell                        # Interactive bash inside the container
+./run.sh smoke                        # Quick sanity check (CUDA + imports + 1 env step)
+./run.sh devenv                       # Regenerate .devcontainer/.env after editing vars.env
 ```
+
+**Benchmark selection** — `train-dropout` (and `train-dropout-resume`) accept an optional benchmark
+name as the first positional arg, followed by any Hydra overrides:
+```bash
+./run.sh train-dropout libero_90
+./run.sh train-dropout libero_spatial model.modality_dropout_keep_fraction=0.7
+CKPT_PATH=/saves/.../last.ckpt ./run.sh train-dropout-resume libero_90
+```
+Valid benchmarks: `libero_10`, `libero_90`, `libero_spatial`, `libero_object`, `libero_goal`.
+
+**Downloading hdf5 data for other benchmarks** — `download-data` takes the same benchmark arg,
+or `all` to fetch every suite:
+```bash
+./run.sh download-data libero_90
+./run.sh download-data all   # fetch all suites (~several GB)
+```
+Run `download-data <benchmark>` before training on a suite whose hdf5 files aren't on disk yet.
 
 **GPU selection** — all services use `CUDA_VISIBLE_DEVICES` from `vars.env` (default `0` for eval,
 `0,1,2,3` for training). Override per-run or set in `vars.env`:

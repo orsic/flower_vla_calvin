@@ -78,8 +78,8 @@ services:
         huggingface-cli download mbreuss/flower_vla_pret \
           --local-dir /saves/checkpoints/flower_vla_pret
 
-  # Download LIBERO-10 demonstration hdf5 files from HuggingFace.
-  # Run once before training: ./run.sh download-data
+  # Download LIBERO demonstration hdf5 files from HuggingFace.
+  # Run once before training: ./run.sh download-data [bench|all]  (default: libero_10)
   # Mounts the hdf5 dir writable (base anchor has :ro).
   download-data:
     <<: *base
@@ -157,7 +157,9 @@ services:
   # Full fine-tune with Dirichlet modality-token dropout (3 groups: static/wrist/language).
   # Tokens are physically removed pre-encoder per sample; positions corrected analytically.
   # Rollout eval fires only at the final epoch (rollout_lh_skip_epochs=39).
-  # Prerequisites: same as train (download-pret + download-data).
+  # Benchmark and Hydra overrides are injected by run.sh (train-dropout / train-dropout-resume);
+  # the command: block below is used only when this service is invoked directly (not via run.sh).
+  # Prerequisites: ./run.sh download-pret && ./run.sh download-data [benchmark]
   train-dropout:
     <<: *base
     shm_size: "16g"
@@ -179,7 +181,8 @@ services:
       - "hydra.run.dir=/saves/train_logs/libero_10_dropout/${now:%Y-%m-%d_%H-%M-%S}"
 
   # Resume train-dropout from a PL checkpoint (pass CKPT_PATH env var).
-  # Example: CKPT_PATH=/saves/train_logs/libero_10_dropout/.../last.ckpt ./run.sh train-dropout-resume
+  # Benchmark and Hydra overrides are injected by run.sh; see train-dropout note above.
+  # Example: CKPT_PATH=/saves/train_logs/libero_90_dropout/.../last.ckpt ./run.sh train-dropout-resume libero_90
   train-dropout-resume:
     <<: *base
     shm_size: "16g"

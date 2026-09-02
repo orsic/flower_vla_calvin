@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # Entry point for all podman operations in this repo.
 # Usage:
-#   ./run.sh build              Build the container image (flower-vla-eval:latest)
-#   ./run.sh shell              Interactive bash session inside the container
-#   ./run.sh download           Download the LIBERO-10 eval checkpoint from HuggingFace
-#   ./run.sh download-pret      Download the general pretrained checkpoint (for training)
-#   ./run.sh download-data      Download the LIBERO-10 demo hdf5 files (for training)
-#   ./run.sh train              Fine-tune on LIBERO-10 (~15-22 h, 4 GPUs)
-#   ./run.sh train-frozen       Ablation: frozen Florence VLM, action expert from scratch
-#   ./run.sh eval               Run the LIBERO-10 evaluation
-#   ./run.sh download-plus      Download LIBERO-Plus simulation assets (run once before eval-plus)
-#   ./run.sh eval-plus          Run the LIBERO-Plus robustness evaluation (7 perturbation categories)
-#   ./run.sh smoke              Run the smoke test (verifies env before full eval)
-#   ./run.sh devenv             Regenerate .devcontainer/.env from vars.env (run after editing vars.env)
+#   ./run.sh build                        Build the container image (flower-vla-eval:latest)
+#   ./run.sh shell                        Interactive bash session inside the container
+#   ./run.sh download                     Download the LIBERO-10 eval checkpoint from HuggingFace
+#   ./run.sh download-pret                Download the general pretrained checkpoint (for training)
+#   ./run.sh download-data [bench|all]    Download LIBERO demo hdf5 files (default: libero_10)
+#   ./run.sh train                        Fine-tune on LIBERO-10 (~15-22 h, 4 GPUs)
+#   ./run.sh train-frozen                 Ablation: frozen Florence VLM, action expert from scratch
+#   ./run.sh train-dropout [bench] [...]  Fine-tune with modality-token dropout (default: libero_10)
+#   ./run.sh train-dropout-resume [bench] [...] Resume train-dropout from CKPT_PATH
+#   ./run.sh eval                         Run the LIBERO-10 evaluation
+#   ./run.sh download-plus                Download LIBERO-Plus simulation assets (run once before eval-plus)
+#   ./run.sh eval-plus                    Run the LIBERO-Plus robustness evaluation (7 perturbation categories)
+#   ./run.sh smoke                        Run the smoke test (verifies env before full eval)
+#   ./run.sh devenv                       Regenerate .devcontainer/.env from vars.env (run after editing vars.env)
+#
+# Valid benchmarks: libero_10, libero_90, libero_spatial, libero_object, libero_goal
 #
 # Configure host-specific paths in vars.env (copied from vars.env.example).
 # Shell environment variables take precedence over vars.env values.
@@ -40,6 +44,30 @@ export LIBERO_HDF5_DIR
 CMD="${1:-help}"
 shift || true
 
+# Helper for train-dropout and train-dropout-resume.
+# Optionally takes a LIBERO benchmark as the first positional arg (no "=" = not a Hydra
+# override); all remaining args are appended as Hydra overrides.
+# Valid benchmarks: libero_10 (default), libero_90, libero_spatial, libero_object, libero_goal
+run_dropout_train() {
+    local svc="$1"; shift
+    local bench=libero_10
+    if [[ $# -gt 0 && "$1" != *=* ]]; then bench="$1"; shift; fi
+    podman-compose -f "$COMPOSE" run --rm "$svc" \
+        python flower/training_libero.py \
+        "libero_benchmark=$bench" \
+        "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt" \
+        model.modality_dropout=True \
+        model.modality_dropout_keep_fraction=0.5 \
+        "model.modality_dropout_alphas=[1.0,1.0,1.0]" \
+        rollout_lh_skip_epochs=39 \
+        devices=-1 \
+        log_dir=/saves/train_logs \
+        num_workers=8 \
+        seed=42 \
+        "hydra.run.dir=/saves/train_logs/${bench}_dropout/$(date +%Y-%m-%d_%H-%M-%S)" \
+        "$@"
+}
+
 case "$CMD" in
   build)
     podman build \
@@ -61,7 +89,19 @@ case "$CMD" in
     ;;
 
   download-data)
-    podman-compose -f "$COMPOSE" run --rm download-data
+    # Optional first arg: benchmark name or "all" (default: libero_10).
+    # "all" fetches every suite; a benchmark name fetches only that suite's hdf5 files.
+    local_bench="${1:-libero_10}"
+    if [[ "$local_bench" == "all" ]]; then
+        INCLUDE_ARGS=()
+    else
+        INCLUDE_ARGS=(--include "${local_bench}/*")
+    fi
+    podman-compose -f "$COMPOSE" run --rm download-data \
+        huggingface-cli download yifengzhu-hf/LIBERO-datasets \
+        --repo-type dataset \
+        "${INCLUDE_ARGS[@]}" \
+        --local-dir /libero_hdf5
     ;;
 
   train)
@@ -73,11 +113,17 @@ case "$CMD" in
     ;;
 
   train-dropout)
-    podman-compose -f "$COMPOSE" run --rm train-dropout
+    # Optional: first arg is the benchmark (default libero_10), remaining are Hydra overrides.
+    # Examples:
+    #   ./run.sh train-dropout libero_90
+    #   ./run.sh train-dropout libero_spatial model.modality_dropout_keep_fraction=0.7
+    run_dropout_train train-dropout "$@"
     ;;
 
   train-dropout-resume)
-    podman-compose -f "$COMPOSE" run --rm train-dropout-resume
+    # Resume from CKPT_PATH env var. Optional benchmark arg same as train-dropout.
+    # Example: CKPT_PATH=/saves/.../last.ckpt ./run.sh train-dropout-resume libero_90
+    run_dropout_train train-dropout-resume "$@"
     ;;
 
   eval)
@@ -134,12 +180,20 @@ case "$CMD" in
     echo "  shell              Interactive bash inside the container"
     echo "  download           Download LIBERO-10 eval checkpoint from HuggingFace"
     echo "  download-pret      Download general pretrained checkpoint (for fine-tuning)"
-    echo "  download-data      Download LIBERO-10 demo hdf5 files (for fine-tuning)"
+    echo "  download-data [bench|all]    Download LIBERO demo hdf5 files (default: libero_10)"
+    echo "                               bench: libero_10 | libero_90 | libero_spatial | libero_object | libero_goal"
+    echo "                               all: download every suite"
     echo "  download-plus      Download LIBERO-Plus simulation assets (3D objects/textures)"
     echo "  train              Fine-tune on LIBERO-10, 4 GPUs, ~15-22 h"
     echo "  train-frozen       Ablation: frozen Florence VLM, action expert trained from random init"
-    echo "  train-dropout          Full fine-tune with Dirichlet modality-token dropout (3 groups)"
-    echo "  train-dropout-resume   Resume train-dropout from CKPT_PATH (defaults to epoch-9 ckpt)"
+    echo "  train-dropout [bench] [hydra_overrides...]"
+    echo "                     Fine-tune with Dirichlet modality-token dropout (default: libero_10)"
+    echo "                     bench: libero_10 | libero_90 | libero_spatial | libero_object | libero_goal"
+    echo "                     Example: ./run.sh train-dropout libero_90"
+    echo "                              ./run.sh train-dropout libero_spatial model.modality_dropout_keep_fraction=0.7"
+    echo "  train-dropout-resume [bench] [hydra_overrides...]"
+    echo "                     Resume train-dropout from CKPT_PATH env var"
+    echo "                     Example: CKPT_PATH=/saves/.../last.ckpt ./run.sh train-dropout-resume libero_90"
     echo "  eval               Run LIBERO-10 evaluation (./run.sh download first)"
     echo "  eval-plus          Run LIBERO-Plus robustness eval (./run.sh download-plus first)"
     echo "                     Pass Hydra overrides: task_category=\"Camera Viewpoints\" checkpoint=/saves/..."
