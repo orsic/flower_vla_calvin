@@ -6,7 +6,7 @@
 #   ./run.sh download                     Download the LIBERO-10 eval checkpoint from HuggingFace
 #   ./run.sh download-pret                Download the general pretrained checkpoint (for training)
 #   ./run.sh download-data [bench|all]    Download LIBERO demo hdf5 files (default: libero_10)
-#   ./run.sh train                        Fine-tune on LIBERO-10 (~15-22 h, 4 GPUs)
+#   ./run.sh train [bench] [...]          Fine-tune (default: libero_10, all modalities, ~15-22 h, 4 GPUs)
 #   ./run.sh train-frozen                 Ablation: frozen Florence VLM, action expert from scratch
 #   ./run.sh train-dropout [bench] [...]  Fine-tune with modality-token dropout (default: libero_10)
 #   ./run.sh train-dropout-resume [bench] [...] Resume train-dropout from CKPT_PATH
@@ -43,6 +43,53 @@ export LIBERO_HDF5_DIR
 
 CMD="${1:-help}"
 shift || true
+
+# Short label for the modality combo a `train` invocation's Hydra overrides select, e.g.
+# "model.modalities.language=False" -> "static+wrist". Empty string when all three (or none
+# of the model.modalities.* keys) are overridden, so the default run-dir name is unchanged.
+# Uses the same short names and "+".join(sorted(...)) convention as scripts/compare_eval_csvs.py.
+modality_label() {
+    local static=1 wrist=1 lang=1
+    for arg in "$@"; do
+        case "$arg" in
+            model.modalities.rgb_static=[Ff]*) static=0 ;;
+            model.modalities.rgb_gripper=[Ff]*) wrist=0 ;;
+            model.modalities.language=[Ff]*) lang=0 ;;
+        esac
+    done
+    local parts=()
+    [[ $static == 1 ]] || parts+=(static)
+    [[ $wrist == 1 ]] || parts+=(wrist)
+    [[ $lang == 1 ]] || parts+=(lang)
+    if [[ ${#parts[@]} -eq 0 || ${#parts[@]} -eq 3 ]]; then
+        echo ""
+    else
+        (IFS=+; echo "${parts[*]}")
+    fi
+}
+
+# Helper for train.
+# Optionally takes a LIBERO benchmark as the first positional arg (no "=" = not a Hydra
+# override); all remaining args are appended as Hydra overrides, including any
+# model.modalities.* selecting a fixed modality-ablation combo (default: all three on).
+# Valid benchmarks: libero_10 (default), libero_90, libero_spatial, libero_object, libero_goal
+run_train() {
+    local svc="$1"; shift
+    local bench=libero_10
+    if [[ $# -gt 0 && "$1" != *=* ]]; then bench="$1"; shift; fi
+    local label
+    label="$(modality_label "$@")"
+    podman-compose -f "$COMPOSE" run --rm "$svc" \
+        python flower/training_libero.py \
+        "libero_benchmark=$bench" \
+        "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt" \
+        devices=-1 \
+        log_dir=/saves/train_logs \
+        num_workers=8 \
+        seed=42 \
+        "hydra.run.dir=/saves/train_logs/${bench}${label:+_$label}/$(date +%Y-%m-%d_%H-%M-%S)" \
+        "$@"
+}
 
 # Helper for train-dropout and train-dropout-resume.
 # Optionally takes a LIBERO benchmark as the first positional arg (no "=" = not a Hydra
@@ -105,7 +152,12 @@ case "$CMD" in
     ;;
 
   train)
-    podman-compose -f "$COMPOSE" run --rm train
+    # Optional: first arg is the benchmark (default libero_10), remaining are Hydra overrides.
+    # A fixed modality-ablation combo is selected with model.modalities.* overrides; default
+    # is all three modalities on (identical to previous behavior). Examples:
+    #   ./run.sh train libero_90
+    #   ./run.sh train libero_10 model.modalities.language=False
+    run_train train "$@"
     ;;
 
   train-frozen)
@@ -184,7 +236,12 @@ case "$CMD" in
     echo "                               bench: libero_10 | libero_90 | libero_spatial | libero_object | libero_goal"
     echo "                               all: download every suite"
     echo "  download-plus      Download LIBERO-Plus simulation assets (3D objects/textures)"
-    echo "  train              Fine-tune on LIBERO-10, 4 GPUs, ~15-22 h"
+    echo "  train [bench] [hydra_overrides...]"
+    echo "                     Fine-tune, 4 GPUs, ~15-22 h (default: libero_10, all modalities)"
+    echo "                     bench: libero_10 | libero_90 | libero_spatial | libero_object | libero_goal"
+    echo "                     Fixed modality ablation: model.modalities.rgb_static|rgb_gripper|language=False"
+    echo "                     Example: ./run.sh train libero_90"
+    echo "                              ./run.sh train libero_10 model.modalities.language=False"
     echo "  train-frozen       Ablation: frozen Florence VLM, action expert trained from random init"
     echo "  train-dropout [bench] [hydra_overrides...]"
     echo "                     Fine-tune with Dirichlet modality-token dropout (default: libero_10)"

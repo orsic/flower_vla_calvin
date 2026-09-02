@@ -17,6 +17,7 @@ from flower.models.networks.modality_dropout import (
     build_keep_indices,
     position_correct,
     deterministic_keep_counts,
+    gather_attention_mask,
 )
 
 
@@ -160,6 +161,116 @@ class TestDeterministicKeepCounts:
             assert any(i < NS for i in sel), "static tokens missing"
             assert not any(NS <= i < NS + NW for i in sel), "wrist tokens present despite drop"
             assert PROMPT_IDX in sel
+
+    @pytest.mark.parametrize(
+        "keep_mask",
+        [
+            (True, True, True),
+            (True, True, False),
+            (True, False, True),
+            (False, True, True),
+            (True, False, False),
+            (False, True, False),
+            (False, False, True),
+        ],
+    )
+    def test_all_seven_combos_keep_only_selected_groups(self, keep_mask):
+        avail = make_avail()
+        counts = deterministic_keep_counts(avail, keep_mask)
+        indices = build_keep_indices(
+            make_group_spans(), counts, make_lang_valid_len(), PROMPT_IDX
+        )
+        for b in range(B):
+            sel = set(indices[b].tolist())
+            assert PROMPT_IDX in sel
+            has_static = any(i < NS for i in sel)
+            has_wrist = any(NS <= i < NS + NW for i in sel)
+            has_lang = any(i >= LANG_START for i in sel)
+            assert has_static == keep_mask[0]
+            assert has_wrist == keep_mask[1]
+            assert has_lang == keep_mask[2]
+
+
+# ---------------------------------------------------------------------------
+# Test 1c: fixed-modality-mask path with ragged (per-sample-varying) instruction lengths
+#
+# A training batch mixes tasks, so instructions (and hence non-pad language lengths) differ
+# across the batch — unlike an eval batch, which is always one task's identical instruction.
+# deterministic_keep_counts + build_keep_indices only stay rectangular if avail is constant
+# across the batch for every kept group, so the fixed-mask path must pass the full padded
+# language span (constant by construction), not the per-sample non-pad length.
+# ---------------------------------------------------------------------------
+
+class TestFixedMaskRaggedLanguage:
+    def test_full_span_stays_rectangular_despite_ragged_instructions(self):
+        """The fixed-mask path (flower.py) passes both avail[:, 2] and lang_valid_len as the
+        full padded span LT — constant regardless of each sample's real instruction length —
+        so build_keep_indices stays rectangular; raggedness is handled later by
+        gather_attention_mask instead of by restricting the pool here."""
+        avail = make_avail(lang_valid=LT)  # full padded span
+        counts = deterministic_keep_counts(avail, [True, True, True])
+        lang_valid_len = make_lang_valid_len(LT)  # constant, per the fixed-mask convention
+        indices = build_keep_indices(
+            make_group_spans(), counts, lang_valid_len, PROMPT_IDX
+        )
+        assert indices.shape == (B, NS + NW + LT + 1)
+
+    def test_per_sample_nonpad_length_breaks_rectangularity(self):
+        """The bug this design avoids: feeding the per-sample non-pad length as avail (as the
+        eval-only path did) makes kept_counts[:, 2] vary across the batch when instructions
+        have different lengths, so build_keep_indices cannot build a rectangular tensor."""
+        avail = torch.zeros(B, 3, dtype=torch.long)
+        avail[:, 0] = NS
+        avail[:, 1] = NW
+        avail[:, 2] = torch.tensor([20, 15, 20, 10], dtype=torch.long)  # ragged non-pad length
+        counts = deterministic_keep_counts(avail, [True, True, True])
+        lang_valid_len = avail[:, 2].clone()
+        with pytest.raises(RuntimeError):
+            build_keep_indices(make_group_spans(), counts, lang_valid_len, PROMPT_IDX)
+
+
+# ---------------------------------------------------------------------------
+# Test 1d: gather_attention_mask
+# ---------------------------------------------------------------------------
+
+class TestGatherAttentionMask:
+    def test_masks_out_retained_language_pads(self):
+        """Fixed-mask path: language avail is the full padded span, so retained language
+        indices can land on pad positions — gather_attention_mask must zero those out."""
+        lang_valid = 10  # 10 real tokens + 10 pads within LT=20
+        avail = make_avail(lang_valid=LT)  # fixed-mask convention: full padded span
+        counts = deterministic_keep_counts(avail, [True, True, True])
+        lang_valid_len = torch.full((B,), LT, dtype=torch.long)
+        indices = build_keep_indices(make_group_spans(), counts, lang_valid_len, PROMPT_IDX)
+
+        text_mask = torch.zeros(B, LT, dtype=torch.long)
+        text_mask[:, :lang_valid] = 1
+        seq_len = NS + NW + 1 + LT
+        attn = gather_attention_mask(text_mask, indices, seq_len, LANG_START)
+
+        for b in range(B):
+            for pos, idx in enumerate(indices[b].tolist()):
+                if LANG_START <= idx < LANG_START + LT:
+                    expected = 1 if (idx - LANG_START) < lang_valid else 0
+                    assert attn[b, pos].item() == expected
+                else:
+                    assert attn[b, pos].item() == 1
+
+    def test_all_ones_for_dropout_path(self):
+        """The Dirichlet training-dropout path restricts language selection to non-pad
+        tokens before building keep_indices, so this must reduce to all-ones there."""
+        lang_valid = 10
+        avail = make_avail(lang_valid=lang_valid)  # dropout convention: non-pad length
+        counts = sample_token_budget(avail, KEEP_FRAC, ALPHAS)
+        counts[:, 2] = counts[:, 2].clamp(max=lang_valid)
+        lang_valid_len = torch.full((B,), lang_valid, dtype=torch.long)
+        indices = build_keep_indices(make_group_spans(), counts, lang_valid_len, PROMPT_IDX)
+
+        text_mask = torch.zeros(B, LT, dtype=torch.long)
+        text_mask[:, :lang_valid] = 1
+        seq_len = NS + NW + 1 + LT
+        attn = gather_attention_mask(text_mask, indices, seq_len, LANG_START)
+        assert (attn == 1).all()
 
 
 # ---------------------------------------------------------------------------

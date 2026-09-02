@@ -106,7 +106,7 @@ cp vars.env.example vars.env   # fill in DATA_DIR, SAVES_DIR, HF_HOME
 ### Commands
 
 ```bash
-./run.sh train                        # Fine-tune on LIBERO-10 (GPU count = CUDA_VISIBLE_DEVICES length)
+./run.sh train [bench] [...]          # Fine-tune (default: libero_10, all modalities, GPU count = CUDA_VISIBLE_DEVICES length)
 ./run.sh train-frozen                 # Ablation: frozen Florence VLM, action expert from random init
 ./run.sh train-dropout [bench]        # Fine-tune with Dirichlet modality-token dropout (default: libero_10)
 ./run.sh train-dropout-resume [bench] # Resume train-dropout from CKPT_PATH env var
@@ -116,10 +116,10 @@ cp vars.env.example vars.env   # fill in DATA_DIR, SAVES_DIR, HF_HOME
 ./run.sh devenv                       # Regenerate .devcontainer/.env after editing vars.env
 ```
 
-**Benchmark selection** — `train-dropout` (and `train-dropout-resume`) accept an optional benchmark
-name as the first positional arg, followed by any Hydra overrides:
+**Benchmark selection** — `train` (and `train-dropout` / `train-dropout-resume`) accept an
+optional benchmark name as the first positional arg, followed by any Hydra overrides:
 ```bash
-./run.sh train-dropout libero_90
+./run.sh train libero_90
 ./run.sh train-dropout libero_spatial model.modality_dropout_keep_fraction=0.7
 CKPT_PATH=/saves/.../last.ckpt ./run.sh train-dropout-resume libero_90
 ```
@@ -166,6 +166,45 @@ epoch (rollout_lh_skip_epochs=39). Hyperparameters (model.yaml defaults):
 | `modality_dropout` | `False` | Enable pre-encoder token removal |
 | `modality_dropout_keep_fraction` | `0.5` | Fraction of total tokens to keep per sample |
 | `modality_dropout_alphas` | `[1.0, 1.0, 1.0]` | Dirichlet α for [static, wrist, language] |
+
+### Train-time modality ablation (`train`)
+
+Unlike `train-dropout` (one model exposed to *randomly varying* modality proportions every
+step), a fixed modality-ablation model trains without dropout but only ever observes a fixed
+subset of `{rgb_static, rgb_gripper, language}` — the withheld modalities' tokens are physically
+removed pre-encoder in every forward, exactly like `eval_modalities` masking, but applied at
+training time too. This is set with `model.modalities.*` Hydra overrides on `./run.sh train`:
+
+```bash
+./run.sh train                                    # default: all three modalities
+./run.sh train libero_10 model.modalities.language=False
+./run.sh train libero_10 model.modalities.rgb_static=False model.modalities.rgb_gripper=False
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `modalities.rgb_static` | `True` | Static (scene) view enabled |
+| `modalities.rgb_gripper` | `True` | Wrist view enabled |
+| `modalities.language` | `True` | Language instruction enabled |
+
+At least one modality must stay on (an all-`False` combo raises `ValueError` before any data
+loads), and `model.modalities` is mutually exclusive with `model.modality_dropout=True`.
+
+The run's Hydra directory (and hence its wandb `group`/`name`/`id`, both derived from it — see
+`setup_logger` in `flower/training_libero.py`) is suffixed with the combo's *dropped* modalities,
+joined with `+`, using the same short names (`static`/`wrist`/`lang`) as
+`scripts/compare_eval_csvs.py`:
+
+| Command | Run dir | wandb name |
+|---|---|---|
+| `./run.sh train` | `.../libero_10/<ts>` | `libero_10/<ts>` (unchanged) |
+| `./run.sh train libero_10 model.modalities.language=False` | `.../libero_10_lang/<ts>` | `libero_10_lang/<ts>` |
+| `./run.sh train libero_10 model.modalities.rgb_static=False model.modalities.rgb_gripper=False` | `.../libero_10_static+wrist/<ts>` | `libero_10_static+wrist/<ts>` |
+
+The trained combo is part of the model's saved hyperparameters, so it's restored automatically
+by `load_mode_from_safetensor`/checkpoint loading — evaluating one of these checkpoints with no
+`eval_modalities` override re-applies the same subset it was trained on (see the precedence note
+in "Modality-ablation eval" below).
 
 ### VS Code Devcontainer
 
@@ -392,8 +431,15 @@ instead of Dirichlet-sampled proportions — see `FLOWERVLA.eval_modality_mask` 
 `flower/models/flower.py`, `deterministic_keep_counts` in
 `flower/models/networks/modality_dropout.py`). At least one modality must stay on.
 This works on any checkpoint, not just `train-dropout` ones — it's how you'd test
-whether *any* model degrades gracefully when a modality is missing. Example, dropping
-language on the dropout checkpoint:
+whether *any* model degrades gracefully when a modality is missing.
+
+**Precedence for a fixed-modality-ablation checkpoint** (see "Train-time modality ablation"
+above): the trained combo is restored from the checkpoint and applied automatically, so
+evaluating with no `eval_modalities` override reproduces the same subset it trained on. An
+explicit `eval_modalities=` override still wins — e.g. to probe a `static,wrist`-trained
+checkpoint with language re-added, or with static also dropped.
+
+Example, dropping language on the dropout checkpoint:
 ```bash
 ./run.sh eval train_folder=$CKPT_DROP checkpoint=$CKPT_DROP/seed_42/saved_models/last.ckpt \
   eval_modalities.language=False

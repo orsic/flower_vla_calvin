@@ -96,8 +96,12 @@ def deterministic_keep_counts(avail: LongTensor, keep_mask: Sequence[bool]) -> L
 
     Rectangularity (constant total across the batch, required by `build_keep_indices`)
     is the caller's responsibility here — it holds automatically when `avail[:, g]` is
-    itself constant across the batch for every kept group `g` (true for LIBERO eval,
-    where one batch is always one task's episodes sharing an identical instruction).
+    itself constant across the batch for every kept group `g`. For the language group
+    this means passing the full padded span (`Lt`), not the per-sample non-pad length:
+    it's constant for LIBERO eval (one batch = one task's identical instruction) by
+    coincidence, but not for a training batch that mixes instructions of different
+    lengths — there, pass `Lt` and let the caller's attention mask exclude the pads
+    (see `gather_attention_mask`).
 
     Args:
         avail: [B, 3] available tokens per group.
@@ -208,3 +212,38 @@ def position_correct(
     compact_pos_emb = pos_weight[compact_pos + offset]       # [B, K, D]
 
     return kept_embeds + abs_pos_emb - compact_pos_emb
+
+
+def gather_attention_mask(
+    text_mask: LongTensor,
+    keep_indices: LongTensor,
+    seq_len: int,
+    lang_start: int,
+) -> LongTensor:
+    """
+    Attention mask for a compacted (gathered) sequence: 1 everywhere except retained
+    language pad tokens.
+
+    Needed when a group's kept-count was computed from a span that may include padding
+    (e.g. the fixed-modality-mask path, which uses the full padded language span so that
+    `build_keep_indices` stays rectangular across a batch of differing instruction
+    lengths — see `deterministic_keep_counts`). For the Dirichlet training-dropout path,
+    language is always restricted to non-pad tokens before selection, so this reduces to
+    all-ones there.
+
+    Args:
+        text_mask: [B, Lt] tokenizer attention mask (1 = real token, 0 = pad).
+        keep_indices: [B, K] absolute 0-based token indices in the original sequence.
+        seq_len: length of the original (pre-gather) merged sequence.
+        lang_start: absolute index of the first language token in the original sequence.
+
+    Returns:
+        attention_mask: [B, K] int64 tensor.
+    """
+    B, Lt = text_mask.shape
+    device = text_mask.device
+
+    full_mask = torch.ones(B, seq_len, dtype=text_mask.dtype, device=device)
+    full_mask[:, lang_start:lang_start + Lt] = text_mask
+
+    return torch.gather(full_mask, dim=1, index=keep_indices)

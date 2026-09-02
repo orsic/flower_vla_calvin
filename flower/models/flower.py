@@ -34,6 +34,7 @@ from flower.models.networks.modality_dropout import (
     build_keep_indices,
     position_correct,
     deterministic_keep_counts,
+    gather_attention_mask,
 )
 from flower.utils.lr_schedulers.tri_stage_scheduler import TriStageLRScheduler
 from flower.callbacks.ema import EMA
@@ -97,6 +98,9 @@ class FLOWERVLA(pl.LightningModule):
         modality_dropout: bool = False,
         modality_dropout_keep_fraction: float = 0.5,
         modality_dropout_alphas: tuple = (1.0, 1.0, 1.0),
+
+        # Fixed modality ablation: modalities this model is trained/evaluated on.
+        modalities: DictConfig = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -129,6 +133,27 @@ class FLOWERVLA(pl.LightningModule):
         # modality_dropout training path but without Dirichlet sampling. Orthogonal to
         # self.modality_dropout — usable on any checkpoint, set by the eval script.
         self.eval_modality_mask: Optional[Tuple[bool, bool, bool]] = None
+
+        # Fixed modality ablation: which modalities this model observes, always (not just at
+        # eval). None (all three on) leaves the standard path untouched; otherwise the
+        # withheld groups' tokens are physically removed pre-encoder in every forward.
+        modalities = modalities or {}
+        modality_tuple = (
+            bool(modalities.get("rgb_static", True)),
+            bool(modalities.get("rgb_gripper", True)),
+            bool(modalities.get("language", True)),
+        )
+        if not any(modality_tuple):
+            raise ValueError(
+                f"model.modalities: at least one modality must be enabled (got all-False: {modalities})"
+            )
+        if not all(modality_tuple) and modality_dropout:
+            raise ValueError(
+                "model.modalities and model.modality_dropout are mutually exclusive — "
+                f"got a fixed subset {modality_tuple} together with modality_dropout=True"
+            )
+        self.modality_mask: Optional[Tuple[bool, bool, bool]] = None if all(modality_tuple) else modality_tuple
+
         # Initialize model dimensions
         self._init_dimensions(
             dit_dim=dit_dim,
@@ -773,26 +798,38 @@ class FLOWERVLA(pl.LightningModule):
             (lang_start, lang_start + Lt),
         ]
 
-        use_eval_mask = self.eval_modality_mask is not None and not self.training
-        if (self.modality_dropout and self.training) or use_eval_mask:
-            # --- Physical pre-encoder token removal (training-Dirichlet or eval-mask) ---
-            # Available tokens per group per sample (language limited by real length).
+        # The model's own fixed combo applies always (train + eval); an explicit eval-time
+        # mask (set by the eval script) overrides it for probing a checkpoint off-combo.
+        fixed_mask = self.modality_mask
+        if not self.training and self.eval_modality_mask is not None:
+            fixed_mask = self.eval_modality_mask
+
+        if fixed_mask is not None or (self.modality_dropout and self.training):
+            # --- Physical pre-encoder token removal (fixed-mask or training-Dirichlet) ---
+            # Available tokens per group per sample.
             avail = torch.zeros(B, 3, dtype=torch.long, device=device)
             avail[:, 0] = Ns
             avail[:, 1] = Nw
-            avail[:, 2] = text_mask.sum(dim=1)  # non-pad language tokens
 
-            if use_eval_mask:
-                kept_counts = deterministic_keep_counts(avail, self.eval_modality_mask)
+            if fixed_mask is not None:
+                # Full padded span, not the per-sample non-pad length: build_keep_indices
+                # needs a kept-token count that is constant across the batch, and training
+                # batches mix instructions of different lengths (unlike eval batches, which
+                # are always one task's identical instruction). Retained pad tokens are
+                # excluded by attention_mask below instead of by omission here.
+                avail[:, 2] = Lt
+                kept_counts = deterministic_keep_counts(avail, fixed_mask)
+                lang_valid_len = torch.full((B,), Lt, dtype=torch.long, device=device)
             else:
+                avail[:, 2] = text_mask.sum(dim=1)  # non-pad language tokens
                 alphas = torch.tensor(
                     list(self.modality_dropout_alphas), dtype=torch.float, device=device
                 )
                 kept_counts = sample_token_budget(
                     avail, self.modality_dropout_keep_fraction, alphas
                 )  # [B, 3]
+                lang_valid_len = text_mask.sum(dim=1).long()  # [B]
 
-            lang_valid_len = text_mask.sum(dim=1).long()  # [B]
             keep_indices = build_keep_indices(
                 group_spans, kept_counts, lang_valid_len, prompt_idx
             )  # [B, K]
@@ -808,8 +845,10 @@ class FLOWERVLA(pl.LightningModule):
             pos_offset = self.vlm.get_encoder().embed_positions.offset  # = 2
             kept_embeds = position_correct(kept_embeds, keep_indices, pos_weight, pos_offset)
 
-            # All-ones mask: no padding in the compacted sequence.
-            attention_mask = torch.ones(B, K, dtype=torch.long, device=device)
+            # Retained language pad tokens (fixed-mask path only) stay masked out.
+            attention_mask = gather_attention_mask(
+                text_mask, keep_indices, merged_embeds.shape[1], lang_start
+            )
             inputs_embeds = kept_embeds
         else:
             # --- Standard (no dropout) path ---
