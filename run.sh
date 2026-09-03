@@ -39,6 +39,9 @@ fi
 if [[ "${LIBERO_HDF5_DIR:-/path/to/libero_hdf5}" == "/path/to/libero_hdf5" ]]; then
     LIBERO_HDF5_DIR="$REPO_ROOT/data/libero_hdf5"
 fi
+
+# Container hostname (compose.yml) so W&B/logs identify the host a run came from.
+export HOST_HOSTNAME="${HOST_HOSTNAME:-${HOSTNAME:-$(uname -n)}}"
 export LIBERO_HDF5_DIR
 
 CMD="${1:-help}"
@@ -106,7 +109,6 @@ run_dropout_train() {
         model.modality_dropout=True \
         model.modality_dropout_keep_fraction=0.5 \
         "model.modality_dropout_alphas=[1.0,1.0,1.0]" \
-        rollout_lh_skip_epochs=39 \
         devices=-1 \
         log_dir=/saves/train_logs \
         num_workers=8 \

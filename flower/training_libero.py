@@ -5,7 +5,7 @@ sys.tracebacklimit = None
 import os 
 import wandb
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 import torch
 import datetime
 from pytorch_lightning import Callback, LightningModule, seed_everything, Trainer
@@ -27,6 +27,11 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
+
+# Lets configs express "evaluate only after the final epoch" as ${sub:${max_epochs},1}
+# without duplicating the epoch count. replace=True: training_calvin.py registers the
+# same resolver, and both modules may be imported in one process (e.g. in tests).
+OmegaConf.register_new_resolver("sub", lambda a, b: int(a) - int(b), replace=True)
 
 def clear_cuda_cache():
     """Clear CUDA cache and garbage collect unused memory."""

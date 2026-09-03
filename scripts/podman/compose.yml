@@ -13,6 +13,9 @@ x-limits: &limits
 x-base: &base
   image: flower-vla-eval:latest
   <<: *limits
+  # Report the host's hostname (not a random podman-generated one) so W&B/log
+  # lines identify which machine a run came from. Set by run.sh from $HOSTNAME.
+  hostname: "${HOST_HOSTNAME:-flower-vla}"
   working_dir: /workspace
   volumes:
     - ${REPO_ROOT}:/workspace:z
@@ -129,7 +132,6 @@ services:
       - flower/training_libero.py
       - libero_benchmark=libero_10
       - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
-      - rollout_lh_skip_epochs=39
       - devices=-1
       - log_dir=/saves/train_logs
       - num_workers=8
@@ -151,7 +153,6 @@ services:
       - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
       - model.freeze_florence=True
       - model.action_expert_from_scratch=True
-      - rollout_lh_skip_epochs=39
       - devices=-1
       - log_dir=/saves/train_logs
       - num_workers=8
@@ -160,7 +161,7 @@ services:
 
   # Full fine-tune with Dirichlet modality-token dropout (3 groups: static/wrist/language).
   # Tokens are physically removed pre-encoder per sample; positions corrected analytically.
-  # Rollout eval fires only at the final epoch (rollout_lh_skip_epochs=39).
+  # Rollout eval fires only at the final epoch by default (rollout_lh_skip_epochs=max_epochs-1).
   # Benchmark and Hydra overrides are injected by run.sh (train-dropout / train-dropout-resume);
   # the command: block below is used only when this service is invoked directly (not via run.sh).
   # Prerequisites: ./run.sh download-pret && ./run.sh download-data [benchmark]
@@ -177,7 +178,6 @@ services:
       - model.modality_dropout=True
       - model.modality_dropout_keep_fraction=0.5
       - "model.modality_dropout_alphas=[1.0,1.0,1.0]"
-      - rollout_lh_skip_epochs=39
       - devices=-1
       - log_dir=/saves/train_logs
       - num_workers=8
@@ -201,7 +201,6 @@ services:
       - model.modality_dropout=True
       - model.modality_dropout_keep_fraction=0.5
       - "model.modality_dropout_alphas=[1.0,1.0,1.0]"
-      - rollout_lh_skip_epochs=39
       - devices=-1
       - log_dir=/saves/train_logs
       - num_workers=8

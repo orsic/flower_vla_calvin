@@ -140,6 +140,10 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 ./run.sh train   # 4-GPU training
 CUDA_VISIBLE_DEVICES=2,3     ./run.sh eval    # eval on GPUs 2 & 3, leaving 0 & 1 free
 ```
 
+**Hostname** — every container runs with the host machine's own hostname (not a random podman
+one), so W&B runs and log lines identify which machine they came from. Override with
+`HOST_HOSTNAME` in `vars.env` if needed.
+
 **Batched eval** — `./run.sh eval` runs `eval_batch_size` episodes in parallel per task using
 `SubprocVectorEnv` (one MuJoCo subprocess per episode, EGL offscreen rendering). Model inference
 is batched across all parallel episodes. When `CUDA_VISIBLE_DEVICES` exposes multiple GPUs the
@@ -159,7 +163,8 @@ its absolute position in the original sequence — removal is analytically equiv
 attention-masking with positions preserved (verified by a unit test against the masking oracle).
 
 The `<Flow>` prompt token is always kept. Rollout evaluation runs only at the final training
-epoch (rollout_lh_skip_epochs=39). Hyperparameters (model.yaml defaults):
+epoch by default (`rollout_lh_skip_epochs` defaults to `max_epochs - 1` in
+`conf/config_libero.yaml`). Hyperparameters (model.yaml defaults):
 
 | Flag | Default | Meaning |
 |---|---|---|
