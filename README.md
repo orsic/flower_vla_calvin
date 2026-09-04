@@ -228,6 +228,11 @@ The same `robot_obs` signal is fed during rollout evaluation (`RolloutLibero`, r
 during training, and `flower_eval_libero.py`), so a proprio-trained checkpoint is evaluated
 under the same conditioning it was trained with.
 
+This MLP is trained from scratch for LIBERO/CALVIN's single-arm action space. The pretrained
+`flower_vla_pret` checkpoint only ships real proprio weights for its bimanual action space
+(trained on bimanual ALOHA data with that dataset's own normalization statistics), which
+LIBERO/CALVIN don't use — there's no pretrained single-arm proprio signal to warm-start from.
+
 ### VS Code Devcontainer
 
 The devcontainer runs the same `flower-vla-eval` image with GPU, all three mounts, and the LIBERO path config wired up automatically.

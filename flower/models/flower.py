@@ -25,6 +25,7 @@ from flower.models.networks.transformers import (
     RmsNorm,
     FreqEmbedder,
     ActionSpaceEmbedderParameter,
+    ZeroEncoder,
     FlowBlock,
     stateless_norm
 )
@@ -431,11 +432,20 @@ class FLOWERVLA(pl.LightningModule):
                 self.adaln[action_name] = SharedAdaLNController(dit_dim, global_conddim=dit_dim, use_cross_attn=use_cross_attn)
 
             if self.use_proprio:
-                # Proprio encoder input is the proprioceptive state dim (lowdim_obs_dim),
-                # not the action dim used by the action encoder/decoder above.
-                self.proprio_encoders[action_name] = Mlp(
-                    self.lowdim_obs_dim, dit_dim, out_features=dit_dim, drop=0.2
-                ).to(self.device)
+                # bimanual_nav's proprio encoder has real pretrained weights (trained on
+                # bimanual ALOHA data, input dim = its 16-dim action dim) — keep its shape
+                # so those weights still load. eef_delta (what LIBERO/CALVIN use) never had
+                # pretrained proprio weights; give it a real encoder sized to the actual
+                # proprio dim (lowdim_obs_dim), trained from scratch. joint_single keeps the
+                # parameter-free ZeroEncoder, matching the pretrained checkpoint and the fact
+                # that LIBERO/CALVIN never route through it.
+                self.proprio_encoders[action_name] = (
+                    Mlp(input_dim, dit_dim, out_features=dit_dim, drop=0.2).to(self.device)
+                    if action_name == 'bimanual_nav'
+                    else Mlp(self.lowdim_obs_dim, dit_dim, out_features=dit_dim, drop=0.2).to(self.device)
+                    if action_name == 'eef_delta'
+                    else ZeroEncoder(self.dit_dim, device=self.device)
+                )
 
     def configure_optimizers(self):
         """Configure optimizers and schedulers"""
@@ -686,16 +696,25 @@ class FLOWERVLA(pl.LightningModule):
         """
         Encode proprioception based on action type.
         """
-        batch_size, _ = output_shape
+        # Only the batch size is needed here; output_shape (frequency_embeds.shape) can be
+        # 2-D or 3-D depending on caller, so don't assume an exact-length unpack.
+        batch_size = output_shape[0]
         default_dtype = next(self.parameters()).dtype
 
+        # action_type is [B, act_window_size, action_dim] with all entries identical per
+        # sample (see forward()'s torch.ones_like(action_type_tensor)); reduce to [B] so it
+        # can mask encoded_proprio's [B, dit_dim].
+        action_type = action_type[:, 0, 0].to(self.device)
+
         encoded_proprio = torch.zeros(batch_size, self.dit_dim, device=self.device, dtype=default_dtype)
-        
+
         for action_name, action_idx in self.action_space_index.action_spaces.items():
             mask = (action_type == action_idx)
             if mask.any():
-                encoded_proprio[mask] = self.proprio_encoders[action_name](proprio[mask]).squeeze(1)
-        
+                # Under bf16-mixed precision, the encoder's autocast output dtype can differ
+                # from the preallocated buffer's (param) dtype; index_put requires a match.
+                encoded_proprio[mask] = self.proprio_encoders[action_name](proprio[mask]).squeeze(1).to(encoded_proprio.dtype)
+
         return encoded_proprio
 
     def action_specific_adaln(self, global_cond: torch.Tensor, action_type: torch.Tensor) -> List[torch.Tensor]:
