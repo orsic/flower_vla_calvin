@@ -211,6 +211,23 @@ by `load_mode_from_safetensor`/checkpoint loading — evaluating one of these ch
 `eval_modalities` override re-applies the same subset it was trained on (see the precedence note
 in "Modality-ablation eval" below).
 
+### Training with proprioception (`model.use_proprio`)
+
+By default FLOWER conditions only on images and language. Setting `model.use_proprio=True`
+additionally feeds the robot's proprioceptive state — joint positions concatenated with
+gripper state (`robot_obs`, dim `proprio_dims`: 9 for LIBERO, 7 for CALVIN) — through a
+dedicated MLP encoder and sums it into the DiT's global conditioning. Works with both plain
+training and modality-token dropout:
+
+```bash
+./run.sh train libero_10 model.use_proprio=True
+./run.sh train-dropout libero_10 model.use_proprio=True
+```
+
+The same `robot_obs` signal is fed during rollout evaluation (`RolloutLibero`, run periodically
+during training, and `flower_eval_libero.py`), so a proprio-trained checkpoint is evaluated
+under the same conditioning it was trained with.
+
 ### VS Code Devcontainer
 
 The devcontainer runs the same `flower-vla-eval` image with GPU, all three mounts, and the LIBERO path config wired up automatically.

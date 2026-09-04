@@ -398,8 +398,10 @@ class RolloutLibero(Callback):
         translated_dict['rgb_obs'] = {}
         translated_dict['rgb_obs']['rgb_static'] = obs_space['agentview_image']
         translated_dict["rgb_obs"]['rgb_gripper'] = obs_space['robot0_eye_in_hand_image']
-        translated_dict['robot_obs'] = obs_space['robot0_joint_pos']
-        translated_dict['gripper_states'] = obs_space['robot0_gripper_qpos']
+        # Match training's proprio layout (libero_data_module.py): joint positions + gripper state.
+        translated_dict['robot_obs'] = np.concatenate(
+            [obs_space['robot0_joint_pos'], obs_space['robot0_gripper_qpos']], axis=-1
+        )
         translated_dict['depth_obs'] = {}
 
         return translated_dict
@@ -417,6 +419,8 @@ class RolloutLibero(Callback):
                 x = transform(x)
             data['rgb_obs'][key] = x.unsqueeze(0).to(self.device)
             # data['rgb_obs'][key] = transforms[key](data['rgb_obs'][key])
+
+        data['robot_obs'] = torch.from_numpy(data['robot_obs']).float().unsqueeze(0).to(self.device)
 
         return data
 

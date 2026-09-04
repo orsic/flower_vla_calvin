@@ -506,12 +506,13 @@ class EvaluateLibero:
         if 'robot0_eye_in_hand_image' in obs_space:
             translated_dict['rgb_obs']['rgb_gripper'] = obs_space['robot0_eye_in_hand_image']
         
-        # Map robot state observations
-        if 'robot0_joint_pos' in obs_space:
-            translated_dict['robot_obs'] = obs_space['robot0_joint_pos']
-        if 'robot0_gripper_qpos' in obs_space:
-            translated_dict['gripper_states'] = obs_space['robot0_gripper_qpos']
-        
+        # Map robot state observations. Match training's proprio layout
+        # (libero_data_module.py): joint positions + gripper state, concatenated.
+        if 'robot0_joint_pos' in obs_space and 'robot0_gripper_qpos' in obs_space:
+            translated_dict['robot_obs'] = np.concatenate(
+                [obs_space['robot0_joint_pos'], obs_space['robot0_gripper_qpos']], axis=-1
+            )
+
         # Empty dict for depth since not used
         translated_dict['depth_obs'] = {}
         
@@ -574,13 +575,10 @@ class EvaluateLibero:
             
             data['rgb_obs'][key] = x.unsqueeze(0).to(self.device)
         
-        # Ensure robot_obs and gripper_states are properly formatted tensors
+        # Ensure robot_obs is a properly formatted tensor
         if 'robot_obs' in data and not isinstance(data['robot_obs'], torch.Tensor):
             data['robot_obs'] = torch.tensor(data['robot_obs'], dtype=torch.float32).unsqueeze(0).to(self.device)
-        
-        if 'gripper_states' in data and not isinstance(data['gripper_states'], torch.Tensor):
-            data['gripper_states'] = torch.tensor(data['gripper_states'], dtype=torch.float32).unsqueeze(0).to(self.device)
-        
+
         return data
 
     def process_env_obs(self, env_obs, lang_embed, lang_text=None):
@@ -606,6 +604,8 @@ class EvaluateLibero:
                 for key in data_list[0]['rgb_obs']
             }
         }
+        if 'robot_obs' in data_list[0]:
+            batch_data['robot_obs'] = torch.cat([d['robot_obs'] for d in data_list], dim=0)
         goal = {
             'lang_text': [lang_text] * len(obs_list),
             'lang': lang_embed,

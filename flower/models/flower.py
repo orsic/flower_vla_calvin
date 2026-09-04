@@ -25,7 +25,6 @@ from flower.models.networks.transformers import (
     RmsNorm,
     FreqEmbedder,
     ActionSpaceEmbedderParameter,
-    ZeroEncoder,
     FlowBlock,
     stateless_norm
 )
@@ -126,7 +125,6 @@ class FLOWERVLA(pl.LightningModule):
             modality_dropout_keep_fraction=modality_dropout_keep_fraction,
             modality_dropout_alphas=modality_dropout_alphas,
         )
-        self.obs_modalities = []
         # Eval-time modality mask: None (default) = unchanged behavior. When set to a
         # (keep_static, keep_wrist, keep_language) bool 3-tuple, encode_observations
         # deterministically drops the withheld groups' tokens, mirroring the
@@ -332,7 +330,6 @@ class FLOWERVLA(pl.LightningModule):
         
         self.use_adaln_cond = self.use_adaln_cond 
         self.use_readout_token = self.use_readout_token and self.use_adaln_cond
-        self.use_proprio = self.use_proprio 
         self.use_second_view = self.use_second_view and self.second_view_key is not None
         self.use_cross_attn = self.use_cross_attn
         self.use_rope = self.use_rope and not self.use_nope
@@ -434,9 +431,11 @@ class FLOWERVLA(pl.LightningModule):
                 self.adaln[action_name] = SharedAdaLNController(dit_dim, global_conddim=dit_dim, use_cross_attn=use_cross_attn)
 
             if self.use_proprio:
-                # Add proprio encoder if needed for bimanual nav variant otherwise use zero encoder
-                self.proprio_encoders[action_name] = (Mlp(input_dim, dit_dim, out_features=dit_dim, drop=0.2).to(self.device) 
-                    if action_name == 'bimanual_nav' else ZeroEncoder(self.dit_dim, device=self.device))
+                # Proprio encoder input is the proprioceptive state dim (lowdim_obs_dim),
+                # not the action dim used by the action encoder/decoder above.
+                self.proprio_encoders[action_name] = Mlp(
+                    self.lowdim_obs_dim, dit_dim, out_features=dit_dim, drop=0.2
+                ).to(self.device)
 
     def configure_optimizers(self):
         """Configure optimizers and schedulers"""
@@ -689,10 +688,7 @@ class FLOWERVLA(pl.LightningModule):
         """
         batch_size, _ = output_shape
         default_dtype = next(self.parameters()).dtype
-        
-        if not self.use_proprio:
-            return torch.zeros(batch_size, self.dit_dim, device=self.device)
-        
+
         encoded_proprio = torch.zeros(batch_size, self.dit_dim, device=self.device, dtype=default_dtype)
         
         for action_name, action_idx in self.action_space_index.action_spaces.items():
@@ -873,8 +869,8 @@ class FLOWERVLA(pl.LightningModule):
         )
 
         proprio = None
-        if self.use_proprio and 'proprio' in batch.get(self.obs_modalities, {}):
-            proprio = batch[self.obs_modalities]['proprio'].to(device).to(default_type)
+        if self.use_proprio and 'robot_obs' in batch:
+            proprio = batch['robot_obs'].to(device).to(default_type)
 
         return {
             'features': features,
@@ -946,6 +942,8 @@ class FLOWERVLA(pl.LightningModule):
             },
             "lang_text": [lang_text] if isinstance(lang_text, str) else list(lang_text)
         }
+        if 'robot_obs' in obs:
+            batch['robot_obs'] = obs['robot_obs']
         features = self.encode_observations(batch)
         
         # Generate initial noise
