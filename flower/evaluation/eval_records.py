@@ -7,6 +7,11 @@ Results are stored next to the checkpoint being evaluated:
 
 Re-running (e.g. one LIBERO-Plus category at a time) merges into the existing file,
 keyed on KEY_COLUMNS, with the newest run winning on a key collision.
+
+use_proprio was added after use_rgb_static/use_rgb_gripper/use_language; rows in a
+pre-existing result.csv have no such column, so _row_key reads it with a "" default
+rather than indexing directly — those legacy rows read as proprio-absent, which is
+factually correct (every eval predating this column ran with use_proprio=false).
 """
 import csv
 import time
@@ -14,7 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Union
 
 # Columns that together identify one episode. Used as the merge/dedup key.
-# The three use_* modality flags are part of the key so that evaluating the same
+# The four use_* modality flags are part of the key so that evaluating the same
 # task/episode/checkpoint under a different modality combo adds a new row instead of
 # overwriting the previous combo's result.
 KEY_COLUMNS = [
@@ -26,10 +31,12 @@ KEY_COLUMNS = [
     "use_rgb_static",
     "use_rgb_gripper",
     "use_language",
+    "use_proprio",
 ]
 
 # Full column order written to CSV.
 ALL_COLUMNS = KEY_COLUMNS + [
+    "batching_mode",
     "task_name",
     "problem_folder",
     "bddl_file",
@@ -87,12 +94,19 @@ def rollout_seed(base_seed: int, task_idx: int, episode_idx: int) -> int:
     return base_seed * 1_000_003 + task_idx * 1_009 + episode_idx
 
 
+def batch_seed(base_seed: int, batch_index: int) -> int:
+    """Deterministic seed for the cross_task_batching batch starting at batch_index."""
+    return base_seed * 1_000_003 + batch_index * 1_009
+
+
 def _row_key(row: Dict) -> tuple:
     # Stringify: rows freshly built in memory hold ints (e.g. task_idx=0) while rows
     # read back from CSV hold strings (task_idx="0") — without normalizing, the same
     # episode would get two different keys and merge_rows would append instead of
     # overwriting on a rerun.
-    return tuple(str(row[c]) for c in KEY_COLUMNS)
+    # .get(c, ""): use_proprio is missing from rows written before it existed (see
+    # module docstring) — default rather than KeyError so old files still merge.
+    return tuple(str(row.get(c, "")) for c in KEY_COLUMNS)
 
 
 def merge_rows(existing: List[Dict], new: List[Dict]) -> List[Dict]:

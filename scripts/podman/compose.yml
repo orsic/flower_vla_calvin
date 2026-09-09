@@ -226,6 +226,27 @@ services:
       - log_wandb=True
       - "hydra.run.dir=/saves/hydra_outputs/${now:%Y-%m-%d_%H-%M-%S}"
 
+  # Uploads a completed run's eval result.csv files + scripts/pid_modality.py output to
+  # its W&B run. Used by ./run.sh pipeline; needs WANDB_MODE=online unlike the base
+  # anchor's default (eval/eval-plus stay disabled — they only write CSVs).
+  pipeline-artifacts:
+    <<: *base
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      WANDB_MODE: ${WANDB_MODE:-online}
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      LIBERO_VARIANT: ${LIBERO_VARIANT:-orig}
+
   # Download LIBERO-Plus simulation assets (3D objects, textures) from HuggingFace.
   # Run once before eval-plus: ./run.sh download-plus
   # Assets are extracted into LIBERO-plus/libero/libero/assets/ (gitignored).
@@ -240,15 +261,16 @@ services:
       - bash
       - -c
       - |
+        set -euo pipefail
         huggingface-cli download Sylvest/LIBERO-plus \
           --repo-type dataset \
           --include "assets.zip" \
           --local-dir /tmp/libero_plus_dl
         python -c 'import zipfile; z=zipfile.ZipFile("/tmp/libero_plus_dl/assets.zip"); z.extractall("/tmp/lp_extracted"); z.close()'
-        assets_src=$(find /tmp/lp_extracted -type d -name assets | head -1)
+        assets_src=$$(find /tmp/lp_extracted -type d -name assets | head -1)
         assets_dst=/workspace/LIBERO-plus/libero/libero/assets
-        test -e "$assets_dst" && rm -rf "$assets_dst"
-        mv "$assets_src" "$assets_dst"
+        if [ -e "$$assets_dst" ]; then rm -rf "$$assets_dst"; fi
+        mv "$$assets_src" "$$assets_dst"
         rm -rf /tmp/lp_extracted
         echo "LIBERO-Plus assets extracted to LIBERO-plus/libero/libero/assets/"
 

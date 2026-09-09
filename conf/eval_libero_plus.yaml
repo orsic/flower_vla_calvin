@@ -2,9 +2,12 @@
 # Run via: ./run.sh eval-plus [overrides...]  (sets LIBERO_VARIANT=plus automatically)
 #
 # Key differences vs eval_libero.yaml:
-#   n_eval: 1     — each Plus task is one deterministic perturbed instance
-#   num_videos: 0 — 2500+ tasks make video recording impractical; enable selectively
-#   task_category — filter to one perturbation category (null = run all categories)
+#   n_eval: 1                 — each Plus task is one deterministic perturbed instance
+#   num_videos: 0              — 2500+ tasks make video recording impractical; enable selectively
+#   task_category              — filter to one perturbation category (null = run all categories)
+#   cross_task_batching: true  — n_eval=1 means evaluate_task can never fill a batch from a
+#                                 single task; batch across tasks instead so eval_batch_size
+#                                 episodes run (and infer) together
 #
 # Perturbation categories (pass as task_category override):
 #   "Objects Layout"        "Camera Viewpoints"    "Robot Initial States"
@@ -38,6 +41,8 @@ num_sequences: 1
 max_steps: 520
 n_eval: 1
 eval_batch_size: 10
+env_start_method: spawn  # spawn (parallel, real subprocesses) | dummy (sequential, in-process)
+cross_task_batching: true  # n_eval=1 -> batch across tasks instead (see note above)
 num_sampling_steps: 4
 multistep: 10
 
@@ -49,4 +54,5 @@ eval_modalities:  # set any to false to physically drop that modality's tokens p
   rgb_static: true
   rgb_gripper: true
   language: true
+  proprio: true  # requires model.use_proprio=True; not a token, gated separately (see FLOWERVLA.eval_proprio_mask)
 csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<suite>/

@@ -12,7 +12,7 @@ log_dir: ./logs
 slurm: false
 seed: 42
 device: 'cuda'
-batch_size: 8
+batch_size: 32
 devices: 4
 goal_window_size: 1
 act_dim: 7
@@ -24,8 +24,8 @@ act_seq_len: 10
 multistep: ${act_seq_len}
 p_last_state: 0
 max_epochs: 40
-# Rollout eval fires only at the final epoch (see conf/callbacks/libero.yaml: skip_epochs).
-rollout_lh_skip_epochs: ${sub:${max_epochs},1}
+# Rollout eval is disabled; evaluation runs after training via ./run.sh pipeline.
+rollout_lh_skip_epochs: ${max_epochs}
 num_workers: 1
 benchmark_name: ${libero_benchmark} # calvin_abcd
 libero_benchmark: libero_spatial # libero_goal # libero_spatial, libero_object, LIBERO_GOAL, LIBERO_90, LIBERO_10

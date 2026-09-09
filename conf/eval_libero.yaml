@@ -22,6 +22,8 @@ num_sequences: 50
 max_steps: 520
 n_eval: 20
 eval_batch_size: 10  # episodes per batch; each runs in a separate MuJoCo subprocess
+env_start_method: spawn  # spawn (parallel, real subprocesses) | dummy (sequential, in-process)
+cross_task_batching: false  # true = fill each batch with episodes from different tasks
 num_sampling_steps: 4
 multistep: 10
 
@@ -33,4 +35,5 @@ eval_modalities:  # set any to false to physically drop that modality's tokens p
   rgb_static: true
   rgb_gripper: true
   language: true
+  proprio: true  # requires model.use_proprio=True; not a token, gated separately (see FLOWERVLA.eval_proprio_mask)
 csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<suite>/

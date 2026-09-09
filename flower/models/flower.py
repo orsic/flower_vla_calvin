@@ -98,6 +98,9 @@ class FLOWERVLA(pl.LightningModule):
         modality_dropout: bool = False,
         modality_dropout_keep_fraction: float = 0.5,
         modality_dropout_alphas: tuple = (1.0, 1.0, 1.0),
+        # Proprioception isn't a token (see encode_proprio/dit_forward) so it can't join the
+        # Dirichlet token budget above; it gets its own per-sample Bernoulli keep gate instead.
+        modality_dropout_proprio_keep_p: float = 0.5,
 
         # Fixed modality ablation: modalities this model is trained/evaluated on.
         modalities: DictConfig = None,
@@ -125,6 +128,7 @@ class FLOWERVLA(pl.LightningModule):
             modality_dropout=modality_dropout,
             modality_dropout_keep_fraction=modality_dropout_keep_fraction,
             modality_dropout_alphas=modality_dropout_alphas,
+            modality_dropout_proprio_keep_p=modality_dropout_proprio_keep_p,
         )
         # Eval-time modality mask: None (default) = unchanged behavior. When set to a
         # (keep_static, keep_wrist, keep_language) bool 3-tuple, encode_observations
@@ -132,6 +136,9 @@ class FLOWERVLA(pl.LightningModule):
         # modality_dropout training path but without Dirichlet sampling. Orthogonal to
         # self.modality_dropout — usable on any checkpoint, set by the eval script.
         self.eval_modality_mask: Optional[Tuple[bool, bool, bool]] = None
+        # Eval-time proprio mask: None (default) = unchanged. False withholds proprio at eval,
+        # mirroring eval_modality_mask above but for the Bernoulli-gated (non-token) modality.
+        self.eval_proprio_mask: Optional[bool] = None
 
         # Fixed modality ablation: which modalities this model observes, always (not just at
         # eval). None (all three on) leaves the standard path untouched; otherwise the
@@ -142,16 +149,26 @@ class FLOWERVLA(pl.LightningModule):
             bool(modalities.get("rgb_gripper", True)),
             bool(modalities.get("language", True)),
         )
+        proprio_enabled = bool(modalities.get("proprio", True))
         if not any(modality_tuple):
             raise ValueError(
                 f"model.modalities: at least one modality must be enabled (got all-False: {modalities})"
             )
-        if not all(modality_tuple) and modality_dropout:
+        if not proprio_enabled and not use_proprio:
+            raise ValueError(
+                "model.modalities.proprio=False requires model.use_proprio=True — the model "
+                "never receives proprioception to withhold in the first place"
+            )
+        if (not all(modality_tuple) or not proprio_enabled) and modality_dropout:
             raise ValueError(
                 "model.modalities and model.modality_dropout are mutually exclusive — "
-                f"got a fixed subset {modality_tuple} together with modality_dropout=True"
+                f"got a fixed subset {modality_tuple} (proprio={proprio_enabled}) together "
+                "with modality_dropout=True"
             )
         self.modality_mask: Optional[Tuple[bool, bool, bool]] = None if all(modality_tuple) else modality_tuple
+        # Fixed proprio ablation: None (on) leaves the Bernoulli-gate path off; False withholds
+        # proprio in every forward (train + eval), same semantics as self.modality_mask above.
+        self.proprio_mask: Optional[bool] = None if proprio_enabled else False
 
         # Initialize model dimensions
         self._init_dimensions(
@@ -644,6 +661,13 @@ class FLOWERVLA(pl.LightningModule):
         if self.use_proprio and cond_dict['proprio'] is not None:
             proprio = cond_dict['proprio'].to(default_dtype)
             proprio_embeds = self.encode_proprio(proprio, action_type, frequency_embeds.shape)
+            proprio_keep = cond_dict.get('proprio_keep')
+            if proprio_keep is not None:
+                # Per-sample gate (fixed ablation, eval withholding, or training-time Bernoulli
+                # dropout — resolved once in encode_observations, not re-drawn per Euler step).
+                # Zeroing here is exact: stateless_norm(0) == 0, identical to the use_proprio=
+                # False path below.
+                proprio_embeds = proprio_embeds * proprio_keep.to(proprio_embeds.device).unsqueeze(-1).to(proprio_embeds.dtype)
         else:
             proprio_embeds = torch.zeros_like(frequency_embeds)
         
@@ -888,8 +912,22 @@ class FLOWERVLA(pl.LightningModule):
         )
 
         proprio = None
+        proprio_keep = None
         if self.use_proprio and 'robot_obs' in batch:
             proprio = batch['robot_obs'].to(device).to(default_type)
+
+            # Per-sample proprio keep-gate — same precedence as the token fixed_mask/eval_mask
+            # resolution above, but Bernoulli instead of Dirichlet (see modality_dropout_
+            # proprio_keep_p's docstring in __init__ for why proprio can't share the token
+            # budget). None below means "keep for everyone", matching dit_forward's default.
+            fixed_proprio = self.proprio_mask
+            if not self.training and self.eval_proprio_mask is not None:
+                fixed_proprio = self.eval_proprio_mask
+
+            if fixed_proprio is not None:
+                proprio_keep = torch.full((B,), fixed_proprio, dtype=torch.bool, device=device)
+            elif self.modality_dropout and self.training:
+                proprio_keep = torch.rand(B, device=device) < self.modality_dropout_proprio_keep_p
 
         return {
             'features': features,
@@ -897,6 +935,7 @@ class FLOWERVLA(pl.LightningModule):
             'action_space_embeds': None,
             'action_type': torch.ones_like(action_type_tensor),
             'proprio': proprio,
+            'proprio_keep': proprio_keep,
             'attention_mask': attention_mask,
         }
 

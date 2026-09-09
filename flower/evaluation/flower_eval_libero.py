@@ -32,12 +32,13 @@ sys.path.insert(0, Path(__file__).absolute().parents[2].as_posix())
 # LIBERO imports
 from libero.libero import benchmark, get_libero_path
 from libero.libero.benchmark import get_benchmark
-from libero.libero.envs import DummyVectorEnv, OffScreenRenderEnv, SubprocVectorEnv
+from libero.libero.envs import OffScreenRenderEnv
 from libero.lifelong.metric import evaluate_multitask_training_success, raw_obs_to_tensor_obs
 from libero.lifelong.utils import create_experiment_dir, get_task_embs, safe_device
 
 # Local project imports
 from flower.evaluation.eval_records import (
+    batch_seed,
     checkpoint_name,
     merge_rank_csvs,
     merge_result_csv,
@@ -46,6 +47,7 @@ from flower.evaluation.eval_records import (
     rollout_seed,
     write_csv,
 )
+from flower.evaluation.libero_venv import make_libero_venv
 from flower.evaluation.multistep_sequences import get_sequences
 from flower.evaluation.utils import (
     LangEmbeddings,
@@ -199,14 +201,20 @@ class EvaluateLibero:
         checkpoint: str = "",
         base_seed: int = 0,
         eval_modalities: Optional[Dict[str, bool]] = None,
+        env_start_method: str = "spawn",
+        cross_task_batching: bool = False,
     ):
         self.model = model
         self.transforms = transforms
         self.log_dir = log_dir
         self.checkpoint = str(checkpoint)
         self.base_seed = base_seed
-        self.eval_modalities = eval_modalities or {"rgb_static": True, "rgb_gripper": True, "language": True}
+        self.eval_modalities = eval_modalities or {
+            "rgb_static": True, "rgb_gripper": True, "language": True, "proprio": True
+        }
         self.libero_variant = os.environ.get("LIBERO_VARIANT", "orig")
+        self.env_start_method = env_start_method
+        self.cross_task_batching = cross_task_batching
 
         # Physically withhold modalities at inference (see FLOWERVLA.eval_modality_mask).
         # Full-modality (the default) leaves the model's mask at None, so today's
@@ -224,6 +232,23 @@ class EvaluateLibero:
             )
         if not all(modality_tuple):
             self.model.eval_modality_mask = modality_tuple
+
+        # Proprioception isn't a token (see FLOWERVLA.eval_proprio_mask); withholding it only
+        # makes sense on a model that receives it in the first place.
+        proprio_enabled = bool(self.eval_modalities.get("proprio", True))
+        if not proprio_enabled and not self.model.use_proprio:
+            raise ValueError(
+                "eval_modalities.proprio=False requires a model with use_proprio=True — this "
+                "checkpoint never receives proprioception to withhold"
+            )
+        if not proprio_enabled:
+            self.model.eval_proprio_mask = False
+
+        # What actually reached the model, for the result.csv use_proprio column -- a
+        # checkpoint trained with use_proprio=False never received proprioception
+        # regardless of eval_modalities.proprio, so recording proprio_enabled alone would
+        # claim a modality the model never saw.
+        self.uses_proprio = proprio_enabled and self.model.use_proprio
 
         self.device = device
         self.task_order = 0
@@ -299,6 +324,9 @@ class EvaluateLibero:
 
     def evaluate_policy(self, model, store_video=False) -> List[Dict[str, Any]]:
         """Run every task in self.all_tasks; return one row per episode across all tasks."""
+        if self.cross_task_batching:
+            return self.evaluate_work_list(model, store_video=store_video)
+
         all_rows: List[Dict[str, Any]] = []
 
         for idx in self.all_tasks:  # Distribute tasks across GPUs
@@ -318,9 +346,9 @@ class EvaluateLibero:
     def evaluate_task(self, model, task_i, task_emb, task_str, idx, sim_states=None, store_video=0):
         """Evaluate a task, running eval_batch_size parallel episodes per batch.
 
-        Each batch uses a SubprocVectorEnv (one MuJoCo subprocess per episode) so
-        rendering is isolated per process, and model inference is batched across all
-        episodes in the batch.
+        Each batch uses a vector env with one MuJoCo subprocess per episode (see
+        flower.evaluation.libero_venv) so rendering and stepping are isolated per
+        process, and model inference is batched across all episodes in the batch.
         """
         env_args = {
             "bddl_file_name": os.path.join(
@@ -349,20 +377,19 @@ class EvaluateLibero:
             while episode_idx < self.n_eval:
                 current_batch_size = min(self.eval_batch_size, self.n_eval - episode_idx)
 
-                # DummyVectorEnv runs all envs sequentially in the parent process.
-                # This avoids the fork-after-CUDA hazard: SubprocVectorEnv forks the parent
-                # (which has CUDA initialized), and forked children fail with EGL_BAD_ALLOC
-                # when trying to create EGL rendering contexts.  DummyVectorEnv keeps all
-                # OffScreenRenderEnv instances in the same process where EGL + CUDA coexist
-                # fine (same as the original sequential code).  Batched model inference is
-                # still possible since all B observations are stacked into a single forward.
+                # env_start_method="spawn" (default) runs each episode in its own
+                # freshly-spawned subprocess, so MuJoCo stepping and EGL rendering are
+                # real B-way parallel; "dummy" keeps the old sequential in-process
+                # behavior. See flower.evaluation.libero_venv for why spawn (not fork)
+                # is required here.
                 env_creation = False
                 count = 0
                 while not env_creation and count < 5:
                     try:
-                        env = DummyVectorEnv(
+                        env = make_libero_venv(
                             [lambda: OffScreenRenderEnv(**env_args)
-                             for _ in range(current_batch_size)]
+                             for _ in range(current_batch_size)],
+                            self.env_start_method,
                         )
                         env_creation = True
                     except Exception:
@@ -412,20 +439,31 @@ class EvaluateLibero:
                 steps = 0
                 model.reset()
 
+                active_ids = list(range(current_batch_size))
                 while steps < self.max_steps:
                     steps += 1
                     data, goal = self.process_env_obs_batch(obs, task_emb, task_i.language)
+                    # Inference always runs at full width B (even once some episodes
+                    # have finished): step_batch draws one shared noise tensor for the
+                    # whole batch, so shrinking it would change what gets sampled for
+                    # the still-active episodes. Simulation is the expensive part, so
+                    # only step the envs that haven't finished yet.
                     actions = model.step_batch(data, goal).cpu().numpy()  # [B, 7]
-                    obs, _, done, _ = env.step(actions)
+                    step_obs, _, step_done, _ = env.step(actions[active_ids], id=active_ids)
 
-                    for k in range(current_batch_size):
-                        if not dones[k]:
-                            steps_taken[k] = steps
-                        dones[k] = dones[k] or bool(done[k])
+                    still_active = []
+                    for pos, k in enumerate(active_ids):
+                        obs[k] = step_obs[pos]
+                        steps_taken[k] = steps
+                        if bool(step_done[pos]):
+                            dones[k] = True
+                        else:
+                            still_active.append(k)
                         if k in video_frames:
                             video_frames[k].append(obs[k]['agentview_image'])
+                    active_ids = still_active
 
-                    if all(dones):
+                    if not active_ids:
                         break
 
                 # Write videos
@@ -441,6 +479,7 @@ class EvaluateLibero:
                         "task_idx": idx,
                         "episode_idx": episode_idx + k,
                         "checkpoint_name": checkpoint_name(self.checkpoint),
+                        "batching_mode": "per_task",
                         "task_name": task_name,
                         "problem_folder": task_i.problem_folder,
                         "bddl_file": task_i.bddl_file,
@@ -460,6 +499,7 @@ class EvaluateLibero:
                         "use_rgb_static": int(self.eval_modalities.get("rgb_static", True)),
                         "use_rgb_gripper": int(self.eval_modalities.get("rgb_gripper", True)),
                         "use_language": int(self.eval_modalities.get("language", True)),
+                        "use_proprio": int(self.uses_proprio),
                         "checkpoint": self.checkpoint,
                         "steps_taken": steps_taken[k],
                         "success": int(dones[k]),
@@ -469,6 +509,191 @@ class EvaluateLibero:
                 gc.collect()
                 episode_idx += current_batch_size
                 pbar.update(current_batch_size)
+
+        return rows
+
+    def evaluate_work_list(self, model, store_video=0) -> List[Dict[str, Any]]:
+        """Evaluate every (task, episode) in self.all_tasks x range(n_eval), batching
+        across tasks so the GPU batch stays full width even when n_eval is small.
+
+        evaluate_task can only batch within a single task's n_eval episodes: with
+        LIBERO-Plus's n_eval=1, current_batch_size collapses to 1 and nothing
+        parallelizes. Here a batch instead mixes eval_batch_size episodes drawn from
+        (possibly) different tasks, each in its own env (different bddl file), with
+        a per-slot language instruction. FLOWERVLA.forward() already accepts a list
+        of B distinct lang_text strings and never reads goal["lang"], so the model
+        needs no change.
+
+        Batch composition (and thus the per-batch noise draw — see evaluate_task's
+        comment on rollout_seed) differs from evaluate_task's, so results are not
+        bitwise-comparable to per-task rows; both are marked via "batching_mode".
+        """
+        work_items = [(idx, ep) for idx in self.all_tasks for ep in range(self.n_eval)]
+
+        # Per-task metadata, fetched once and reused across every batch it appears in.
+        task_cache: Dict[int, Dict[str, Any]] = {}
+        for idx in self.all_tasks:
+            task_i = self.benchmark_instance.get_task(idx)
+            try:
+                initial_states = self.benchmark_instance.get_task_init_states(idx)
+                n_states = len(initial_states)
+            except Exception as e:
+                print(f"Could not get LIBERO initial states for task {idx}: {e}, using random resets")
+                initial_states = None
+                n_states = 0
+            task_name = self.task_names[idx]
+            task_cache[idx] = {
+                "task_i": task_i,
+                "task_name": task_name,
+                "task_meta": self.task_classification.get(task_name, {}),
+                "initial_states": initial_states,
+                "n_states": n_states,
+                "bddl_path": os.path.join(self.bddl_folder, task_i.problem_folder, task_i.bddl_file),
+            }
+
+        rows: List[Dict[str, Any]] = []
+
+        with tqdm(total=len(work_items), desc="Evaluating (cross-task batches)") as pbar:
+            for batch_start in range(0, len(work_items), self.eval_batch_size):
+                batch_items = work_items[batch_start:batch_start + self.eval_batch_size]
+                B = len(batch_items)
+                metas = [task_cache[idx] for idx, _ in batch_items]
+
+                env_creation = False
+                count = 0
+                while not env_creation and count < 5:
+                    try:
+                        env = make_libero_venv(
+                            [
+                                (lambda args={
+                                    "bddl_file_name": m["bddl_path"],
+                                    "camera_heights": self.img_h,
+                                    "camera_widths": self.img_w,
+                                }: OffScreenRenderEnv(**args))
+                                for m in metas
+                            ],
+                            self.env_start_method,
+                        )
+                        env_creation = True
+                    except Exception:
+                        time.sleep(5)
+                        count += 1
+                if not env_creation:
+                    raise Exception("Failed to create environment")
+
+                env.reset()
+                state_idxs = [
+                    (ep % m["n_states"]) if m["initial_states"] is not None else None
+                    for m, (_, ep) in zip(metas, batch_items)
+                ]
+                init_slots = [k for k in range(B) if state_idxs[k] is not None]
+                if init_slots:
+                    # A LIBERO init state is a raw MuJoCo sim-state vector whose length
+                    # depends on the scene (e.g. 47 vs 123 floats), so a cross-task batch
+                    # is ragged and can't be np.stack'ed into one array. set_init_state
+                    # indexes init_state[j] per slot (venv.py), so a plain list of
+                    # per-slot arrays works, applied only to the slots that have one.
+                    env.set_init_state(
+                        [metas[k]["initial_states"][state_idxs[k]] for k in init_slots],
+                        id=init_slots,
+                    )
+                # slots without init states (state_idxs[k] is None) keep the default
+                # random reset; their init_state_idx is recorded as -1 below.
+
+                batch_index = batch_start // self.eval_batch_size
+                seed = batch_seed(self.base_seed, batch_index)
+                torch.manual_seed(seed)
+                np.random.seed(seed % (2**32))
+
+                dummy = np.zeros((B, 7))
+                for _ in range(5):
+                    obs, _, _, _ = env.step(dummy)
+
+                video_writers: Dict[int, cv2.VideoWriter] = {}
+                video_frames: Dict[int, list] = {}
+                for k in range(B):
+                    if batch_start + k < int(store_video):
+                        task_idx, ep = batch_items[k]
+                        video_filename = f"rollout_xtask_p{task_idx}_{ep}.mp4"
+                        video_path = os.path.join(self.log_dir, video_filename)
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        video_writers[k] = cv2.VideoWriter(
+                            video_path, fourcc, 20.0, (self.img_w, self.img_h)
+                        )
+                        video_frames[k] = []
+
+                dones = [False] * B
+                steps_taken = [0] * B
+                steps = 0
+                model.reset()
+
+                lang_texts = [metas[k]["task_i"].language for k in range(B)]
+                active_ids = list(range(B))
+                while steps < self.max_steps:
+                    steps += 1
+                    data, goal = self.process_env_obs_batch(obs, None, lang_texts)
+                    actions = model.step_batch(data, goal).cpu().numpy()  # [B, 7]
+                    step_obs, _, step_done, _ = env.step(actions[active_ids], id=active_ids)
+
+                    still_active = []
+                    for pos, k in enumerate(active_ids):
+                        obs[k] = step_obs[pos]
+                        steps_taken[k] = steps
+                        if bool(step_done[pos]):
+                            dones[k] = True
+                        else:
+                            still_active.append(k)
+                        if k in video_frames:
+                            video_frames[k].append(obs[k]['agentview_image'])
+                    active_ids = still_active
+
+                    if not active_ids:
+                        break
+
+                for k, writer in video_writers.items():
+                    for frame in video_frames[k]:
+                        writer.write(frame)
+                    writer.release()
+
+                for k in range(B):
+                    task_idx, ep = batch_items[k]
+                    m = metas[k]
+                    task_i = m["task_i"]
+                    rows.append({
+                        "libero_variant": self.libero_variant,
+                        "suite": self.benchmark_name,
+                        "task_idx": task_idx,
+                        "episode_idx": ep,
+                        "checkpoint_name": checkpoint_name(self.checkpoint),
+                        "batching_mode": "cross_task",
+                        "task_name": m["task_name"],
+                        "problem_folder": task_i.problem_folder,
+                        "bddl_file": task_i.bddl_file,
+                        "init_states_file": task_i.init_states_file,
+                        "language": task_i.language,
+                        "task_category": m["task_meta"].get("category", ""),
+                        "difficulty_level": m["task_meta"].get("difficulty_level", ""),
+                        "init_state_idx": int(state_idxs[k]) if state_idxs[k] is not None else -1,
+                        "max_steps": self.max_steps,
+                        "img_h": self.img_h,
+                        "img_w": self.img_w,
+                        "num_sampling_steps": getattr(model, "num_sampling_steps", ""),
+                        "multistep": getattr(model, "multistep", ""),
+                        "eval_batch_size": B,
+                        "base_seed": self.base_seed,
+                        "rollout_seed": seed,
+                        "use_rgb_static": int(self.eval_modalities.get("rgb_static", True)),
+                        "use_rgb_gripper": int(self.eval_modalities.get("rgb_gripper", True)),
+                        "use_language": int(self.eval_modalities.get("language", True)),
+                        "use_proprio": int(self.uses_proprio),
+                        "checkpoint": self.checkpoint,
+                        "steps_taken": steps_taken[k],
+                        "success": int(dones[k]),
+                    })
+
+                env.close()
+                gc.collect()
+                pbar.update(B)
 
         return rows
 
@@ -592,22 +817,40 @@ class EvaluateLibero:
         return return_obs, goal
 
     def process_env_obs_batch(self, obs_list, lang_embed, lang_text=None):
-        """Process a list of B obs dicts (from SubprocVectorEnv) into a batched model input.
+        """Process a list of B obs dicts (from a vector env) into a batched model input.
+
+        Vectorized equivalent of calling process_env_obs B times and concatenating:
+        one H2D copy and one transform-chain pass per camera instead of B of each.
+        The val transform chain (Resize -> ScaleImageTensor -> Normalize) is applied
+        per-sample/per-pixel, so batching it is numerically identical to the loop —
+        see tests/test_batched_eval.py::test_process_env_obs_batch_values_match_single.
+
+        lang_text may be a single string, broadcast across the batch (every slot is
+        the same task), or a list of B strings (one task per slot, cross-task
+        batching) — mirrors the dispatch in FLOWERVLA.forward().
 
         Returns data with rgb_obs tensors of shape [B, 1, C, H, W] and goal with
-        lang_text as a list of B identical strings (handled by model.forward).
+        lang_text as a list of B strings (handled by model.forward).
         """
-        data_list = [self.process_env_obs(obs, lang_embed, lang_text)[0] for obs in obs_list]
-        batch_data = {
-            'rgb_obs': {
-                key: torch.cat([d['rgb_obs'][key] for d in data_list], dim=0)
-                for key in data_list[0]['rgb_obs']
-            }
-        }
-        if 'robot_obs' in data_list[0]:
-            batch_data['robot_obs'] = torch.cat([d['robot_obs'] for d in data_list], dim=0)
+        translated = [self.translate_obs_space(obs) for obs in obs_list]
+        transforms_to_use = self.transforms['val'] if 'val' in self.transforms else self.transforms
+
+        rgb_obs = {}
+        for key in translated[0]['rgb_obs']:
+            imgs = np.stack([t['rgb_obs'][key] for t in translated])  # [B, H, W, C]
+            x = torch.from_numpy(imgs).byte().permute(0, 3, 1, 2)  # [B, C, H, W]
+            for transform in transforms_to_use[key]:
+                x = transform(x)
+            rgb_obs[key] = x.unsqueeze(1).to(self.device)  # [B, 1, C, H, W]
+        batch_data = {'rgb_obs': rgb_obs}
+
+        if 'robot_obs' in translated[0]:
+            robot_obs = np.stack([t['robot_obs'] for t in translated])  # [B, D]
+            batch_data['robot_obs'] = torch.from_numpy(robot_obs).float().to(self.device)
+
+        lang_text_list = [lang_text] * len(obs_list) if isinstance(lang_text, str) else list(lang_text)
         goal = {
-            'lang_text': [lang_text] * len(obs_list),
+            'lang_text': lang_text_list,
             'lang': lang_embed,
         }
         return batch_data, goal
@@ -659,6 +902,8 @@ def _eval_worker(
         checkpoint=cfg_dict["checkpoint"],
         base_seed=cfg_dict.get("seed", 0),
         eval_modalities=cfg_dict.get("eval_modalities"),
+        env_start_method=cfg_dict.get("env_start_method", "spawn"),
+        cross_task_batching=cfg_dict.get("cross_task_batching", False),
     )
     eval_libero.setup()
 
@@ -696,6 +941,8 @@ def main(cfg):
     eval_modalities = OmegaConf.select(cfg, "eval_modalities", default=None)
     if eval_modalities is not None:
         eval_modalities = OmegaConf.to_container(eval_modalities, resolve=True)
+    env_start_method: str = OmegaConf.select(cfg, "env_start_method", default="spawn")
+    cross_task_batching: bool = OmegaConf.select(cfg, "cross_task_batching", default=False)
 
     eval_libero = EvaluateLibero(
         model=model,
@@ -712,6 +959,8 @@ def main(cfg):
         checkpoint=cfg.checkpoint,
         base_seed=base_seed,
         eval_modalities=eval_modalities,
+        env_start_method=env_start_method,
+        cross_task_batching=cross_task_batching,
     )
     csv_dir_override = OmegaConf.select(cfg, "csv_dir", default=None)
     if csv_dir_override:

@@ -107,10 +107,12 @@ cp vars.env.example vars.env   # fill in DATA_DIR, SAVES_DIR, HF_HOME
 
 ```bash
 ./run.sh train [bench] [...]          # Fine-tune (default: libero_10, all modalities, GPU count = CUDA_VISIBLE_DEVICES length)
-./run.sh train-frozen                 # Ablation: frozen Florence VLM, action expert from random init
-./run.sh train-dropout [bench]        # Fine-tune with Dirichlet modality-token dropout (default: libero_10)
-./run.sh train-dropout-resume [bench] # Resume train-dropout from CKPT_PATH env var
+                                       # then auto-runs ./run.sh pipeline on the same GPUs (SKIP_PIPELINE=1 to skip)
+./run.sh train-frozen                 # Ablation: frozen Florence VLM, action expert from random init (no auto-pipeline)
+./run.sh train-dropout [bench]        # Fine-tune with Dirichlet modality-token dropout (default: libero_10); auto-pipeline too
+./run.sh train-dropout-resume [bench] # Resume train-dropout from CKPT_PATH env var; auto-pipeline too
 ./run.sh eval                         # LIBERO-10 evaluation (~94.5% target)
+./run.sh pipeline <train_run_dir> [...] # Full post-training eval (LIBERO[-Plus], modality sweep if dropout) + W&B upload
 ./run.sh shell                        # Interactive bash inside the container
 ./run.sh smoke                        # Quick sanity check (CUDA + imports + 1 env step)
 ./run.sh devenv                       # Regenerate .devcontainer/.env after editing vars.env
@@ -144,11 +146,32 @@ CUDA_VISIBLE_DEVICES=2,3     ./run.sh eval    # eval on GPUs 2 & 3, leaving 0 & 
 one), so W&B runs and log lines identify which machine they came from. Override with
 `HOST_HOSTNAME` in `vars.env` if needed.
 
-**Batched eval** — `./run.sh eval` runs `eval_batch_size` episodes in parallel per task using
-`SubprocVectorEnv` (one MuJoCo subprocess per episode, EGL offscreen rendering). Model inference
-is batched across all parallel episodes. When `CUDA_VISIBLE_DEVICES` exposes multiple GPUs the
-10 tasks are partitioned across them, each GPU running its own batched eval independently.
-Tune `eval_batch_size` in `conf/eval_libero.yaml` (default 10) to trade RAM vs. parallelism.
+**Training batch size** — LIBERO training (`conf/config_libero.yaml`) defaults `batch_size`
+(per-GPU dataloader batch) to `32`. Override with `./run.sh train libero_10 batch_size=16` if
+that doesn't fit your GPUs.
+
+**Batched eval** — `./run.sh eval` runs `eval_batch_size` episodes in parallel per task, each in
+its own spawned MuJoCo subprocess (EGL offscreen rendering); model inference is batched across
+all parallel episodes, and an episode stops being simulated (though its slot keeps drawing
+inference, so the batch stays full width — see `env_start_method` below) the moment it finishes.
+When `CUDA_VISIBLE_DEVICES` exposes multiple GPUs the 10 tasks are partitioned across them, each
+GPU running its own batched eval independently. Tune `eval_batch_size` in `conf/eval_libero.yaml`
+(default 10) to trade RAM vs. parallelism.
+
+`env_start_method` (`conf/eval_libero.yaml`, default `spawn`) selects how those subprocesses are
+created: `spawn` runs episodes truly in parallel; `dummy` steps them sequentially in the parent
+process instead (useful as a slow-but-simple fallback, or for debugging). Fork-based subprocess
+creation isn't offered — MuJoCo's EGL context creation fails once the parent process has touched
+GL/EGL (as importing `robosuite` does), and even a GL-clean fork races when several children call
+into the driver at nearly the same instant; `spawn`'s naturally staggered process startup avoids
+both. See `flower/evaluation/libero_venv.py` for the full writeup, credit, and benchmarks.
+
+`cross_task_batching` (`conf/eval_libero.yaml`, default `false`; `true` in `conf/eval_libero_plus.yaml`)
+fills each batch with episodes drawn from different tasks instead of one task at a time. It's
+required whenever `n_eval` is smaller than `eval_batch_size` — LIBERO-Plus's `n_eval=1` means the
+per-task path can never fill a batch — but it also changes what gets sampled per batch (a
+different set of episodes shares the noise draw), so results carry a `batching_mode` column
+(`per_task` / `cross_task`) and aren't bitwise-comparable across the two modes.
 
 ### Modality-token dropout (`train-dropout`)
 
@@ -162,28 +185,40 @@ The position-correction step ensures every retained token's net positional embed
 its absolute position in the original sequence — removal is analytically equivalent to
 attention-masking with positions preserved (verified by a unit test against the masking oracle).
 
-The `<Flow>` prompt token is always kept. Rollout evaluation runs only at the final training
-epoch by default (`rollout_lh_skip_epochs` defaults to `max_epochs - 1` in
-`conf/config_libero.yaml`). Hyperparameters (model.yaml defaults):
+The `<Flow>` prompt token is always kept. Rollout evaluation during training is disabled
+(`rollout_lh_skip_epochs` defaults to `max_epochs` in `conf/config_libero.yaml`); evaluate a
+finished run with `./run.sh pipeline` instead (see [Evaluation](#evaluation)). Hyperparameters
+(model.yaml defaults):
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `modality_dropout` | `False` | Enable pre-encoder token removal |
 | `modality_dropout_keep_fraction` | `0.5` | Fraction of total tokens to keep per sample |
 | `modality_dropout_alphas` | `[1.0, 1.0, 1.0]` | Dirichlet α for [static, wrist, language] |
+| `modality_dropout_proprio_keep_p` | `0.5` | Proprio keep probability (Bernoulli, not part of the Dirichlet budget above — see below) |
+
+Proprioception isn't a token — see [Training with proprioception](#training-with-proprioception-modeluse_proprio)
+— so it can't share the three groups' Dirichlet token budget: at typical batch sizes it would
+be 1 "token" against ~500-1000 image/language tokens, and the Dirichlet allocation floors to 0
+or 1 almost regardless of its sampled proportion, making it an effectively inert ablation. It
+instead gets its own per-sample Bernoulli gate, resolved once per batch (not re-drawn per
+sampling step) and applied by zeroing its conditioning vector — exactly reproducing the
+`use_proprio=False` state when dropped.
 
 ### Train-time modality ablation (`train`)
 
 Unlike `train-dropout` (one model exposed to *randomly varying* modality proportions every
 step), a fixed modality-ablation model trains without dropout but only ever observes a fixed
-subset of `{rgb_static, rgb_gripper, language}` — the withheld modalities' tokens are physically
-removed pre-encoder in every forward, exactly like `eval_modalities` masking, but applied at
-training time too. This is set with `model.modalities.*` Hydra overrides on `./run.sh train`:
+subset of `{rgb_static, rgb_gripper, language, proprio}` — the withheld modalities are physically
+removed pre-encoder (tokens) or gated to zero (proprio) in every forward, exactly like
+`eval_modalities` masking, but applied at training time too. This is set with `model.modalities.*`
+Hydra overrides on `./run.sh train`:
 
 ```bash
-./run.sh train                                    # default: all three modalities
+./run.sh train                                    # default: static+wrist+lang, no proprio
 ./run.sh train libero_10 model.modalities.language=False
 ./run.sh train libero_10 model.modalities.rgb_static=False model.modalities.rgb_gripper=False
+./run.sh train libero_10 model.use_proprio=True    # add proprio to the default combo
 ```
 
 | Key | Default | Meaning |
@@ -191,20 +226,25 @@ training time too. This is set with `model.modalities.*` Hydra overrides on `./r
 | `modalities.rgb_static` | `True` | Static (scene) view enabled |
 | `modalities.rgb_gripper` | `True` | Wrist view enabled |
 | `modalities.language` | `True` | Language instruction enabled |
+| `modalities.proprio` | `True` | Proprioception enabled (requires `model.use_proprio=True`; see below) |
 
-At least one modality must stay on (an all-`False` combo raises `ValueError` before any data
-loads), and `model.modalities` is mutually exclusive with `model.modality_dropout=True`.
+At least one of the three vision/language modalities must stay on (an all-`False` combo raises
+`ValueError` before any data loads); `modalities.proprio=False` requires `use_proprio=True`
+(nothing to withhold otherwise); and `model.modalities` is mutually exclusive with
+`model.modality_dropout=True`.
 
 The run's Hydra directory (and hence its wandb `group`/`name`/`id`, both derived from it — see
-`setup_logger` in `flower/training_libero.py`) is suffixed with the combo's *dropped* modalities,
-joined with `+`, using the same short names (`static`/`wrist`/`lang`) as
-`scripts/compare_eval_csvs.py`:
+`setup_logger` in `flower/training_libero.py`) is suffixed with the combo's *present* modalities,
+joined with `+`, using the same short names (`static`/`wrist`/`lang`/`proprio`) as
+`scripts/compare_eval_csvs.py`. The default combo (static+wrist+lang, no proprio) keeps an empty
+suffix so existing run directories are unaffected:
 
 | Command | Run dir | wandb name |
 |---|---|---|
 | `./run.sh train` | `.../libero_10/<ts>` | `libero_10/<ts>` (unchanged) |
-| `./run.sh train libero_10 model.modalities.language=False` | `.../libero_10_lang/<ts>` | `libero_10_lang/<ts>` |
-| `./run.sh train libero_10 model.modalities.rgb_static=False model.modalities.rgb_gripper=False` | `.../libero_10_static+wrist/<ts>` | `libero_10_static+wrist/<ts>` |
+| `./run.sh train libero_10 model.modalities.language=False` | `.../libero_10_static+wrist/<ts>` | `libero_10_static+wrist/<ts>` |
+| `./run.sh train libero_10 model.modalities.rgb_static=False model.modalities.rgb_gripper=False` | `.../libero_10_lang/<ts>` | `libero_10_lang/<ts>` |
+| `./run.sh train libero_10 model.use_proprio=True` | `.../libero_10_static+wrist+lang+proprio/<ts>` | `libero_10_static+wrist+lang+proprio/<ts>` |
 
 The trained combo is part of the model's saved hyperparameters, so it's restored automatically
 by `load_mode_from_safetensor`/checkpoint loading — evaluating one of these checkpoints with no
@@ -232,6 +272,11 @@ This MLP is trained from scratch for LIBERO/CALVIN's single-arm action space. Th
 `flower_vla_pret` checkpoint only ships real proprio weights for its bimanual action space
 (trained on bimanual ALOHA data with that dataset's own normalization statistics), which
 LIBERO/CALVIN don't use — there's no pretrained single-arm proprio signal to warm-start from.
+
+Once `use_proprio=True`, proprioception can also be ablated like the other three modalities —
+`model.modalities.proprio=False` (fixed, train+eval), `model.modality_dropout_proprio_keep_p`
+(training-time Bernoulli dropout), or `eval_modalities.proprio=False` (eval-only) — see the
+sections above and "Modality-ablation eval" below.
 
 ### VS Code Devcontainer
 
@@ -271,7 +316,7 @@ python flower/training.py
 
 You can use the pretrained FLOWER checkpoint from [hf-link](https://huggingface.co/mbreuss/flower_vla_pret) to train your own model on any of the datasets. 
 
-Note that during training the full CALVIN eval or LIBERO rollouts will be called after _rollout_lh_skip_epochs_ and then every _callbacks.rollout_lh.rollout_freq_*1k training steps. Check out the training config for adopting the parameters.
+Note that during CALVIN training the full CALVIN eval will be called after _rollout_lh_skip_epochs_ and then every _callbacks.rollout_lh.rollout_freq_*1k training steps. LIBERO training no longer runs rollout eval at all (`rollout_lh_skip_epochs` is set to `max_epochs`) — evaluate a finished LIBERO run with `./run.sh pipeline` instead (see [Pipeline: automated post-training evaluation](#pipeline-automated-post-training-evaluation)). Check out the training config for adopting the parameters.
 
 For replication of the orginial training results I recommend to use 4 GPUs with a batch_size of 8 and train them for 40k steps for ABC (ABCD) and evaluating after 19 epochs to get the best possible results.
 See training configs for details.
@@ -382,7 +427,10 @@ and modality-dropout models under controlled perturbations.
 ### Running the two-model comparison
 
 Let `CKPT_BASE=/saves/checkpoints/libero_10` (baseline) and
-`CKPT_DROP=/saves/train_logs/libero_10_dropout/<run>/saved_models/<best.ckpt>` (dropout model).
+`CKPT_DROP=/saves/train_logs/libero_10_dropout/<run>/seed_<seed>/saved_models/last.ckpt`
+(dropout model). `./run.sh pipeline` (below) runs both of these evaluations for you, plus
+the full modality sweep for a dropout run — use the manual commands here for one-off spot
+checks.
 
 **A. Baseline LIBERO-10 (original 10 tasks, n_eval=20):**
 ```bash
@@ -407,11 +455,15 @@ below) — set it to each model's own directory so the two models' CSVs don't co
 > deterministic perturbed instance, so higher values add no new perturbations.
 > More importantly, MuJoCo/robosuite offscreen render contexts don't fully free
 > native EGL/GL memory on `env.close()`, so peak RSS grows monotonically with
-> the total env create/destroy cycle count:
-> `n_tasks × ceil(n_eval / eval_batch_size)`.
-> With `n_eval=50` and 419 Camera-Viewpoint tasks that is ~20,950 instantiations,
-> which OOMs under the 64 GB container cap (`MEM_LIMIT` in `vars.env`).
-> If a full 2519-task run approaches the cap, split it by category (as above)
+> the total env create/destroy cycle count. With `cross_task_batching: true`
+> (the `eval_libero_plus.yaml` default) that count is
+> `ceil(n_tasks × n_eval / eval_batch_size)` — for 419 Camera-Viewpoint tasks at
+> `n_eval=1` that's ~42 instantiations, not one per task, since batches now span
+> tasks instead of collapsing to size 1. (Falling back to `cross_task_batching: false`
+> reintroduces the old `n_tasks × ceil(n_eval / eval_batch_size)` count — ~419
+> instantiations here, and ~20,950 at `n_eval=50` — which can OOM under the
+> container's `MEM_LIMIT` cap in `vars.env`.)
+> If a full 2519-task run still approaches the cap, split it by category (as above)
 > or use multi-GPU (`CUDA_VISIBLE_DEVICES=2,3`) so each spawned worker process
 > releases its address space on exit.
 
@@ -435,16 +487,22 @@ Columns identify every variable that determines the episode: `suite`, `task_idx`
 noise id, etc. — in this name; no separate columns), `task_category` /
 `difficulty_level` (LIBERO-Plus only), `language` (the exact instruction fed to the
 model), `init_state_idx`, `rollout_seed`, `num_sampling_steps`, `multistep`,
-`eval_batch_size`, and the three modality flags `use_rgb_static`, `use_rgb_gripper`,
-`use_language`. These three are part of the row's merge key (see below), so evaluating
-the same task/episode/checkpoint under a different modality combo adds a new row
+`eval_batch_size`, `batching_mode` (`per_task` or `cross_task`, see `cross_task_batching`
+above), and the four modality flags `use_rgb_static`, `use_rgb_gripper`,
+`use_language`, `use_proprio`. These four are part of the row's merge key (see below), so
+evaluating the same task/episode/checkpoint under a different modality combo adds a new row
 instead of overwriting the previous combo's result. Result columns are `success`
-(0/1) and `steps_taken`.
+(0/1) and `steps_taken`. (`use_proprio` postdates the other three; rows in a `result.csv`
+written before it existed simply lack the column — `eval_records.py`/`compare_eval_csvs.py`
+read that as proprio-absent, which is factually correct for those older runs.)
 
 **Reproducibility:** the model draws one shared flow-matching noise tensor for an entire
 batch on each replan, so a rollout is only reproducible at batch granularity, not
-per-episode — `rollout_seed` is derived from `(seed, task_idx, batch_start_episode)` and
-recorded per row along with `eval_batch_size`; reproducing a row requires matching both.
+per-episode — `rollout_seed` is derived from `(seed, task_idx, batch_start_episode)` for
+`per_task` rows, or `(seed, batch_index)` for `cross_task` rows, and recorded per row
+along with `eval_batch_size`/`batching_mode`; reproducing a row requires matching all of
+these. The two batching modes draw different noise for the same episode, so their
+`success`/`steps_taken` are not expected to match.
 **Known exception:** LIBERO-Plus Sensor-Noise tasks using motion_blur, fog, or
 glass_blur corruption (noise ids 1-10, 31-40, 41-50) call unseeded `np.random` on every
 rendered frame inside the vendored env, so those specific episodes are not bit-exact
@@ -456,9 +514,11 @@ reproducible even with a matching seed; gaussian_blur/zoom_blur (ids 11-30) are 
 pre-encoder (mirroring how `train-dropout` trains, but with a fixed on/off group
 instead of Dirichlet-sampled proportions — see `FLOWERVLA.eval_modality_mask` in
 `flower/models/flower.py`, `deterministic_keep_counts` in
-`flower/models/networks/modality_dropout.py`). At least one modality must stay on.
-This works on any checkpoint, not just `train-dropout` ones — it's how you'd test
-whether *any* model degrades gracefully when a modality is missing.
+`flower/models/networks/modality_dropout.py`). `proprio` works the same way but isn't
+a token — it zeros the proprio conditioning vector instead (`FLOWERVLA.eval_proprio_mask`)
+and requires a `use_proprio=True` checkpoint. At least one of the three vision/language
+modalities must stay on. This works on any checkpoint, not just `train-dropout` ones —
+it's how you'd test whether *any* model degrades gracefully when a modality is missing.
 
 **Precedence for a fixed-modality-ablation checkpoint** (see "Train-time modality ablation"
 above): the trained combo is restored from the checkpoint and applied automatically, so
@@ -474,7 +534,7 @@ Example, dropping language on the dropout checkpoint:
 Compare modality combos — either within one checkpoint's own `result.csv` or across
 two different checkpoints' files — with `scripts/compare_eval_csvs.py`, which takes
 `--modalities-a`/`--modalities-b` (each a comma-separated subset of
-`static,wrist,lang`, default all three):
+`static,wrist,lang,proprio`, default `static,wrist,lang`):
 ```bash
 python scripts/compare_eval_csvs.py $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv \
                                      $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv \
@@ -485,11 +545,12 @@ python scripts/compare_eval_csvs.py $CKPT_DROP/eval_logs/last/orig_libero_10/res
 modality's presence is worth; PID says *how* that information is shared between two
 modalities — redundant (either alone would do), unique (only that one carries it), or
 synergistic (only the pair together does). `scripts/pid_modality.py` runs this over a
-`result.csv` that has all 7 modality combos evaluated (`static,wrist,lang` full through
-each single modality): for each of the three modality pairs it treats availability of
-the two as sources `X1, X2` and `success` as target `Y`, holding the third modality on
-so all four `(x1, x2)` cells are populated, and decomposes `I(X1, X2 ; Y)` into
-redundancy `R`, unique `U1`/`U2`, and synergy `S`.
+`result.csv` that has all 15 modality combos evaluated (`static,wrist,lang,proprio` full
+through each single modality — a full sweep on a `use_proprio=True` checkpoint): for each
+of the six modality pairs it treats availability of the two as sources `X1, X2` and
+`success` as target `Y`, holding the other two modalities on so all four `(x1, x2)` cells
+are populated, and decomposes `I(X1, X2 ; Y)` into redundancy `R`, unique `U1`/`U2`, and
+synergy `S`.
 
 Uses [`dit`](https://github.com/dit/dit)'s `PID_CCS` — Ince (2017)'s common-change-in-
 surprisal measure, the same one implemented in MATLAB by
@@ -507,6 +568,10 @@ can go slightly negative.
 python scripts/pid_modality.py $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv
 ```
 
+It also prints a second table: success rate per modality-presence combination found in the
+CSV (`static wrist lang proprio -> success_rate, n`), rows sorted by the four presence flags
+read as a binary number, descending — the all-on combo first, all-off last.
+
 **Perturbation categories** (pass as `task_category="<name>"`):
 
 | Category | Description |
@@ -522,6 +587,67 @@ python scripts/pid_modality.py $CKPT_DROP/eval_logs/last/orig_libero_10/result.c
 Each category reports a per-category average success rate (`eval_lh/cat_<category>`).
 The hypothesis is that the modality-dropout model degrades less, especially on `Language Instructions`
 (where LIBERO-Plus shows standard VLAs regress to pure visuomotor control).
+
+### Pipeline: automated post-training evaluation
+
+`./run.sh pipeline <train_run_dir> [hydra_overrides...]` automates everything above for one
+completed training run — deciding which evaluations it needs, running them, and uploading
+the results — instead of invoking `eval`/`eval-plus`/`compare_eval_csvs.py`/`pid_modality.py`
+by hand:
+
+```bash
+./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
+```
+
+**`train`, `train-dropout`, and `train-dropout-resume` run this automatically** once training
+finishes, on the same GPUs training used (`CUDA_VISIBLE_DEVICES`, exported by `run.sh` before
+the training container starts so it's available to the pipeline call chained after it) — no
+manual invocation needed for the common case. It only runs after a successful training exit
+(a crashed/OOM'd run doesn't trigger it). Set `SKIP_PIPELINE=1` to opt out, e.g. when queuing
+several training runs back to back without waiting on each one's eval:
+
+```bash
+SKIP_PIPELINE=1 ./run.sh train libero_90
+./run.sh pipeline /saves/train_logs/libero_90/<run>   # run it yourself, later
+```
+
+`train-frozen` is the one exception — it doesn't auto-run the pipeline (its run directory is
+resolved inside the container, not known to `run.sh`) — invoke `./run.sh pipeline <dir>`
+manually for it.
+
+It reads `<train_run_dir>/.hydra/config.yaml` to branch:
+
+- **Regular training** (`model.modality_dropout=False`): one full-modality LIBERO eval, then
+  one full-modality LIBERO-Plus eval.
+- **`train-dropout` runs** (`model.modality_dropout=True`): every non-empty combination of
+  `{rgb_static, rgb_gripper, language}` on LIBERO — 7 combos, or 14 if the run also used
+  `model.use_proprio=True` (each token combo crossed with proprio on/off; "proprio only" is
+  never evaluated, since the model requires at least one vision/language modality) — then one
+  full-modality LIBERO-Plus eval.
+
+Every combo appends into the same `result.csv` (see [Evaluation results (CSV)](#evaluation-results-csv)
+above), so a dropout run's file ends up exactly the "full sweep" `scripts/pid_modality.py`
+needs. Trailing Hydra overrides are appended, last, to every eval it launches — e.g. to
+resize the eval batch or shrink `n_eval` for a quick check:
+
+```bash
+./run.sh pipeline /saves/train_logs/libero_10/2026-09-08_10-00-00 eval_batch_size=32 n_eval=5
+```
+
+`PIPELINE_RESUME=1` skips any combo whose modality flags already have rows in the target
+`result.csv`, so a sweep interrupted partway through restarts cheaply instead of
+re-evaluating everything:
+
+```bash
+PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
+```
+
+Once every eval finishes, it runs `scripts/pid_modality.py` over the LIBERO `result.csv` and
+uploads both `result.csv` files plus the PID output as a W&B artifact (`eval-<run_id>`, type
+`evaluation`) attached to the *training* run — same project/entity/id `setup_logger` gave it
+in `flower/training_libero.py`, reconstructed from the run directory name, so the artifact
+lands next to the training curves without a separate W&B run being created. Prerequisite:
+`./run.sh download-plus` (once, for LIBERO-Plus assets).
 
 #### Common Issues
 

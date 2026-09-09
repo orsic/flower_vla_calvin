@@ -13,14 +13,19 @@ token_dropout: 0.1  # Post-encoder unstructured token dropout (existing regulari
 modality_dropout: False
 modality_dropout_keep_fraction: 0.5
 modality_dropout_alphas: [1.0, 1.0, 1.0]
+# Proprio isn't a token (it's an AdaLN conditioning vector, not part of the Dirichlet budget
+# above) — its own per-sample Bernoulli keep probability while modality_dropout=True.
+modality_dropout_proprio_keep_p: 0.5
 
 # Fixed modality ablation: which modalities this model observes. Any set to False has its
 # tokens physically removed pre-encoder in every forward — training, validation and eval.
-# Mutually exclusive with modality_dropout. At least one must stay True.
+# Mutually exclusive with modality_dropout. At least one must stay True. proprio=False
+# requires use_proprio=True (nothing to withhold otherwise).
 modalities:
   rgb_static: true
   rgb_gripper: true
   language: true
+  proprio: true
 
 # Model Structure
 multistep: ${multistep}

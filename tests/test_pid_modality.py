@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from pid_modality import build_joint, decompose, held_modality  # noqa: E402
+import itertools
+
+import pid_modality
+from pid_modality import build_joint, decompose, held_modalities, presence_success  # noqa: E402
 
 dit = pytest.importorskip("dit")
 
@@ -43,14 +46,15 @@ def _rows_from_cells(cells):
 
 
 # ---------------------------------------------------------------------------
-# held_modality
+# held_modalities
 # ---------------------------------------------------------------------------
 
 
-def test_held_modality_picks_the_third():
-    assert held_modality("static", "wrist") == "lang"
-    assert held_modality("static", "lang") == "wrist"
-    assert held_modality("wrist", "lang") == "static"
+def test_held_modalities_picks_the_other_two():
+    assert held_modalities("static", "wrist") == ("lang", "proprio")
+    assert held_modalities("static", "lang") == ("wrist", "proprio")
+    assert held_modalities("wrist", "lang") == ("static", "proprio")
+    assert held_modalities("static", "proprio") == ("wrist", "lang")
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +83,32 @@ def test_build_joint_missing_cell_raises(tmp_path):
     rows = _rows_from_cells({(0, 0): [0], (1, 0): [0], (0, 1): [1]})  # (1,1) missing
     with pytest.raises(SystemExit):
         build_joint(rows, "static", "wrist", "lang")
+
+
+def test_build_joint_accepts_multiple_held_modalities():
+    """held as a tuple requires every held column to be 1 -- the shape held_modalities()
+    now returns with a 4th modality (proprio) in play."""
+    rows = [
+        {"use_rgb_static": x1, "use_rgb_gripper": x2, "use_language": 1,
+         "use_proprio": 1, "success": s}
+        for (x1, x2), successes in
+        {(0, 0): [0], (1, 0): [0], (0, 1): [0], (1, 1): [1]}.items()
+        for s in successes
+    ]
+    # add a row with one held modality off -- must be excluded
+    rows.append({"use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1,
+                 "use_proprio": 0, "success": 1})
+    dist = build_joint(rows, "static", "wrist", ("lang", "proprio"))
+    assert dist.outcome_length() == 3
+    assert sum(dist.pmf) == pytest.approx(1.0)
+
+
+def test_build_joint_missing_held_column_reads_as_off(tmp_path):
+    """A result.csv predating use_proprio has no such column; holding proprio on must
+    then exclude every row (missing == absent), not KeyError."""
+    rows = _rows_from_cells({(0, 0): [0], (1, 0): [0], (0, 1): [1], (1, 1): [1]})
+    with pytest.raises(SystemExit):
+        build_joint(rows, "static", "wrist", ("lang", "proprio"))
 
 
 # ---------------------------------------------------------------------------
@@ -121,3 +151,65 @@ def test_decompose_terms_sum_to_mutual_information_on_real_shaped_joint():
     dist = build_joint(rows, "static", "wrist", "lang")
     pid = decompose(dist, "ccs")
     assert pid["R"] + pid["U1"] + pid["U2"] + pid["S"] == pytest.approx(pid["I"], abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# presence_success
+# ---------------------------------------------------------------------------
+
+
+def test_presence_success_groups_by_all_four_flags():
+    rows = [
+        {"use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1, "use_proprio": 1, "success": 1},
+        {"use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1, "use_proprio": 1, "success": 0},
+        {"use_rgb_static": 1, "use_rgb_gripper": 0, "use_language": 0, "use_proprio": 0, "success": 1},
+    ]
+    result = presence_success(rows)
+    assert result[(1, 1, 1, 1)] == (0.5, 2)
+    assert result[(1, 0, 0, 0)] == (1.0, 1)
+
+
+def test_presence_success_missing_column_reads_as_off():
+    """Rows from a result.csv predating use_proprio have no such key at all."""
+    rows = [{"use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1, "success": 1}]
+    result = presence_success(rows)
+    assert (1, 1, 1, 0) in result
+    assert (1, 1, 1, 1) not in result
+
+
+def test_presence_success_sorted_binary_descending_all_ones_first():
+    rows = [
+        {"use_rgb_static": s, "use_rgb_gripper": w, "use_language": l, "use_proprio": p, "success": 1}
+        for s in (0, 1) for w in (0, 1) for l in (0, 1) for p in (0, 1)
+    ]
+    combos = sorted(presence_success(rows), reverse=True)
+    assert combos[0] == (1, 1, 1, 1)
+    assert combos[-1] == (0, 0, 0, 0)
+    assert combos == sorted(combos, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# main() -- skips an incomplete pair instead of aborting the whole run (a no-proprio
+# dropout sweep never varies proprio, so every proprio pair is incomplete by design)
+# ---------------------------------------------------------------------------
+
+
+def test_main_skips_incomplete_pairs_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    full_columns = ["use_rgb_static", "use_rgb_gripper", "use_language", "use_proprio", "success"]
+    rows = [
+        dict(zip(full_columns, (static, wrist, lang, 1, success)))  # proprio never varies
+        for static, wrist, lang in itertools.product((0, 1), repeat=3)
+        for success in (0, 1)
+    ]
+    csv_path = tmp_path / "result.csv"
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=full_columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    monkeypatch.setattr(sys, "argv", ["pid_modality.py", str(csv_path)])
+    pid_modality.main()  # must not raise despite the proprio pairs being incomplete
+
+    out = capsys.readouterr().out
+    assert "static+proprio" in out and "not evaluated" in out
+    assert "static+wrist" in out  # unaffected pair still gets a full PID line

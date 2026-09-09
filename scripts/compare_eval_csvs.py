@@ -18,8 +18,16 @@ MODALITY_COLUMNS = {
     "static": "use_rgb_static",
     "wrist": "use_rgb_gripper",
     "lang": "use_language",
+    "proprio": "use_proprio",
 }
 ALL_MODALITIES = set(MODALITY_COLUMNS)
+
+
+def _flag(row: dict, col: str) -> bool:
+    # use_proprio is missing entirely from result.csv files written before it existed
+    # (see eval_records.py's module docstring) — read those rows as proprio-absent,
+    # which is factually correct since every such eval ran with use_proprio=false.
+    return bool(int(row.get(col) or 0))
 
 
 def parse_modalities(spec: str) -> set:
@@ -38,7 +46,7 @@ def per_task_sr(path: str, modalities: set) -> dict:
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
             matches = all(
-                int(row[col]) == (name in modalities)
+                _flag(row, col) == (name in modalities)
                 for name, col in MODALITY_COLUMNS.items()
             )
             if matches:

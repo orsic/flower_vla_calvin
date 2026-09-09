@@ -43,6 +43,10 @@ def test_parse_modalities_empty_raises():
         parse_modalities("")
 
 
+def test_parse_modalities_includes_proprio():
+    assert parse_modalities("proprio") == {"proprio"}
+
+
 # ---------------------------------------------------------------------------
 # per_task_sr
 # ---------------------------------------------------------------------------
@@ -76,3 +80,32 @@ def test_per_task_sr_no_match_raises(tmp_path):
     ])
     with pytest.raises(SystemExit):
         per_task_sr(str(path), {"static"})
+
+
+def test_per_task_sr_missing_use_proprio_column_reads_as_absent(tmp_path):
+    """result.csv files predating use_proprio have no such column; the default
+    modality set (no "proprio") must still match them — see eval_records.py's
+    module docstring on why a missing column reads as proprio-absent."""
+    path = tmp_path / "result.csv"
+    _write_csv(path, [
+        {"task_name": "t1", "use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1, "success": 1},
+    ])
+    result = per_task_sr(str(path), {"static", "wrist", "lang"})
+    assert result == {"t1": 1.0}
+    with pytest.raises(SystemExit):
+        per_task_sr(str(path), {"static", "wrist", "lang", "proprio"})
+
+
+def test_per_task_sr_filters_on_use_proprio_column(tmp_path):
+    path = tmp_path / "result.csv"
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS + ["use_proprio"])
+        writer.writeheader()
+        writer.writerow({"task_name": "t1", "use_rgb_static": 1, "use_rgb_gripper": 1,
+                          "use_language": 1, "use_proprio": 1, "success": 1})
+        writer.writerow({"task_name": "t1", "use_rgb_static": 1, "use_rgb_gripper": 1,
+                          "use_language": 1, "use_proprio": 0, "success": 0})
+    with_proprio = per_task_sr(str(path), {"static", "wrist", "lang", "proprio"})
+    without_proprio = per_task_sr(str(path), {"static", "wrist", "lang"})
+    assert with_proprio == {"t1": 1.0}
+    assert without_proprio == {"t1": 0.0}

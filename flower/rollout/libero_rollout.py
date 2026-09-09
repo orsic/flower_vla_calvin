@@ -218,9 +218,9 @@ class RolloutLibero(Callback):
         # get the
 
         if pl_module.current_epoch < self.skip_epochs:
-            # Log a placeholder so ModelCheckpoint can find the monitored key at every
-            # checkpoint epoch, including after a resume (where epoch 0 is never seen).
-            pl_module.log("eval_lh/avg_seq_len", torch.tensor(0.0), on_step=False, sync_dist=True)
+            # No monitored checkpoint metric depends on this anymore; nothing to do before
+            # skip_epochs.
+            return
         elif pl_module.current_epoch == self.skip_epochs or ((pl_module.current_epoch - self.skip_epochs) >= 0 and (pl_module.current_epoch - self.skip_epochs) % self.rollout_freq == 0):
             successes = self.evaluate_policy(pl_module)
 

@@ -5,6 +5,7 @@ Pure logic / filesystem tests, no MuJoCo or model dependencies.
 
 from flower.evaluation.eval_records import (
     ALL_COLUMNS,
+    batch_seed,
     checkpoint_name,
     merge_rank_csvs,
     merge_result_csv,
@@ -18,7 +19,7 @@ from flower.evaluation.eval_records import (
 
 def _row(
     task_idx, episode_idx, success, checkpoint_name_="last", variant="orig", suite="libero_10",
-    use_rgb_static=1, use_rgb_gripper=1, use_language=1,
+    use_rgb_static=1, use_rgb_gripper=1, use_language=1, use_proprio=1,
 ):
     row = {col: "" for col in ALL_COLUMNS}
     row.update(
@@ -30,6 +31,7 @@ def _row(
         use_rgb_static=use_rgb_static,
         use_rgb_gripper=use_rgb_gripper,
         use_language=use_language,
+        use_proprio=use_proprio,
         success=success,
     )
     return row
@@ -96,6 +98,23 @@ def test_rollout_seed_distinct_across_task_and_episode():
 
 
 # ---------------------------------------------------------------------------
+# batch_seed (cross_task_batching)
+# ---------------------------------------------------------------------------
+
+def test_batch_seed_stable():
+    assert batch_seed(0, 2) == batch_seed(0, 2)
+
+
+def test_batch_seed_distinct_across_base_seed_and_batch_index():
+    seeds = {
+        batch_seed(0, 0),
+        batch_seed(0, 1),
+        batch_seed(1, 0),
+    }
+    assert len(seeds) == 3
+
+
+# ---------------------------------------------------------------------------
 # merge_rows
 # ---------------------------------------------------------------------------
 
@@ -144,6 +163,27 @@ def test_merge_rows_same_modality_combo_still_overwrites():
     assert merged[0]["success"] == 1
 
 
+def test_merge_rows_different_proprio_combo_does_not_collide():
+    """Same episode re-evaluated with proprio withheld is a new row, not an overwrite."""
+    with_proprio = [_row(0, 0, success=1, use_proprio=1)]
+    without_proprio = [_row(0, 0, success=0, use_proprio=0)]
+    merged = merge_rows(with_proprio, without_proprio)
+    assert len(merged) == 2
+    successes = {r["use_proprio"]: r["success"] for r in merged}
+    assert successes[1] == 1
+    assert successes[0] == 0
+
+
+def test_merge_rows_legacy_row_without_use_proprio_key_merges():
+    """A row from a result.csv written before use_proprio existed has no such key at
+    all (not even ""); _row_key must not KeyError on it."""
+    legacy = _row(0, 0, success=1)
+    del legacy["use_proprio"]
+    new = [_row(1, 0, success=0)]
+    merged = merge_rows([legacy], new)
+    assert len(merged) == 2
+
+
 # ---------------------------------------------------------------------------
 # merge_result_csv
 # ---------------------------------------------------------------------------
@@ -176,6 +216,27 @@ def test_merge_result_csv_rerun_same_key_updates_in_place(tmp_path):
     on_disk = read_csv(path)
     assert len(on_disk) == 1
     assert int(on_disk[0]["success"]) == 1
+
+
+def test_batching_mode_round_trips(tmp_path):
+    path = tmp_path / "result.csv"
+    row = _row(0, 0, success=1)
+    row["batching_mode"] = "cross_task"
+    merge_result_csv(path, [row])
+    on_disk = read_csv(path)
+    assert on_disk[0]["batching_mode"] == "cross_task"
+
+
+def test_old_row_without_batching_mode_still_merges(tmp_path):
+    """A row dict missing the batching_mode key (old in-memory row) must not crash
+    write_csv, and defaults to an empty value rather than erroring."""
+    path = tmp_path / "result.csv"
+    row = _row(0, 0, success=1)
+    del row["batching_mode"]
+    merge_result_csv(path, [row])
+    on_disk = read_csv(path)
+    assert len(on_disk) == 1
+    assert on_disk[0]["batching_mode"] == ""
 
 
 # ---------------------------------------------------------------------------
