@@ -260,20 +260,29 @@ case "$CMD" in
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell \
         python scripts/eval_pipeline.py plan --train-folder "$train_dir" "${resume_flag[@]}" -- "$@")"
 
+    # Read every plan line into memory before launching anything -- a long-running eval
+    # container previously held the loop's plan text on a shared fd for its entire
+    # lifetime (hours, for a full sweep), and that fd ended up consumed/closed partway
+    # through, so only the first line ever ran. A plain array has no descriptor left
+    # open once this line finishes, so nothing a child process does afterward can
+    # affect the remaining iterations.
+    mapfile -t plan_lines <<< "$plan"
+
     i=0
-    while IFS=$'\t' read -r -a fields; do
+    for line in "${plan_lines[@]}"; do
+        IFS=$'\t' read -r -a fields <<< "$line"
         [[ ${#fields[@]} -eq 0 ]] && continue
         svc="${fields[0]}"
         overrides=("${fields[@]:1}")
         i=$((i + 1))
         config_arg=()
         [[ "$svc" == "eval-plus" ]] && config_arg=(--config-name=eval_libero_plus)
-        podman-compose -f "$COMPOSE" run --rm "$svc" \
+        podman-compose -f "$COMPOSE" run --rm -T "$svc" \
             python flower/evaluation/flower_eval_libero.py \
             "${config_arg[@]}" \
             "${overrides[@]}" \
             "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)_${i}"
-    done <<< "$plan"
+    done
 
     podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts \
         python scripts/eval_pipeline.py upload --train-folder "$train_dir" -- "$@"

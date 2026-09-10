@@ -10,7 +10,13 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import itertools
 
 import pid_modality
-from pid_modality import build_joint, decompose, held_modalities, presence_success  # noqa: E402
+from pid_modality import (  # noqa: E402
+    build_joint,
+    classify_modality,
+    decompose,
+    held_modalities,
+    presence_success,
+)
 
 dit = pytest.importorskip("dit")
 
@@ -57,6 +63,30 @@ def test_held_modalities_picks_the_other_two():
     assert held_modalities("static", "proprio") == ("wrist", "lang")
 
 
+def test_held_modalities_with_two_active_returns_empty():
+    """A 2-modality active set has no "other" modalities left to hold."""
+    assert held_modalities("static", "wrist", active=["static", "wrist"]) == ()
+
+
+# ---------------------------------------------------------------------------
+# classify_modality
+# ---------------------------------------------------------------------------
+
+
+def test_classify_modality_four_states():
+    rows_absent = [{"use_rgb_static": 1, "success": 1}]
+    assert classify_modality(rows_absent, "proprio") == "absent"
+
+    rows_const0 = [{"use_proprio": 0, "success": 1}, {"use_proprio": 0, "success": 0}]
+    assert classify_modality(rows_const0, "proprio") == "constant-0"
+
+    rows_const1 = [{"use_proprio": 1, "success": 1}, {"use_proprio": 1, "success": 0}]
+    assert classify_modality(rows_const1, "proprio") == "constant-1"
+
+    rows_varying = [{"use_proprio": 0, "success": 1}, {"use_proprio": 1, "success": 0}]
+    assert classify_modality(rows_varying, "proprio") == "varying"
+
+
 # ---------------------------------------------------------------------------
 # build_joint
 # ---------------------------------------------------------------------------
@@ -101,6 +131,19 @@ def test_build_joint_accepts_multiple_held_modalities():
     dist = build_joint(rows, "static", "wrist", ("lang", "proprio"))
     assert dist.outcome_length() == 3
     assert sum(dist.pmf) == pytest.approx(1.0)
+
+
+def test_build_joint_empty_held_does_not_filter():
+    """An empty held tuple (2-modality active set) pools every row regardless of the
+    other modalities -- the marginalized case."""
+    rows = _rows_from_cells({(0, 0): [0], (1, 0): [0], (0, 1): [1], (1, 1): [1]})
+    rows.append({"use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 0, "success": 0})
+    dist = build_joint(rows, "static", "wrist", ())
+    assert dist.outcome_length() == 3
+    assert sum(dist.pmf) == pytest.approx(1.0)
+    # the held-off row must have been pooled in, unlike the held="lang" case above
+    srs = pid_modality.conditional_srs(rows, "static", "wrist", ())
+    assert srs[(1, 1)] == pytest.approx(0.5)  # 1 success out of the 2 (1,1) rows
 
 
 def test_build_joint_missing_held_column_reads_as_off(tmp_path):
@@ -153,6 +196,26 @@ def test_decompose_terms_sum_to_mutual_information_on_real_shaped_joint():
     assert pid["R"] + pid["U1"] + pid["U2"] + pid["S"] == pytest.approx(pid["I"], abs=1e-6)
 
 
+def test_marginalized_differs_from_conditioned():
+    """Y = static when lang=1, Y = wrist when lang=0. Conditioning on lang=1 makes Y a
+    pure copy of static (no redundancy, all unique-to-static); pooling over both lang
+    values mixes in cells where static and wrist agree with each other, adding
+    redundancy. R must differ measurably between the two."""
+    table = {
+        (1, 0, 0): 0, (1, 0, 1): 0, (1, 1, 0): 1, (1, 1, 1): 1,
+        (0, 0, 0): 0, (0, 1, 0): 0, (0, 0, 1): 1, (0, 1, 1): 1,
+    }
+    rows = [
+        {"use_language": lang, "use_rgb_static": static, "use_rgb_gripper": wrist, "success": success}
+        for (lang, static, wrist), success in table.items()
+    ]
+
+    conditioned = decompose(build_joint(rows, "static", "wrist", "lang"), "ccs")
+    marginalized = decompose(build_joint(rows, "static", "wrist", ()), "ccs")
+
+    assert abs(conditioned["R"] - marginalized["R"]) > 0.05
+
+
 # ---------------------------------------------------------------------------
 # presence_success
 # ---------------------------------------------------------------------------
@@ -175,6 +238,15 @@ def test_presence_success_missing_column_reads_as_off():
     result = presence_success(rows)
     assert (1, 1, 1, 0) in result
     assert (1, 1, 1, 1) not in result
+
+
+def test_presence_success_restricted_to_active_modalities():
+    rows = [
+        {"use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1, "use_proprio": 1, "success": 1},
+        {"use_rgb_static": 1, "use_rgb_gripper": 0, "use_language": 1, "use_proprio": 0, "success": 0},
+    ]
+    result = presence_success(rows, ["static", "wrist", "lang"])
+    assert set(result) == {(1, 1, 1), (1, 0, 1)}
 
 
 def test_presence_success_sorted_binary_descending_all_ones_first():
@@ -213,3 +285,111 @@ def test_main_skips_incomplete_pairs_instead_of_crashing(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert "static+proprio" in out and "not evaluated" in out
     assert "static+wrist" in out  # unaffected pair still gets a full PID line
+
+
+# ---------------------------------------------------------------------------
+# main() -- modality detection drops absent/constant-0 columns from the report
+# entirely, instead of reporting six "not evaluated" pairs unrelated to the data.
+# ---------------------------------------------------------------------------
+
+
+def _three_modality_rows(proprio_col=False):
+    columns = ["use_rgb_static", "use_rgb_gripper", "use_language"]
+    if proprio_col:
+        columns.append("use_proprio")
+    columns.append("success")
+    rows = []
+    for static, wrist, lang in itertools.product((0, 1), repeat=3):
+        for success in (0, 1):
+            values = [static, wrist, lang]
+            if proprio_col:
+                values.append(0)  # constant-0
+            values.append(success)
+            rows.append(dict(zip(columns, values)))
+    return columns, rows
+
+
+def _write_rows_csv(path, columns, rows):
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def test_report_drops_absent_modality_column(tmp_path, monkeypatch, capsys):
+    """No use_proprio column at all -> a valid 3-pair report, not six empty ones."""
+    columns, rows = _three_modality_rows(proprio_col=False)
+    csv_path = tmp_path / "result.csv"
+    _write_rows_csv(csv_path, columns, rows)
+
+    monkeypatch.setattr(sys, "argv", ["pid_modality.py", str(csv_path)])
+    pid_modality.main()
+
+    out = capsys.readouterr().out
+    assert "dropped: proprio (column absent)" in out
+    assert "not evaluated" not in out
+    assert "+proprio" not in out and "proprio+" not in out
+    for pair in ("static+wrist", "static+lang", "wrist+lang"):
+        assert pair in out
+
+
+def test_report_drops_constant_zero_modality(tmp_path, monkeypatch, capsys):
+    """use_proprio present but always 0 -> same 3-pair report, reason logged as such."""
+    columns, rows = _three_modality_rows(proprio_col=True)
+    csv_path = tmp_path / "result.csv"
+    _write_rows_csv(csv_path, columns, rows)
+
+    monkeypatch.setattr(sys, "argv", ["pid_modality.py", str(csv_path)])
+    pid_modality.main()
+
+    out = capsys.readouterr().out
+    assert "dropped: proprio (present but never 1)" in out
+    assert "not evaluated" not in out
+    assert "+proprio" not in out and "proprio+" not in out
+    for pair in ("static+wrist", "static+lang", "wrist+lang"):
+        assert pair in out
+
+
+def test_main_with_fewer_than_two_active_modalities_does_not_raise(tmp_path, monkeypatch, capsys):
+    """A single-modality-combo run (e.g. a non-dropout eval, which only ever exercises
+    one combo) must not exit non-zero -- eval_pipeline.py's upload() runs this script
+    with check=True, so a raised SystemExit would abort the upload before the
+    result.csv artifacts get attached."""
+    columns = ["use_rgb_static", "success"]
+    rows = [{"use_rgb_static": s, "success": success} for s in (0, 1) for success in (0, 1)]
+    csv_path = tmp_path / "result.csv"
+    _write_rows_csv(csv_path, columns, rows)
+
+    monkeypatch.setattr(sys, "argv", ["pid_modality.py", str(csv_path)])
+    pid_modality.main()  # must not raise
+
+    out = capsys.readouterr().out
+    assert "no PID: needs >=2" in out
+    assert "static" in out  # presence/success-rate table still printed
+
+
+def test_marginalize_flag_prints_both_rows(tmp_path, monkeypatch, capsys):
+    """--marginalize adds a second, differently-populated row per pair."""
+    columns = ["use_rgb_static", "use_rgb_gripper", "use_language", "use_proprio", "success"]
+    rows = [
+        dict(zip(columns, (static, wrist, lang, proprio, success)))
+        for static, wrist, lang, proprio in itertools.product((0, 1), repeat=4)
+        for success in (0, 1)
+    ]
+    csv_path = tmp_path / "result.csv"
+    _write_rows_csv(csv_path, columns, rows)
+
+    monkeypatch.setattr(sys, "argv", ["pid_modality.py", str(csv_path), "--marginalize"])
+    pid_modality.main()
+
+    out = capsys.readouterr().out
+    pair_lines = [
+        line for line in out.splitlines() if line.startswith("static+wrist")
+    ]
+    assert len(pair_lines) == 2
+    conditioned_line, marginalized_line = pair_lines
+    assert "lang+proprio" in conditioned_line
+    assert "marginalized" in marginalized_line
+    conditioned_n = int(conditioned_line.split()[-1])
+    marginalized_n = int(marginalized_line.split()[-1])
+    assert conditioned_n != marginalized_n

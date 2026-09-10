@@ -3,6 +3,7 @@ training run needs, and resuming a partially-completed sweep.
 
 Pure logic / filesystem tests, no MuJoCo, no model, no wandb network calls.
 """
+import re
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from eval_pipeline import (  # noqa: E402
+    artifact_name,
     full_modality_combo,
     modality_combos,
     parse_overrides,
@@ -222,3 +224,24 @@ def test_wandb_run_id_from_run_dir(tmp_path):
     run_dir = tmp_path / "libero_10_dropout" / "2026-08-28_15-45-43"
     run_dir.mkdir(parents=True)
     assert wandb_run_id(str(run_dir)) == "libero_10_dropout_2026-08-28_15-45-43"
+
+
+# ---------------------------------------------------------------------------
+# artifact_name -- W&B artifact names disallow the '+' a modality-ablation run.sh
+# label (run.sh's modality_label) puts into the run id
+# ---------------------------------------------------------------------------
+
+
+def test_artifact_name_sanitizes_modality_ablation_plus():
+    run_id = "libero_10_static+wrist+lang+proprio_2026-09-09_13-56-20"
+    assert artifact_name(run_id) == "eval-libero_10_static-wrist-lang-proprio_2026-09-09_13-56-20"
+
+
+def test_artifact_name_leaves_clean_id_unchanged_besides_prefix():
+    run_id = "libero_10_dropout_2026-08-28_15-45-43"
+    assert artifact_name(run_id) == f"eval-{run_id}"
+
+
+def test_artifact_name_matches_wandb_charset():
+    run_id = "libero_10_static+wrist+lang+proprio_2026-09-09_13-56-20"
+    assert re.fullmatch(r"[A-Za-z0-9._-]+", artifact_name(run_id))

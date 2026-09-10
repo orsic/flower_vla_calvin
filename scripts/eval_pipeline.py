@@ -36,6 +36,7 @@ entity/id as training_libero.py's setup_logger derives from the run dir).
 """
 import argparse
 import itertools
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -185,6 +186,13 @@ def wandb_run_id(train_folder: str) -> str:
     return f"{resolved.parent.name}_{resolved.name}"
 
 
+def artifact_name(run_id: str) -> str:
+    """W&B artifact names allow only [A-Za-z0-9._-]; a modality-ablation run id carries
+    '+' from run.sh's modality_label (e.g. "libero_10_static+wrist_...", run.sh:77). The
+    W&B *run* id (wandb.init) keeps the '+' -- only the artifact name is sanitized."""
+    return "eval-" + re.sub(r"[^A-Za-z0-9._-]", "-", run_id)
+
+
 def upload(train_folder: str, extra_overrides: List[str]) -> None:
     train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
     benchmark_name, resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
@@ -215,7 +223,7 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
         id=run_id,
         resume="allow",
     )
-    artifact = wandb.Artifact(f"eval-{run_id}", type="evaluation")
+    artifact = wandb.Artifact(artifact_name(run_id), type="evaluation")
     if orig_csv.exists():
         artifact.add_file(str(orig_csv), name="libero_orig.csv")
     if plus_csv.exists():

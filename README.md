@@ -568,9 +568,34 @@ can go slightly negative.
 python scripts/pid_modality.py $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv
 ```
 
+The script first inspects the CSV to see which modalities it actually exercises —
+a column that's absent (e.g. a `model.use_proprio=False` run's `result.csv` has no
+`use_proprio` column) or present but never `1` is dropped from the report entirely,
+rather than producing pairs that can only ever read "not evaluated". A header line
+states what was detected and what was dropped, and why:
+
+```
+modalities: static, wrist, lang (varying) | dropped: proprio (column absent)
+```
+
+so a `use_proprio=False` run yields a 3-pair report instead of six empty ones.
+
+`--marginalize` adds, for each pair, a second row that pools episodes across every
+held-modality configuration present in the file instead of filtering to held-all-on —
+marginalizing the held modalities out of the `(x1, x2, y)` joint. Both rows print
+side by side, labelled `held ...` vs. `marginalized`, each with the episode count `n`
+backing it:
+
+```
+pair             held               I(X1,X2;Y)        R       U1       U2        S      n
+static+wrist     lang+proprio           0.1007   0.0225   0.0346   0.0155   0.0281     80
+static+wrist     marginalized           0.0771   0.0159   0.0394   0.0033   0.0186    320
+```
+
 It also prints a second table: success rate per modality-presence combination found in the
-CSV (`static wrist lang proprio -> success_rate, n`), rows sorted by the four presence flags
-read as a binary number, descending — the all-on combo first, all-off last.
+CSV, restricted to the detected modalities (`static wrist lang [proprio] -> success_rate,
+n`), rows sorted by the presence flags read as a binary number, descending — the all-on
+combo first, all-off last.
 
 **Perturbation categories** (pass as `task_category="<name>"`):
 
