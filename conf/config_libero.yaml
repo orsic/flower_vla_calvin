@@ -5,14 +5,14 @@ defaults:
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
-root_data_dir: /home/yagmurlu/code/MoDE_Calvin/dataset/task_ABC_D
+root_data_dir: null
 lang_folder: lang_clip_resnet50
 
 log_dir: ./logs
 slurm: false
 seed: 42
 device: 'cuda'
-batch_size: 8
+batch_size: 32
 devices: 4
 goal_window_size: 1
 act_dim: 7
@@ -24,7 +24,8 @@ act_seq_len: 10
 multistep: ${act_seq_len}
 p_last_state: 0
 max_epochs: 40
-rollout_lh_skip_epochs: 9
+# Rollout eval is disabled; evaluation runs after training via ./run.sh pipeline.
+rollout_lh_skip_epochs: ${max_epochs}
 num_workers: 1
 benchmark_name: ${libero_benchmark} # calvin_abcd
 libero_benchmark: libero_spatial # libero_goal # libero_spatial, libero_object, LIBERO_GOAL, LIBERO_90, LIBERO_10
@@ -46,8 +47,8 @@ logger:
   name: logger
   group: mode
   log_model: false
-  project: ${libero_benchmark}
-  entity: bennoq
+  project: multimodal_policies
+  entity: orsic-university-of-zagreb-faculty-of-electrical-enginee
   id: ???
 
 

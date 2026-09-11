@@ -7,18 +7,37 @@ vlm_path: microsoft/Florence-2-large
 freeze_florence: False
 freeze_vision_tower: False
 vlm_prompt_style: default
-token_dropout: 0.1  # Added token dropout parameter
+token_dropout: 0.1  # Post-encoder unstructured token dropout (existing regularizer)
+
+# Dirichlet modality-token dropout (pre-encoder physical removal, per-sample)
+modality_dropout: False
+modality_dropout_keep_fraction: 0.5
+modality_dropout_alphas: [1.0, 1.0, 1.0]
+# Proprio isn't a token (it's an AdaLN conditioning vector, not part of the Dirichlet budget
+# above) — its own per-sample Bernoulli keep probability while modality_dropout=True.
+modality_dropout_proprio_keep_p: 0.5
+
+# Fixed modality ablation: which modalities this model observes. Any set to False has its
+# tokens physically removed pre-encoder in every forward — training, validation and eval.
+# Mutually exclusive with modality_dropout. At least one must stay True. proprio=False
+# requires use_proprio=True (nothing to withhold otherwise).
+modalities:
+  rgb_static: true
+  rgb_gripper: true
+  language: true
+  proprio: true
 
 # Model Structure
 multistep: ${multistep}
 num_sampling_steps: 4
-lowdim_obs_dim: 7
+lowdim_obs_dim: ${proprio_dims}
 action_dim: 7
 act_window_size: 10
 
 # pretraining stuff
 load_pretrained: True
 pretrained_model_path: /home/hk-project-sustainebot/ft4740/code/flower_vla_policy/logs/runs/2025-02-05/10-17-02/360000_model_weights.pt
+action_expert_from_scratch: False
 # /home/hk-project-sustainebot/ft4740/code/flower_vla/logs/runs/2025-02-19/11-15-41/200000_model_weights.pt
 # /home/hk-project-sustainebot/ft4740/code/flower_vla_policy/logs/runs/2025-02-05/10-17-02/360000_model_weights.pt joint + delta pret
 # Model flags

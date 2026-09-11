@@ -16,12 +16,24 @@ num_videos: 30
 debug: False
 
 log_wandb: True
-wandb_entity: bennoq
+wandb_entity: orsic-university-of-zagreb-faculty-of-electrical-enginee
 
 num_sequences: 50
 max_steps: 520
 n_eval: 20
+eval_batch_size: 10  # episodes per batch; each runs in a separate MuJoCo subprocess
+env_start_method: spawn  # spawn (parallel, real subprocesses) | dummy (sequential, in-process)
+cross_task_batching: false  # true = fill each batch with episodes from different tasks
 num_sampling_steps: 4
 multistep: 10
 
 benchmark_name: libero_10 # [LIBERO_SPATIAL, LIBERO_OBJECT, LIBERO_GOAL, LIBERO_90, LIBERO_10]
+task_category: null  # null = all tasks; LIBERO-Plus only: filter to one perturbation category
+
+seed: 0  # base seed for per-episode rollout seeding (recorded in the result CSV)
+eval_modalities:  # set any to false to physically drop that modality's tokens pre-encoder
+  rgb_static: true
+  rgb_gripper: true
+  language: true
+  proprio: true  # requires model.use_proprio=True; not a token, gated separately (see FLOWERVLA.eval_proprio_mask)
+csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<suite>/

@@ -26,8 +26,15 @@ from flower.models.networks.transformers import (
     FreqEmbedder,
     ActionSpaceEmbedderParameter,
     ZeroEncoder,
-    FlowBlock, 
+    FlowBlock,
     stateless_norm
+)
+from flower.models.networks.modality_dropout import (
+    sample_token_budget,
+    build_keep_indices,
+    position_correct,
+    deterministic_keep_counts,
+    gather_attention_mask,
 )
 from flower.utils.lr_schedulers.tri_stage_scheduler import TriStageLRScheduler
 from flower.callbacks.ema import EMA
@@ -85,6 +92,18 @@ class FLOWERVLA(pl.LightningModule):
 
         load_pretrained: bool = False,
         pretrained_model_path: str = None,
+        action_expert_from_scratch: bool = False,
+
+        # Modality-token dropout (Dirichlet, per-sample, pre-encoder removal)
+        modality_dropout: bool = False,
+        modality_dropout_keep_fraction: float = 0.5,
+        modality_dropout_alphas: tuple = (1.0, 1.0, 1.0),
+        # Proprioception isn't a token (see encode_proprio/dit_forward) so it can't join the
+        # Dirichlet token budget above; it gets its own per-sample Bernoulli keep gate instead.
+        modality_dropout_proprio_keep_p: float = 0.5,
+
+        # Fixed modality ablation: modalities this model is trained/evaluated on.
+        modalities: DictConfig = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -106,8 +125,51 @@ class FLOWERVLA(pl.LightningModule):
             use_proprio=use_proprio,
             return_act_chunk=return_act_chunk,
             second_view_key=second_view_key,
+            modality_dropout=modality_dropout,
+            modality_dropout_keep_fraction=modality_dropout_keep_fraction,
+            modality_dropout_alphas=modality_dropout_alphas,
+            modality_dropout_proprio_keep_p=modality_dropout_proprio_keep_p,
         )
-        self.obs_modalities = []
+        # Eval-time modality mask: None (default) = unchanged behavior. When set to a
+        # (keep_static, keep_wrist, keep_language) bool 3-tuple, encode_observations
+        # deterministically drops the withheld groups' tokens, mirroring the
+        # modality_dropout training path but without Dirichlet sampling. Orthogonal to
+        # self.modality_dropout — usable on any checkpoint, set by the eval script.
+        self.eval_modality_mask: Optional[Tuple[bool, bool, bool]] = None
+        # Eval-time proprio mask: None (default) = unchanged. False withholds proprio at eval,
+        # mirroring eval_modality_mask above but for the Bernoulli-gated (non-token) modality.
+        self.eval_proprio_mask: Optional[bool] = None
+
+        # Fixed modality ablation: which modalities this model observes, always (not just at
+        # eval). None (all three on) leaves the standard path untouched; otherwise the
+        # withheld groups' tokens are physically removed pre-encoder in every forward.
+        modalities = modalities or {}
+        modality_tuple = (
+            bool(modalities.get("rgb_static", True)),
+            bool(modalities.get("rgb_gripper", True)),
+            bool(modalities.get("language", True)),
+        )
+        proprio_enabled = bool(modalities.get("proprio", True))
+        if not any(modality_tuple):
+            raise ValueError(
+                f"model.modalities: at least one modality must be enabled (got all-False: {modalities})"
+            )
+        if not proprio_enabled and not use_proprio:
+            raise ValueError(
+                "model.modalities.proprio=False requires model.use_proprio=True — the model "
+                "never receives proprioception to withhold in the first place"
+            )
+        if (not all(modality_tuple) or not proprio_enabled) and modality_dropout:
+            raise ValueError(
+                "model.modalities and model.modality_dropout are mutually exclusive — "
+                f"got a fixed subset {modality_tuple} (proprio={proprio_enabled}) together "
+                "with modality_dropout=True"
+            )
+        self.modality_mask: Optional[Tuple[bool, bool, bool]] = None if all(modality_tuple) else modality_tuple
+        # Fixed proprio ablation: None (on) leaves the Bernoulli-gate path off; False withholds
+        # proprio in every forward (train + eval), same semantics as self.modality_mask above.
+        self.proprio_mask: Optional[bool] = None if proprio_enabled else False
+
         # Initialize model dimensions
         self._init_dimensions(
             dit_dim=dit_dim,
@@ -152,6 +214,8 @@ class FLOWERVLA(pl.LightningModule):
         self.optimizer_config = optimizer
         self.lr_scheduler_config = lr_scheduler
         self.optimizer_type = optimizer_type
+
+        self.action_expert_from_scratch = action_expert_from_scratch
 
         if load_pretrained and pretrained_model_path is not None:
             self._load_pretrained_weights(pretrained_model_path)
@@ -225,7 +289,7 @@ class FLOWERVLA(pl.LightningModule):
         # Handle language encoder/model naming mismatch
         for key, value in state_dict.items():
             new_key = key.replace("agent.", "")  # Remove 'agent.' if it exists
-            
+
             # Handle language encoder/model naming mismatch
             if "vlm.language_encoder." in new_key:
                 new_key = new_key.replace("vlm.language_encoder.", "vlm.language_model.model.encoder.")
@@ -237,6 +301,12 @@ class FLOWERVLA(pl.LightningModule):
             new_key = new_key.replace(".mlp.c_fc2.", ".mlp.fc2.")
             new_key = new_key.replace(".mlp.c_proj.", ".mlp.proj.")
             new_state_dict[new_key] = value
+
+        # When training the action expert from scratch, load only VLM weights so the
+        # action expert keeps its random initialisation from __init__.
+        if self.action_expert_from_scratch:
+            new_state_dict = {k: v for k, v in new_state_dict.items() if k.startswith("vlm.")}
+            print("action_expert_from_scratch=True: loading VLM weights only; action expert uses random init.")
 
         # Load the state dict with strict=False to handle mismatches
         missing_keys, unexpected_keys = self.load_state_dict(new_state_dict, strict=False)
@@ -278,7 +348,6 @@ class FLOWERVLA(pl.LightningModule):
         
         self.use_adaln_cond = self.use_adaln_cond 
         self.use_readout_token = self.use_readout_token and self.use_adaln_cond
-        self.use_proprio = self.use_proprio 
         self.use_second_view = self.use_second_view and self.second_view_key is not None
         self.use_cross_attn = self.use_cross_attn
         self.use_rope = self.use_rope and not self.use_nope
@@ -380,9 +449,20 @@ class FLOWERVLA(pl.LightningModule):
                 self.adaln[action_name] = SharedAdaLNController(dit_dim, global_conddim=dit_dim, use_cross_attn=use_cross_attn)
 
             if self.use_proprio:
-                # Add proprio encoder if needed for bimanual nav variant otherwise use zero encoder
-                self.proprio_encoders[action_name] = (Mlp(input_dim, dit_dim, out_features=dit_dim, drop=0.2).to(self.device) 
-                    if action_name == 'bimanual_nav' else ZeroEncoder(self.dit_dim, device=self.device))
+                # bimanual_nav's proprio encoder has real pretrained weights (trained on
+                # bimanual ALOHA data, input dim = its 16-dim action dim) — keep its shape
+                # so those weights still load. eef_delta (what LIBERO/CALVIN use) never had
+                # pretrained proprio weights; give it a real encoder sized to the actual
+                # proprio dim (lowdim_obs_dim), trained from scratch. joint_single keeps the
+                # parameter-free ZeroEncoder, matching the pretrained checkpoint and the fact
+                # that LIBERO/CALVIN never route through it.
+                self.proprio_encoders[action_name] = (
+                    Mlp(input_dim, dit_dim, out_features=dit_dim, drop=0.2).to(self.device)
+                    if action_name == 'bimanual_nav'
+                    else Mlp(self.lowdim_obs_dim, dit_dim, out_features=dit_dim, drop=0.2).to(self.device)
+                    if action_name == 'eef_delta'
+                    else ZeroEncoder(self.dit_dim, device=self.device)
+                )
 
     def configure_optimizers(self):
         """Configure optimizers and schedulers"""
@@ -581,6 +661,13 @@ class FLOWERVLA(pl.LightningModule):
         if self.use_proprio and cond_dict['proprio'] is not None:
             proprio = cond_dict['proprio'].to(default_dtype)
             proprio_embeds = self.encode_proprio(proprio, action_type, frequency_embeds.shape)
+            proprio_keep = cond_dict.get('proprio_keep')
+            if proprio_keep is not None:
+                # Per-sample gate (fixed ablation, eval withholding, or training-time Bernoulli
+                # dropout — resolved once in encode_observations, not re-drawn per Euler step).
+                # Zeroing here is exact: stateless_norm(0) == 0, identical to the use_proprio=
+                # False path below.
+                proprio_embeds = proprio_embeds * proprio_keep.to(proprio_embeds.device).unsqueeze(-1).to(proprio_embeds.dtype)
         else:
             proprio_embeds = torch.zeros_like(frequency_embeds)
         
@@ -633,19 +720,25 @@ class FLOWERVLA(pl.LightningModule):
         """
         Encode proprioception based on action type.
         """
-        batch_size, _ = output_shape
+        # Only the batch size is needed here; output_shape (frequency_embeds.shape) can be
+        # 2-D or 3-D depending on caller, so don't assume an exact-length unpack.
+        batch_size = output_shape[0]
         default_dtype = next(self.parameters()).dtype
-        
-        if not self.use_proprio:
-            return torch.zeros(batch_size, self.dit_dim, device=self.device)
-        
+
+        # action_type is [B, act_window_size, action_dim] with all entries identical per
+        # sample (see forward()'s torch.ones_like(action_type_tensor)); reduce to [B] so it
+        # can mask encoded_proprio's [B, dit_dim].
+        action_type = action_type[:, 0, 0].to(self.device)
+
         encoded_proprio = torch.zeros(batch_size, self.dit_dim, device=self.device, dtype=default_dtype)
-        
+
         for action_name, action_idx in self.action_space_index.action_spaces.items():
             mask = (action_type == action_idx)
             if mask.any():
-                encoded_proprio[mask] = self.proprio_encoders[action_name](proprio[mask]).squeeze(1)
-        
+                # Under bf16-mixed precision, the encoder's autocast output dtype can differ
+                # from the preallocated buffer's (param) dtype; index_put requires a match.
+                encoded_proprio[mask] = self.proprio_encoders[action_name](proprio[mask]).squeeze(1).to(encoded_proprio.dtype)
+
         return encoded_proprio
 
     def action_specific_adaln(self, global_cond: torch.Tensor, action_type: torch.Tensor) -> List[torch.Tensor]:
@@ -688,75 +781,161 @@ class FLOWERVLA(pl.LightningModule):
         return prompt_embed.unsqueeze(0).unsqueeze(0)
 
     def encode_observations(self, batch: Dict) -> torch.Tensor:
-        """Encode observations using Florence-2"""
+        """Encode observations using Florence-2, with optional modality-token dropout."""
         device = self.device
         default_type = next(self.parameters()).dtype
-        
-        
+
         embed_tensor = torch.zeros(len(batch["rgb_obs"]['rgb_static']), 1, 1)
         action_type_tensor = torch.ones(len(batch["rgb_obs"]['rgb_static']), self.act_window_size, 7)
-        # Process primary image
+
+        # --- Encode image tokens (pre-encoder embedding, not yet processed by encoder) ---
         image_tensor = batch["rgb_obs"]['rgb_static']
         B, T, C, H, W = image_tensor.shape
-        
-        # Extract visual features
+
+        # Extract visual features (raw token embeddings from the vision tower).
         image_features = self.vlm._encode_image(
             image_tensor.view(-1, C, H, W).to(device).to(default_type)
         ).to(default_type)
-        image_features = image_features.view(B, T * image_features.shape[1], -1)
-        
-        # Process second view if enabled
+        Ns = T * image_features.shape[1]  # static view token count
+        image_features = image_features.view(B, Ns, -1)
+
         if self.use_second_view:
             image2_tensor = batch["rgb_obs"]['rgb_gripper']
             image2_features = self.vlm._encode_image(
                 image2_tensor.view(-1, C, H, W).to(device).to(default_type)
             ).to(default_type)
-            image2_features = image2_features.view(B, T * image2_features.shape[1], -1)
-            image_features = torch.cat([image_features, image2_features], dim=1)
-        
-        # Get text embeddings
-        # Get text embeddings once to reuse
+            Nw = T * image2_features.shape[1]  # wrist view token count
+            image2_features = image2_features.view(B, Nw, -1)
+        else:
+            Nw = 0
+
+        # --- Text embeddings (raw, before encoder positional add) ---
         constructed_prompts = self.construct_prompts(batch)
-        text_embeds = self._get_text_embeddings(constructed_prompts, device)
-        
-        # Add task prompt and aggregation tokens
-        task_prompt = self.prompt_embeds.expand(B, -1, -1).to(image_features.device)
-        
-        # Merge sequence
-        merged_embeds = torch.cat([
-            image_features,
-            task_prompt,
-            text_embeds.to(image_features.device)
-        ], dim=1)
-        
-        # Create attention mask
-        attention_mask = torch.ones(merged_embeds.shape[:2], device=merged_embeds.device)
-        
-        # Process through encoder
+        text_embeds, text_mask = self._get_text_embeddings(constructed_prompts, device)
+        text_embeds = text_embeds.to(device).to(default_type)
+        text_mask = text_mask.to(device)  # [B, Lt]
+        Lt = text_embeds.shape[1]
+
+        # Always-kept <Flow> prompt token.
+        task_prompt = self.prompt_embeds.expand(B, -1, -1).to(device).to(default_type)
+
+        # --- Merge into a single flat sequence: [static | wrist | <Flow> | text] ---
+        if self.use_second_view:
+            merged_embeds = torch.cat([image_features, image2_features, task_prompt, text_embeds], dim=1)
+        else:
+            merged_embeds = torch.cat([image_features, task_prompt, text_embeds], dim=1)
+        # Prompt is at index Ns+Nw (after both image groups).
+        prompt_idx = Ns + Nw
+
+        # Group spans: static [0, Ns), wrist [Ns, Ns+Nw), language [Ns+Nw+1, Ns+Nw+1+Lt)
+        # (prompt_idx = Ns+Nw is excluded from groups; always kept separately). Shared
+        # by both the training-dropout path and the eval-mask path below.
+        lang_start = prompt_idx + 1  # first text token absolute index
+        group_spans = [
+            (0, Ns),
+            (Ns, Ns + Nw) if Nw > 0 else (0, 0),
+            (lang_start, lang_start + Lt),
+        ]
+
+        # The model's own fixed combo applies always (train + eval); an explicit eval-time
+        # mask (set by the eval script) overrides it for probing a checkpoint off-combo.
+        fixed_mask = self.modality_mask
+        if not self.training and self.eval_modality_mask is not None:
+            fixed_mask = self.eval_modality_mask
+
+        if fixed_mask is not None or (self.modality_dropout and self.training):
+            # --- Physical pre-encoder token removal (fixed-mask or training-Dirichlet) ---
+            # Available tokens per group per sample.
+            avail = torch.zeros(B, 3, dtype=torch.long, device=device)
+            avail[:, 0] = Ns
+            avail[:, 1] = Nw
+
+            if fixed_mask is not None:
+                # Full padded span, not the per-sample non-pad length: build_keep_indices
+                # needs a kept-token count that is constant across the batch, and training
+                # batches mix instructions of different lengths (unlike eval batches, which
+                # are always one task's identical instruction). Retained pad tokens are
+                # excluded by attention_mask below instead of by omission here.
+                avail[:, 2] = Lt
+                kept_counts = deterministic_keep_counts(avail, fixed_mask)
+                lang_valid_len = torch.full((B,), Lt, dtype=torch.long, device=device)
+            else:
+                avail[:, 2] = text_mask.sum(dim=1)  # non-pad language tokens
+                alphas = torch.tensor(
+                    list(self.modality_dropout_alphas), dtype=torch.float, device=device
+                )
+                kept_counts = sample_token_budget(
+                    avail, self.modality_dropout_keep_fraction, alphas
+                )  # [B, 3]
+                lang_valid_len = text_mask.sum(dim=1).long()  # [B]
+
+            keep_indices = build_keep_indices(
+                group_spans, kept_counts, lang_valid_len, prompt_idx
+            )  # [B, K]
+
+            # Gather kept embeddings (without positional encoding, which the encoder adds).
+            K = keep_indices.shape[1]
+            keep_idx_exp = keep_indices.unsqueeze(-1).expand(-1, -1, merged_embeds.shape[-1])
+            kept_embeds = torch.gather(merged_embeds, dim=1, index=keep_idx_exp)  # [B, K, D]
+
+            # Position-correct so that the encoder's internal arange-based embed_positions
+            # nets to the absolute position of each retained token.
+            pos_weight = self.vlm.get_encoder().embed_positions.weight.to(default_type)
+            pos_offset = self.vlm.get_encoder().embed_positions.offset  # = 2
+            kept_embeds = position_correct(kept_embeds, keep_indices, pos_weight, pos_offset)
+
+            # Retained language pad tokens (fixed-mask path only) stay masked out.
+            attention_mask = gather_attention_mask(
+                text_mask, keep_indices, merged_embeds.shape[1], lang_start
+            )
+            inputs_embeds = kept_embeds
+        else:
+            # --- Standard (no dropout) path ---
+            attention_mask = torch.ones(merged_embeds.shape[:2], dtype=torch.long, device=device)
+            # Mask out padding in the language part.
+            lang_start = prompt_idx + 1
+            attention_mask[:, lang_start:lang_start + Lt] = text_mask
+            inputs_embeds = merged_embeds
+
+        # --- Encode through Florence-2 encoder ---
         features = self.vlm.get_encoder()(
-            inputs_embeds=merged_embeds,
-            attention_mask=attention_mask
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
         ).last_hidden_state
 
-        # Apply dropout 
+        # Post-encoder unstructured token dropout (existing regularizer, orthogonal).
         features = self.vlm_token_dropout(features)
 
-        # Prepare frequency and action space embeddings
+        # Prepare frequency and action space embeddings.
         frequency_embeds = self.frequency_embedder(
             torch.ones_like(embed_tensor).to(device) * 3
         )
-        
-        # Get proprioception if enabled
+
         proprio = None
-        if self.use_proprio and 'proprio' in batch[self.obs_modalities]:
-            proprio = batch[self.obs_modalities]['proprio'].to(device).to(default_type)
+        proprio_keep = None
+        if self.use_proprio and 'robot_obs' in batch:
+            proprio = batch['robot_obs'].to(device).to(default_type)
+
+            # Per-sample proprio keep-gate — same precedence as the token fixed_mask/eval_mask
+            # resolution above, but Bernoulli instead of Dirichlet (see modality_dropout_
+            # proprio_keep_p's docstring in __init__ for why proprio can't share the token
+            # budget). None below means "keep for everyone", matching dit_forward's default.
+            fixed_proprio = self.proprio_mask
+            if not self.training and self.eval_proprio_mask is not None:
+                fixed_proprio = self.eval_proprio_mask
+
+            if fixed_proprio is not None:
+                proprio_keep = torch.full((B,), fixed_proprio, dtype=torch.bool, device=device)
+            elif self.modality_dropout and self.training:
+                proprio_keep = torch.rand(B, device=device) < self.modality_dropout_proprio_keep_p
 
         return {
             'features': features,
             'frequency_embeds': frequency_embeds,
             'action_space_embeds': None,
-            'action_type': torch.ones_like(action_type_tensor), # actiont ype is always 1
+            'action_type': torch.ones_like(action_type_tensor),
             'proprio': proprio,
+            'proprio_keep': proprio_keep,
             'attention_mask': attention_mask,
         }
 
@@ -810,14 +989,19 @@ class FLOWERVLA(pl.LightningModule):
         rgb_static = obs["rgb_obs"]['rgb_static']
         rgb_gripper = obs["rgb_obs"]['rgb_gripper']
 
-        # Create batch for observation encoding
+        # Create batch for observation encoding.
+        # goal["lang_text"] may be a single string (single episode) or a list of B
+        # strings (batched episodes via step_batch); handle both.
+        lang_text = goal["lang_text"]
         batch = {
             "rgb_obs": {
                 "rgb_static": rgb_static,
                 "rgb_gripper": rgb_gripper
             },
-            "lang_text": [goal["lang_text"]]
+            "lang_text": [lang_text] if isinstance(lang_text, str) else list(lang_text)
         }
+        if 'robot_obs' in obs:
+            batch['robot_obs'] = obs['robot_obs']
         features = self.encode_observations(batch)
         
         # Generate initial noise
@@ -858,6 +1042,25 @@ class FLOWERVLA(pl.LightningModule):
         if self.rollout_step_counter == self.multistep:
             self.rollout_step_counter = 0
         
+        return current_action
+
+    def step_batch(self, obs: Dict, goal: Dict) -> torch.Tensor:
+        """
+        Step for a batch of B parallel episodes, handling action chunking.
+
+        Args:
+            obs: Dictionary of batched observations, e.g. rgb_obs tensors [B, T, C, H, W]
+            goal: Dictionary containing goal["lang_text"] as a list of B strings
+
+        Returns:
+            Current action predictions, shape [B, action_dim]
+        """
+        if self.rollout_step_counter % self.multistep == 0:
+            self.pred_action_seq = self(obs, goal)
+        current_action = self.pred_action_seq[:, self.rollout_step_counter]
+        self.rollout_step_counter += 1
+        if self.rollout_step_counter == self.multistep:
+            self.rollout_step_counter = 0
         return current_action
 
     def reset(self):
@@ -942,7 +1145,7 @@ class FLOWERVLA(pl.LightningModule):
         return text_prompts
     
     def _get_text_embeddings(self, text, device):
-        """Get text embeddings to use with VLM"""
+        """Get text embeddings and tokenizer attention mask (1=real token, 0=pad)."""
         text_inputs = self.tokenizer(
             text,
             return_tensors="pt",
@@ -950,7 +1153,8 @@ class FLOWERVLA(pl.LightningModule):
             truncation=True,
             max_length=77
         ).to(device)
-        return self.vlm.get_input_embeddings()(text_inputs["input_ids"])
+        embeds = self.vlm.get_input_embeddings()(text_inputs["input_ids"])
+        return embeds, text_inputs["attention_mask"]
     
     def _log_training_metrics(self, total_loss, action_loss, total_bs):
         """

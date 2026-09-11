@@ -1,0 +1,305 @@
+# podman-compose service definitions for FlowerVLA.
+# Run via run.sh (e.g. ./run.sh build | shell | download | eval).
+# Host-specific variables (paths, MEM_LIMIT, keys) come from vars.env — see vars.env.example.
+
+version: "3.8"
+
+# Memory cap anchor: applied to every service so a runaway training/eval process
+# OOM-kills the container rather than crashing the host. Set MEM_LIMIT in vars.env
+# (recommended: ~75% of physical RAM). See vars.env.example for guidance.
+x-limits: &limits
+  mem_limit: "${MEM_LIMIT:-384g}"
+
+x-base: &base
+  image: flower-vla-eval:latest
+  <<: *limits
+  # Report the host's hostname (not a random podman-generated one) so W&B/log
+  # lines identify which machine a run came from. Set by run.sh from $HOSTNAME.
+  hostname: "${HOST_HOSTNAME:-flower-vla}"
+  working_dir: /workspace
+  volumes:
+    - ${REPO_ROOT}:/workspace:z
+    - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+    - ${SAVES_DIR}:/saves:z
+    - ${LIBERO_HDF5_DIR:-./data/libero_hdf5}:/libero_hdf5:ro
+  devices:
+    - "nvidia.com/gpu=all"
+  environment:
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    PYTHONPATH: /workspace
+    HYDRA_FULL_ERROR: "1"
+    WANDB_MODE: disabled
+    HF_HOME: /root/.cache/huggingface
+    CUDA_DEVICE_ORDER: PCI_BUS_ID
+    WANDB_API_KEY: ${WANDB_API_KEY:-}
+    # GPU selector: set CUDA_VISIBLE_DEVICES in vars.env (or per-run env) to control
+    # which GPUs are used. Default "0" = single GPU. Examples:
+    #   CUDA_VISIBLE_DEVICES=0,1,2,3  →  training on 4 GPUs, eval partitions across 4
+    #   CUDA_VISIBLE_DEVICES=2,3      →  target physical GPUs 2 and 3 (leave 0,1 free)
+    CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+    # Cap CPU thread pools to 1 per process.  Model inference is GPU-bound; MuJoCo envs
+    # are single-threaded.  Without this, every forked/spawned child (parent + N GPU
+    # workers + N×eval_batch_size MuJoCo subprocs) spins up a 32-thread OpenBLAS pool
+    # and exhausts RLIMIT_NPROC, causing numpy to fail to import in child processes.
+    OMP_NUM_THREADS: "1"
+    OPENBLAS_NUM_THREADS: "1"
+    MKL_NUM_THREADS: "1"
+    TOKENIZERS_PARALLELISM: "false"
+    # LIBERO variant selector: "orig" (default) = upstream LIBERO-10 eval;
+    # "plus" = LIBERO-Plus fork with perturbation variants.
+    # Overridden to "plus" in the eval-plus service.
+    LIBERO_VARIANT: ${LIBERO_VARIANT:-orig}
+
+services:
+  # Interactive shell for exploration/debugging (all code runs in container per CLAUDE.md).
+  shell:
+    <<: *base
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+  # Download FlowerVLA LIBERO-10 checkpoint from HuggingFace into /saves/checkpoints/.
+  # Run once before eval: ./run.sh download
+  download:
+    <<: *base
+    command:
+      - bash
+      - -c
+      - |
+        huggingface-cli download mbreuss/flower_libero_10 \
+          --local-dir /saves/checkpoints/libero_10
+
+  # Download the general pretrained FlowerVLA weights from HuggingFace.
+  # Run once before training: ./run.sh download-pret
+  download-pret:
+    <<: *base
+    command:
+      - bash
+      - -c
+      - |
+        huggingface-cli download mbreuss/flower_vla_pret \
+          --local-dir /saves/checkpoints/flower_vla_pret
+
+  # Download LIBERO demonstration hdf5 files from HuggingFace.
+  # Run once before training: ./run.sh download-data [bench|all]  (default: libero_10)
+  # Mounts the hdf5 dir writable (base anchor has :ro).
+  download-data:
+    <<: *base
+    volumes:
+      - ${REPO_ROOT}:/workspace:z
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+      - ${SAVES_DIR}:/saves:z
+      - ${LIBERO_HDF5_DIR:-./data/libero_hdf5}:/libero_hdf5:z
+    command:
+      - bash
+      - -c
+      - |
+        huggingface-cli download yifengzhu-hf/LIBERO-datasets \
+          --repo-type dataset \
+          --include "libero_10/*" \
+          --local-dir /libero_hdf5
+
+  # Shared env block for training services.
+  x-train-env: &train-env
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    PYTHONPATH: /workspace
+    HYDRA_FULL_ERROR: "1"
+    WANDB_MODE: ${WANDB_MODE:-online}
+    HF_HOME: /root/.cache/huggingface
+    CUDA_DEVICE_ORDER: PCI_BUS_ID
+    WANDB_API_KEY: ${WANDB_API_KEY:-}
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    TOKENIZERS_PARALLELISM: "true"
+    NCCL_DEBUG: WARN
+    CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+
+  # Fine-tune FlowerVLA on LIBERO-10 from the general pretrained checkpoint.
+  # Prerequisites: ./run.sh download-pret && ./run.sh download-data
+  # Expected wall-clock: ~15-22 h on 4x A6000 (40 epochs x 1000 steps).
+  # Best checkpoint written to /saves/train_logs/.../saved_models/ by ModelCheckpoint.
+  # GPU count is controlled by CUDA_VISIBLE_DEVICES in vars.env (default: 0,1,2,3 = 4 GPUs).
+  # Benchmark and Hydra overrides (e.g. a fixed model.modalities.* combo) are injected by
+  # run.sh; the command: block below is used only when this service is invoked directly.
+  train:
+    <<: *base
+    shm_size: "16g"
+    environment:
+      <<: *train-env
+    command:
+      - python
+      - flower/training_libero.py
+      - libero_benchmark=libero_10
+      - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
+      - devices=-1
+      - log_dir=/saves/train_logs
+      - num_workers=8
+      - seed=42
+      - "hydra.run.dir=/saves/train_logs/libero_10/${now:%Y-%m-%d_%H-%M-%S}"
+
+  # Ablation: frozen Florence-2 VLM, action expert (DiT) trained from random init.
+  # Isolates how much the action head alone can learn on a fixed pretrained representation.
+  # Prerequisites: same as train (download-pret + download-data).
+  train-frozen-expert:
+    <<: *base
+    shm_size: "16g"
+    environment:
+      <<: *train-env
+    command:
+      - python
+      - flower/training_libero.py
+      - libero_benchmark=libero_10
+      - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
+      - model.freeze_florence=True
+      - model.action_expert_from_scratch=True
+      - devices=-1
+      - log_dir=/saves/train_logs
+      - num_workers=8
+      - seed=42
+      - "hydra.run.dir=/saves/train_logs/libero_10_frozen/${now:%Y-%m-%d_%H-%M-%S}"
+
+  # Full fine-tune with Dirichlet modality-token dropout (3 groups: static/wrist/language).
+  # Tokens are physically removed pre-encoder per sample; positions corrected analytically.
+  # Rollout eval fires only at the final epoch by default (rollout_lh_skip_epochs=max_epochs-1).
+  # Benchmark and Hydra overrides are injected by run.sh (train-dropout / train-dropout-resume);
+  # the command: block below is used only when this service is invoked directly (not via run.sh).
+  # Prerequisites: ./run.sh download-pret && ./run.sh download-data [benchmark]
+  train-dropout:
+    <<: *base
+    shm_size: "16g"
+    environment:
+      <<: *train-env
+    command:
+      - python
+      - flower/training_libero.py
+      - libero_benchmark=libero_10
+      - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
+      - model.modality_dropout=True
+      - model.modality_dropout_keep_fraction=0.5
+      - "model.modality_dropout_alphas=[1.0,1.0,1.0]"
+      - devices=-1
+      - log_dir=/saves/train_logs
+      - num_workers=8
+      - seed=42
+      - "hydra.run.dir=/saves/train_logs/libero_10_dropout/${now:%Y-%m-%d_%H-%M-%S}"
+
+  # Resume train-dropout from a PL checkpoint (pass CKPT_PATH env var).
+  # Benchmark and Hydra overrides are injected by run.sh; see train-dropout note above.
+  # Example: CKPT_PATH=/saves/train_logs/libero_90_dropout/.../last.ckpt ./run.sh train-dropout-resume libero_90
+  train-dropout-resume:
+    <<: *base
+    shm_size: "16g"
+    environment:
+      <<: *train-env
+      CKPT_PATH: ${CKPT_PATH}
+    command:
+      - python
+      - flower/training_libero.py
+      - libero_benchmark=libero_10
+      - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
+      - model.modality_dropout=True
+      - model.modality_dropout_keep_fraction=0.5
+      - "model.modality_dropout_alphas=[1.0,1.0,1.0]"
+      - devices=-1
+      - log_dir=/saves/train_logs
+      - num_workers=8
+      - seed=42
+      - "hydra.run.dir=/saves/train_logs/libero_10_dropout/${now:%Y-%m-%d_%H-%M-%S}"
+
+  # Run the standalone LIBERO-10 evaluation.
+  # Results are printed to stdout and written to /saves/eval_logs/.
+  # Target: ~94.5% average success rate across 10 tasks (README).
+  eval:
+    <<: *base
+    shm_size: "8g"
+    command:
+      - python
+      - flower/evaluation/flower_eval_libero.py
+      - benchmark_name=libero_10
+      - train_folder=/saves/checkpoints/libero_10
+      - checkpoint=/saves/checkpoints/libero_10
+      - dataset_path=/workspace
+      - log_dir=/saves/eval_logs
+      - n_eval=20
+      - num_videos=3
+      - log_wandb=True
+      - "hydra.run.dir=/saves/hydra_outputs/${now:%Y-%m-%d_%H-%M-%S}"
+
+  # Uploads a completed run's eval result.csv files + scripts/pid_modality.py output to
+  # its W&B run. Used by ./run.sh pipeline; needs WANDB_MODE=online unlike the base
+  # anchor's default (eval/eval-plus stay disabled — they only write CSVs).
+  pipeline-artifacts:
+    <<: *base
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      WANDB_MODE: ${WANDB_MODE:-online}
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      LIBERO_VARIANT: ${LIBERO_VARIANT:-orig}
+
+  # Download LIBERO-Plus simulation assets (3D objects, textures) from HuggingFace.
+  # Run once before eval-plus: ./run.sh download-plus
+  # Assets are extracted into LIBERO-plus/libero/libero/assets/ (gitignored).
+  download-plus:
+    <<: *base
+    volumes:
+      - ${REPO_ROOT}:/workspace:z
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+      - ${SAVES_DIR}:/saves:z
+      - ${LIBERO_HDF5_DIR:-./data/libero_hdf5}:/libero_hdf5:z
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        huggingface-cli download Sylvest/LIBERO-plus \
+          --repo-type dataset \
+          --include "assets.zip" \
+          --local-dir /tmp/libero_plus_dl
+        python -c 'import zipfile; z=zipfile.ZipFile("/tmp/libero_plus_dl/assets.zip"); z.extractall("/tmp/lp_extracted"); z.close()'
+        assets_src=$$(find /tmp/lp_extracted -type d -name assets | head -1)
+        assets_dst=/workspace/LIBERO-plus/libero/libero/assets
+        if [ -e "$$assets_dst" ]; then rm -rf "$$assets_dst"; fi
+        mv "$$assets_src" "$$assets_dst"
+        rm -rf /tmp/lp_extracted
+        echo "LIBERO-Plus assets extracted to LIBERO-plus/libero/libero/assets/"
+
+  # Run the LIBERO-Plus robustness evaluation.
+  # Prerequisites: ./run.sh download (baseline ckpt) && ./run.sh download-plus
+  # Pass overrides as extra args, e.g.:
+  #   ./run.sh eval-plus task_category="Camera Viewpoints" checkpoint=/saves/.../best.ckpt
+  # Perturbation categories: "Objects Layout", "Camera Viewpoints", "Robot Initial States",
+  #   "Language Instructions", "Light Conditions", "Background Textures", "Sensor Noise"
+  eval-plus:
+    <<: *base
+    shm_size: "8g"
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      WANDB_MODE: disabled
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      LIBERO_VARIANT: "plus"
+    command:
+      - python
+      - flower/evaluation/flower_eval_libero.py
+      - --config-name=eval_libero_plus
+      - "hydra.run.dir=/saves/hydra_outputs/${now:%Y-%m-%d_%H-%M-%S}"

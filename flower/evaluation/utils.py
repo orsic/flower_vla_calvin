@@ -482,7 +482,7 @@ def _find_hydra_config(filepath: Path) -> Path:
     # Try to find config in parent directories
     hydra_dir = None
     current_dir = config_dir
-    for _ in range(3):  # Look up to 3 levels up
+    for _ in range(6):  # Look up to 6 levels up
         if (current_dir / ".hydra").exists():
             hydra_dir = current_dir / ".hydra"
             break

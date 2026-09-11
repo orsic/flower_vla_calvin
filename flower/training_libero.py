@@ -5,10 +5,12 @@ sys.tracebacklimit = None
 import os 
 import wandb
 import hydra
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 import torch
+import datetime
 from pytorch_lightning import Callback, LightningModule, seed_everything, Trainer
 from pytorch_lightning.callbacks import LearningRateMonitor
+from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.utilities import rank_zero_only
 
 
@@ -25,6 +27,11 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
+
+# Lets configs express "evaluate only after the final epoch" as ${sub:${max_epochs},1}
+# without duplicating the epoch count. replace=True: training_calvin.py registers the
+# same resolver, and both modules may be imported in one process (e.g. in tests).
+OmegaConf.register_new_resolver("sub", lambda a, b: int(a) - int(b), replace=True)
 
 def clear_cuda_cache():
     """Clear CUDA cache and garbage collect unused memory."""
@@ -94,12 +101,20 @@ def train(cfg: DictConfig) -> None:
             "logger": train_logger,
             "callbacks": callbacks,
             "benchmark": False,
-            "strategy": "ddp_find_unused_parameters_true",
+            # static_graph=True: replaces find_unused_parameters without per-step graph
+            # traversal; safe because the used/unused module set is fixed across all steps.
+            # gradient_as_bucket_view=True: avoids an extra gradient buffer copy per allreduce.
+            "strategy": DDPStrategy(
+                static_graph=True,
+                gradient_as_bucket_view=True,
+                # 4-hour timeout: MuJoCo rollout gather (all_gather_object) can stall
+                # for >30 min when ranks finish sequences at very different speeds.
+                timeout=datetime.timedelta(hours=4),
+            ),
             "accelerator": "gpu",
             "devices": cfg.trainer.devices,
             "use_distributed_sampler": True,
             "default_root_dir": work_dir,
-            "sync_batchnorm": True,
         }
         
         # Log configuration
@@ -113,8 +128,10 @@ def train(cfg: DictConfig) -> None:
         # Initialize trainer and train
         trainer = Trainer(**trainer_args)
         
+        ckpt_path = os.environ.get("CKPT_PATH") or None
+
         try:
-            trainer.fit(model, datamodule=datamodule)
+            trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
         except Exception as e:
             log_rank_0("\nDetailed Error Information:")
             log_rank_0("=" * 80)

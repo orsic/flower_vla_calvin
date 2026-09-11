@@ -217,10 +217,10 @@ class RolloutLibero(Callback):
         self.transforms = hydra.utils.instantiate(transforms)
         # get the
 
-        if pl_module.current_epoch == 0 and self.skip_epochs > 0:
-            # for i in range(self.num_tasks):
-            #    pl_module.log(f"eval_lh/sr_chain_{i}", torch.tensor(0.0), on_step=False, sync_dist=True)
-            pl_module.log("eval_lh/avg_seq_len", torch.tensor(0.0), on_step=False, sync_dist=True)
+        if pl_module.current_epoch < self.skip_epochs:
+            # No monitored checkpoint metric depends on this anymore; nothing to do before
+            # skip_epochs.
+            return
         elif pl_module.current_epoch == self.skip_epochs or ((pl_module.current_epoch - self.skip_epochs) >= 0 and (pl_module.current_epoch - self.skip_epochs) % self.rollout_freq == 0):
             successes = self.evaluate_policy(pl_module)
 
@@ -398,8 +398,10 @@ class RolloutLibero(Callback):
         translated_dict['rgb_obs'] = {}
         translated_dict['rgb_obs']['rgb_static'] = obs_space['agentview_image']
         translated_dict["rgb_obs"]['rgb_gripper'] = obs_space['robot0_eye_in_hand_image']
-        translated_dict['robot_obs'] = obs_space['robot0_joint_pos']
-        translated_dict['gripper_states'] = obs_space['robot0_gripper_qpos']
+        # Match training's proprio layout (libero_data_module.py): joint positions + gripper state.
+        translated_dict['robot_obs'] = np.concatenate(
+            [obs_space['robot0_joint_pos'], obs_space['robot0_gripper_qpos']], axis=-1
+        )
         translated_dict['depth_obs'] = {}
 
         return translated_dict
@@ -417,6 +419,8 @@ class RolloutLibero(Callback):
                 x = transform(x)
             data['rgb_obs'][key] = x.unsqueeze(0).to(self.device)
             # data['rgb_obs'][key] = transforms[key](data['rgb_obs'][key])
+
+        data['robot_obs'] = torch.from_numpy(data['robot_obs']).float().unsqueeze(0).to(self.device)
 
         return data
 

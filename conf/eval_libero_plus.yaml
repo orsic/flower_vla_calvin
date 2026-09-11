@@ -1,0 +1,58 @@
+# Eval config for LIBERO-Plus robustness evaluation.
+# Run via: ./run.sh eval-plus [overrides...]  (sets LIBERO_VARIANT=plus automatically)
+#
+# Key differences vs eval_libero.yaml:
+#   n_eval: 1                 — each Plus task is one deterministic perturbed instance
+#   num_videos: 0              — 2500+ tasks make video recording impractical; enable selectively
+#   task_category              — filter to one perturbation category (null = run all categories)
+#   cross_task_batching: true  — n_eval=1 means evaluate_task can never fill a batch from a
+#                                 single task; batch across tasks instead so eval_batch_size
+#                                 episodes run (and infer) together
+#
+# Perturbation categories (pass as task_category override):
+#   "Objects Layout"        "Camera Viewpoints"    "Robot Initial States"
+#   "Language Instructions" "Light Conditions"     "Background Textures"
+#   "Sensor Noise"
+#
+# Usage example:
+#   ./run.sh eval-plus task_category="Camera Viewpoints" checkpoint=/saves/.../best.ckpt
+
+eval_cfg_overwrite:
+  datamodule:
+    datasets:
+      lang_dataset:
+        lang_folder: lang_annotations
+  model:
+    num_sampling_steps: 4
+
+task_embedding_format: clip
+log_dir: /saves/eval_logs
+dataset_path: /workspace
+train_folder: /saves/checkpoints/libero_10
+checkpoint: /saves/checkpoints/libero_10
+device: 0
+num_videos: 0
+debug: False
+
+log_wandb: False
+wandb_entity: orsic-university-of-zagreb-faculty-of-electrical-enginee
+
+num_sequences: 1
+max_steps: 520
+n_eval: 1
+eval_batch_size: 10
+env_start_method: spawn  # spawn (parallel, real subprocesses) | dummy (sequential, in-process)
+cross_task_batching: true  # n_eval=1 -> batch across tasks instead (see note above)
+num_sampling_steps: 4
+multistep: 10
+
+benchmark_name: libero_10
+task_category: null  # null = all 7 categories (~2519 tasks); set to one category string to filter
+
+seed: 0  # base seed for per-episode rollout seeding (recorded in the result CSV)
+eval_modalities:  # set any to false to physically drop that modality's tokens pre-encoder
+  rgb_static: true
+  rgb_gripper: true
+  language: true
+  proprio: true  # requires model.use_proprio=True; not a token, gated separately (see FLOWERVLA.eval_proprio_mask)
+csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<suite>/
