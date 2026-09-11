@@ -496,6 +496,10 @@ instead of overwriting the previous combo's result. Result columns are `success`
 written before it existed simply lack the column — `eval_records.py`/`compare_eval_csvs.py`
 read that as proprio-absent, which is factually correct for those older runs.)
 
+`scripts/perturbation_sr.py <result.csv>` prints the success rate per `task_category`
+(plus an overall line) straight from this file — no `task_classification.json` lookup
+needed, since the category is already a column.
+
 **Reproducibility:** the model draws one shared flow-matching noise tensor for an entire
 batch on each replan, so a rollout is only reproducible at batch granularity, not
 per-episode — `rollout_seed` is derived from `(seed, task_idx, batch_start_episode)` for
@@ -673,6 +677,35 @@ uploads both `result.csv` files plus the PID output as a W&B artifact (`eval-<ru
 in `flower/training_libero.py`, reconstructed from the run directory name, so the artifact
 lands next to the training curves without a separate W&B run being created. Prerequisite:
 `./run.sh download-plus` (once, for LIBERO-Plus assets).
+
+### Cross-run analysis from W&B
+
+`scripts/analyze_wandb.py` (`./run.sh analyze`) reads that artifact back and reports the
+PID decomposition (`scripts/pid_modality.py`) plus the per-perturbation-category success
+rate (`scripts/perturbation_sr.py`) — either for one or more named runs, or averaged with
+min/max across every run matching a W&B config filter:
+
+```bash
+./run.sh analyze run libero_10_dropout_2026-09-09_13-56-20
+
+./run.sh analyze filter --filters \
+    '{"config.modality_dropout": true, "config.modality_dropout_proprio_keep_p": 0.5}'
+```
+
+Requires `WANDB_API_KEY` (vars.env or shell env). Filter keys are matched against the
+run's **W&B config**, which is populated only by `FLOWERVLA.save_hyperparameters()`
+(`flower/models/flower.py`) — its `__init__` argument names, flat (`modality_dropout`,
+not `model.modality_dropout`); top-level Hydra keys like `seed` or `libero_benchmark`
+aren't in it. `--entity`/`--project` default to `conf/config_libero.yaml`'s
+`logger.entity`/`logger.project`.
+
+Before printing results, it always prints the run ID(s) or filter used, and a `WARNING:`
+block for anything that would otherwise silently skew the report: a matched run with no
+evaluation artifact, an artifact missing `libero_orig.csv`/`libero_plus.csv`, or runs that
+don't share the same evaluated modality combos, episodes, or LIBERO-Plus categories. Zero
+matched runs is a hard error; everything else is reported and still aggregated, with a
+`runs` column on every table so a cell backed by fewer runs than the header claims is
+visible rather than hidden.
 
 #### Common Issues
 

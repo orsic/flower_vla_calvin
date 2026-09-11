@@ -192,23 +192,61 @@ def _print_srs_row(srs: dict) -> None:
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("result_csv")
-    parser.add_argument("--measure", default="ccs", choices=sorted(MEASURES))
-    parser.add_argument(
-        "--marginalize",
-        action="store_true",
-        help="Also report each pair's decomposition pooled across all held "
-        "configurations present in the data (held modalities marginalized out), "
-        "alongside the default held-all-on decomposition.",
-    )
-    args = parser.parse_args()
+def collect(rows: list, measure: str = "ccs", marginalize: bool = False) -> dict:
+    """Compute everything main() prints, without printing it -- for reuse by callers
+    that want the numbers (e.g. scripts/analyze_wandb.py) as well as by report().
 
-    rows = load_rows(args.result_csv)
-
+    Returns {"active", "status", "dropped", "pairs", "presence"}. Each entry in
+    "pairs" is {"m1", "m2", "held", ["error"] | ["pid", "srs", "n"], ["marginalized"]},
+    "marginalized" (present only when marginalize=True and held is non-empty) is
+    itself {"error"} | {"pid", "srs", "n"}. "error" carries the IncompleteCombos
+    message for a pair/marginalization that wasn't evaluated, mirroring main()'s
+    "not evaluated --" lines. "presence" is presence_success(rows, active).
+    """
     active, status = active_modalities(rows)
     dropped = [m for m in MODALITY_ORDER if m not in active]
+
+    pairs = []
+    for m1, m2 in itertools.combinations(active, 2):
+        held = held_modalities(m1, m2, active)
+        entry = {"m1": m1, "m2": m2, "held": held}
+        try:
+            dist = build_joint(rows, m1, m2, held)
+        except IncompleteCombos as exc:
+            entry["error"] = str(exc)
+            pairs.append(entry)
+            continue
+        entry["pid"] = decompose(dist, measure)
+        entry["srs"] = conditional_srs(rows, m1, m2, held)
+        entry["n"] = len(held_rows(rows, held))
+
+        if marginalize and held:
+            try:
+                mdist = build_joint(rows, m1, m2, ())
+            except IncompleteCombos as exc:
+                entry["marginalized"] = {"error": str(exc)}
+                pairs.append(entry)
+                continue
+            entry["marginalized"] = {
+                "pid": decompose(mdist, measure),
+                "srs": conditional_srs(rows, m1, m2, ()),
+                "n": len(held_rows(rows, ())),
+            }
+        pairs.append(entry)
+
+    return {
+        "active": active,
+        "status": status,
+        "dropped": dropped,
+        "pairs": pairs,
+        "presence": presence_success(rows, active),
+    }
+
+
+def report(collected: dict) -> None:
+    """Print collect()'s output in main()'s original format."""
+    active, status, dropped = collected["active"], collected["status"], collected["dropped"]
+
     if all(status[m] == "varying" for m in active):
         active_label = ", ".join(active) + " (varying)"
     else:
@@ -228,39 +266,47 @@ def main():
         print(f"no PID: needs >=2 modalities that vary across episodes; got {active}")
     else:
         print(f"{'pair':<16} {'held':<16} {'I(X1,X2;Y)':>12} {'R':>8} {'U1':>8} {'U2':>8} {'S':>8} {'n':>6}")
-        for m1, m2 in itertools.combinations(active, 2):
-            pair_label = m1 + "+" + m2
-            held = held_modalities(m1, m2, active)
+        for entry in collected["pairs"]:
+            pair_label = entry["m1"] + "+" + entry["m2"]
+            held = entry["held"]
             held_label = "+".join(held) if held else "none"
-            try:
-                dist = build_joint(rows, m1, m2, held)
-            except IncompleteCombos as exc:
-                print(f"{pair_label:<16} {held_label:<16} not evaluated -- {exc}")
+            if "error" in entry:
+                print(f"{pair_label:<16} {held_label:<16} not evaluated -- {entry['error']}")
                 continue
-            pid = decompose(dist, args.measure)
-            srs = conditional_srs(rows, m1, m2, held)
-            n = len(held_rows(rows, held))
-            _print_pid_row(pair_label, held_label, pid, n)
-            _print_srs_row(srs)
+            _print_pid_row(pair_label, held_label, entry["pid"], entry["n"])
+            _print_srs_row(entry["srs"])
 
-            if args.marginalize and held:
-                try:
-                    mdist = build_joint(rows, m1, m2, ())
-                except IncompleteCombos as exc:
-                    print(f"{pair_label:<16} {'marginalized':<16} not evaluated -- {exc}")
-                    continue
-                mpid = decompose(mdist, args.measure)
-                msrs = conditional_srs(rows, m1, m2, ())
-                mn = len(held_rows(rows, ()))
-                _print_pid_row(pair_label, "marginalized", mpid, mn)
-                _print_srs_row(msrs)
+            marg = entry.get("marginalized")
+            if marg is not None:
+                if "error" in marg:
+                    print(f"{pair_label:<16} {'marginalized':<16} not evaluated -- {marg['error']}")
+                else:
+                    _print_pid_row(pair_label, "marginalized", marg["pid"], marg["n"])
+                    _print_srs_row(marg["srs"])
 
     print()
     print(" ".join(f"{m:>7}" for m in active) + f" {'success_rate':>12} {'n':>6}")
-    presence = presence_success(rows, active)
+    presence = collected["presence"]
     for combo in sorted(presence, reverse=True):  # binary-descending, all-ones first
         sr, n = presence[combo]
         print(" ".join(f"{v:>7}" for v in combo) + f" {sr:>12.3f} {n:>6}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("result_csv")
+    parser.add_argument("--measure", default="ccs", choices=sorted(MEASURES))
+    parser.add_argument(
+        "--marginalize",
+        action="store_true",
+        help="Also report each pair's decomposition pooled across all held "
+        "configurations present in the data (held modalities marginalized out), "
+        "alongside the default held-all-on decomposition.",
+    )
+    args = parser.parse_args()
+
+    rows = load_rows(args.result_csv)
+    report(collect(rows, measure=args.measure, marginalize=args.marginalize))
 
 
 if __name__ == "__main__":

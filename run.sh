@@ -288,6 +288,16 @@ case "$CMD" in
         python scripts/eval_pipeline.py upload --train-folder "$train_dir" -- "$@"
     ;;
 
+  analyze)
+    # Read the "evaluation" W&B artifact scripts/eval_pipeline.py's upload attached to
+    # one or more training runs, and report PID + per-perturbation success rates.
+    #   ./run.sh analyze run <run_id> [<run_id>...]
+    #   ./run.sh analyze filter --filters '{"config.modality_dropout": true}'
+    # Needs WANDB_API_KEY set (vars.env or shell env) since this only reads from W&B.
+    podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts \
+        python scripts/analyze_wandb.py "$@"
+    ;;
+
   smoke)
     podman-compose -f "$COMPOSE" run --rm shell python scripts/smoke_test.py
     ;;
@@ -303,7 +313,7 @@ case "$CMD" in
     ;;
 
   help|*)
-    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|download-plus|train|train-frozen|train-dropout|eval|eval-plus|pipeline|smoke|devenv>"
+    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|download-plus|train|train-frozen|train-dropout|eval|eval-plus|pipeline|analyze|smoke|devenv>"
     echo ""
     echo "  build              Build the container image (flower-vla-eval:latest)"
     echo "  shell              Interactive bash inside the container"
@@ -343,6 +353,13 @@ case "$CMD" in
     echo "                     training run's W&B artifact. Trailing overrides reach every eval launched."
     echo "                     Example: ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-.../"
     echo "                              PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/.../<run>"
+    echo "  analyze <run|filter> ..."
+    echo "                     Read the W&B evaluation artifact(s) ./run.sh pipeline uploaded and report"
+    echo "                     PID + per-perturbation success rates. Needs WANDB_API_KEY."
+    echo "                     analyze run <run_id> [<run_id>...]     -- one report per run"
+    echo "                     analyze filter --filters '<mongo-json>' -- mean/min/max across matches"
+    echo "                     Example: ./run.sh analyze run libero_10_dropout_2026-09-09_13-56-20"
+    echo "                              ./run.sh analyze filter --filters '{\"config.modality_dropout\": true}'"
     echo "  smoke              Quick sanity check: CUDA + imports + model load + 1 env step"
     echo "  devenv             Regenerate .devcontainer/.env from vars.env"
     if [[ "$CMD" != "help" ]]; then
