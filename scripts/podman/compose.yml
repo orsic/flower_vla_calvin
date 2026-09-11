@@ -136,7 +136,7 @@ services:
       - log_dir=/saves/train_logs
       - num_workers=8
       - seed=42
-      - "hydra.run.dir=/saves/train_logs/libero_10/${now:%Y-%m-%d_%H-%M-%S}"
+      - "hydra.run.dir=/saves/train_logs/libero_10/$${now:%Y-%m-%d_%H-%M-%S}"
 
   # Ablation: frozen Florence-2 VLM, action expert (DiT) trained from random init.
   # Isolates how much the action head alone can learn on a fixed pretrained representation.
@@ -157,7 +157,7 @@ services:
       - log_dir=/saves/train_logs
       - num_workers=8
       - seed=42
-      - "hydra.run.dir=/saves/train_logs/libero_10_frozen/${now:%Y-%m-%d_%H-%M-%S}"
+      - "hydra.run.dir=/saves/train_logs/libero_10_frozen/$${now:%Y-%m-%d_%H-%M-%S}"
 
   # Full fine-tune with Dirichlet modality-token dropout (3 groups: static/wrist/language).
   # Tokens are physically removed pre-encoder per sample; positions corrected analytically.
@@ -182,7 +182,7 @@ services:
       - log_dir=/saves/train_logs
       - num_workers=8
       - seed=42
-      - "hydra.run.dir=/saves/train_logs/libero_10_dropout/${now:%Y-%m-%d_%H-%M-%S}"
+      - "hydra.run.dir=/saves/train_logs/libero_10_dropout/$${now:%Y-%m-%d_%H-%M-%S}"
 
   # Resume train-dropout from a PL checkpoint (pass CKPT_PATH env var).
   # Benchmark and Hydra overrides are injected by run.sh; see train-dropout note above.
@@ -205,7 +205,7 @@ services:
       - log_dir=/saves/train_logs
       - num_workers=8
       - seed=42
-      - "hydra.run.dir=/saves/train_logs/libero_10_dropout/${now:%Y-%m-%d_%H-%M-%S}"
+      - "hydra.run.dir=/saves/train_logs/libero_10_dropout/$${now:%Y-%m-%d_%H-%M-%S}"
 
   # Run the standalone LIBERO-10 evaluation.
   # Results are printed to stdout and written to /saves/eval_logs/.
@@ -224,7 +224,7 @@ services:
       - n_eval=20
       - num_videos=3
       - log_wandb=True
-      - "hydra.run.dir=/saves/hydra_outputs/${now:%Y-%m-%d_%H-%M-%S}"
+      - "hydra.run.dir=/saves/hydra_outputs/$${now:%Y-%m-%d_%H-%M-%S}"
 
   # Uploads a completed run's eval result.csv files + scripts/pid_modality.py output to
   # its W&B run. Used by ./run.sh pipeline; needs WANDB_MODE=online unlike the base
@@ -302,4 +302,4 @@ services:
       - python
       - flower/evaluation/flower_eval_libero.py
       - --config-name=eval_libero_plus
-      - "hydra.run.dir=/saves/hydra_outputs/${now:%Y-%m-%d_%H-%M-%S}"
+      - "hydra.run.dir=/saves/hydra_outputs/$${now:%Y-%m-%d_%H-%M-%S}"
