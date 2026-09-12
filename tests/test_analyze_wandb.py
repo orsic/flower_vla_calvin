@@ -238,6 +238,82 @@ def test_parse_config_keys_custom_list_no_filters():
 
 
 # ---------------------------------------------------------------------------
+# Filtering by trained modality set
+# ---------------------------------------------------------------------------
+
+ALL_ON = {"rgb_static": True, "rgb_gripper": True, "language": True, "proprio": True}
+
+
+def test_run_modalities_four_key_string_all_on_but_use_proprio_false():
+    # Config as W&B actually stores it: a Python repr string, not a nested dict. All four
+    # keys True, but use_proprio=False means proprio is never actually received.
+    run = _FakeRun(
+        "r1", "n1",
+        {"modalities": "{'rgb_static': True, 'rgb_gripper': True, 'language': True, 'proprio': True}",
+         "use_proprio": False},
+    )
+    assert analyze_wandb.run_modalities(run) == {**ALL_ON, "proprio": False}
+
+
+def test_run_modalities_three_key_string_with_use_proprio_true():
+    # Pre-#042c754 config: no "proprio" key at all, but use_proprio=True -- the model
+    # did receive proprio, so the effective set is all four on.
+    run = _FakeRun(
+        "r2", "n2",
+        {"modalities": "{'rgb_static': True, 'rgb_gripper': True, 'language': True}",
+         "use_proprio": True},
+    )
+    assert analyze_wandb.run_modalities(run) == ALL_ON
+
+
+def test_run_modalities_absent_and_use_proprio_false():
+    # No "modalities" key at all (older run) and proprio never enabled.
+    run = _FakeRun("r3", "n3", {"use_proprio": False})
+    assert analyze_wandb.run_modalities(run) == {**ALL_ON, "proprio": False}
+
+
+def test_run_modalities_accepts_a_real_dict_value():
+    run = _FakeRun(
+        "r4", "n4",
+        {"modalities": {"rgb_static": False, "rgb_gripper": True, "language": True}, "use_proprio": True},
+    )
+    assert analyze_wandb.run_modalities(run) == {**ALL_ON, "rgb_static": False}
+
+
+def test_run_modalities_unparseable_string_returns_none():
+    run = _FakeRun("r5", "n5", {"modalities": "not a dict", "use_proprio": True})
+    assert analyze_wandb.run_modalities(run) is None
+
+
+def test_run_modalities_non_dict_non_string_returns_none():
+    run = _FakeRun("r6", "n6", {"modalities": 42, "use_proprio": True})
+    assert analyze_wandb.run_modalities(run) is None
+
+
+def test_parse_modality_spec_happy_path():
+    assert analyze_wandb.parse_modality_spec("rgb_static, language") == {
+        "rgb_static": True,
+        "rgb_gripper": False,
+        "language": True,
+        "proprio": False,
+    }
+
+
+def test_parse_modality_spec_empty_means_all_off():
+    assert analyze_wandb.parse_modality_spec("") == {
+        "rgb_static": False,
+        "rgb_gripper": False,
+        "language": False,
+        "proprio": False,
+    }
+
+
+def test_parse_modality_spec_unknown_name_raises():
+    with pytest.raises(ValueError, match="rgb_statc"):
+        analyze_wandb.parse_modality_spec("rgb_statc")
+
+
+# ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
 

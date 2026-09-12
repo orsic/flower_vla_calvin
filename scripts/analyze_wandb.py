@@ -21,16 +21,23 @@ Usage:
   python scripts/analyze_wandb.py run <run_id> [<run_id>...] [--entity E] [--project P]
       [--measure ccs|broja|wb] [--config-keys k1,k2|all]
 
-  python scripts/analyze_wandb.py filter --filters '<mongo-json>' [--entity E] [--project P]
-      [--measure ccs|broja|wb] [--config-keys k1,k2|all]
+  python scripts/analyze_wandb.py filter [--filters '<mongo-json>'] [--modalities m1,m2,...]
+      [--entity E] [--project P] [--measure ccs|broja|wb] [--config-keys k1,k2|all]
 
   Example:
     python scripts/analyze_wandb.py filter --filters \\
         '{"config.modality_dropout": true, "config.modality_dropout_proprio_keep_p": 0.5}'
 
+    python scripts/analyze_wandb.py filter --modalities rgb_static,rgb_gripper,language,proprio
+
+--modalities selects runs client-side by the *trained* modality set (every named modality
+on, every other one off) -- W&B stores `modalities` as an unindexable repr string, so a
+--filters entry can't express this (see run_modalities()'s docstring).
+
 --entity/--project default to conf/config_libero.yaml's logger.entity/logger.project.
 """
 import argparse
+import ast
 import itertools
 import json
 import sys
@@ -45,6 +52,7 @@ from omegaconf import OmegaConf
 
 import pid_modality
 import perturbation_sr
+import eval_pipeline
 from compare_eval_csvs import MODALITY_COLUMNS
 
 REQUIRED_MEMBERS = ["libero_orig.csv", "libero_plus.csv"]
@@ -61,6 +69,50 @@ DEFAULT_CONFIG_KEYS = [
 def default_entity_project() -> Tuple[str, str]:
     cfg = OmegaConf.load(Path(__file__).parents[1] / "conf" / "config_libero.yaml")
     return str(cfg.logger.entity), str(cfg.logger.project)
+
+
+# ---------------------------------------------------------------------------
+# Filtering by trained modality set
+# ---------------------------------------------------------------------------
+
+
+def run_modalities(run) -> Optional[Dict[str, bool]]:
+    """The modality set this run's model was trained to observe, keyed like
+    eval_pipeline.FLAG_COLUMNS (rgb_static, rgb_gripper, language, proprio), or None if
+    the run's config can't be parsed.
+
+    Mirrors FLOWERVLA.__init__ (flower/models/flower.py): a modality missing from
+    `modalities` defaults to True, and proprio is additionally gated on use_proprio -- a
+    model with use_proprio=False never receives proprio regardless of what `modalities`
+    says. W&B stores `modalities` as a Python repr string (a DictConfig passed through
+    str() on its way into the W&B config via FLOWERVLA.save_hyperparameters()), not a
+    nested value, so this parses it rather than indexing into it -- the reason
+    --filters 'config.modalities.rgb_static=...' can't work.
+    """
+    raw = run.config.get("modalities")
+    if raw is None:
+        raw = {}
+    elif isinstance(raw, str):
+        try:
+            raw = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            return None
+    if not isinstance(raw, dict):
+        return None
+    modalities = {m: bool(raw.get(m, True)) for m in eval_pipeline.TOKEN_MODALITIES}
+    modalities["proprio"] = bool(raw.get("proprio", True)) and bool(run.config.get("use_proprio", False))
+    return modalities
+
+
+def parse_modality_spec(spec: str) -> Dict[str, bool]:
+    """Comma-separated modality names that must be ON; every other modality is required
+    OFF -- "matches this exact combo" semantics, same as
+    compare_eval_csvs.parse_modalities."""
+    on = {m.strip() for m in spec.split(",") if m.strip()}
+    unknown = on - set(eval_pipeline.FLAG_COLUMNS)
+    if unknown:
+        raise ValueError(f"Unknown modalities {unknown}; choose from {sorted(eval_pipeline.FLAG_COLUMNS)}")
+    return {m: (m in on) for m in eval_pipeline.FLAG_COLUMNS}
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +450,15 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--config-keys", default=",".join(DEFAULT_CONFIG_KEYS))
 
     subparsers.choices["run"].add_argument("run_ids", nargs="+")
-    subparsers.choices["filter"].add_argument("--filters", required=True)
+    subparsers.choices["filter"].add_argument("--filters", default="{}")
+    subparsers.choices["filter"].add_argument(
+        "--modalities",
+        default=None,
+        help="Comma-separated modality names (rgb_static,rgb_gripper,language,proprio) the "
+        "matched runs must have been TRAINED with exactly -- every other modality must be "
+        "off. Filters client-side on the effective set; see run_modalities()'s docstring "
+        "for why --filters can't express this.",
+    )
 
     return parser
 
@@ -457,8 +517,26 @@ def main() -> None:
         config_keys = parse_config_keys(args.config_keys, filters)
 
         runs = list(api.runs(f"{entity}/{project}", filters=filters))
+
+        modality_problems = []
+        if args.modalities is not None:
+            wanted = parse_modality_spec(args.modalities)
+            print(f"modalities: {wanted}")
+            kept = []
+            for run in runs:
+                modalities = run_modalities(run)
+                if modalities is None:
+                    modality_problems.append(f"{run.id}: could not parse trained modalities from config")
+                elif modalities == wanted:
+                    kept.append(run)
+            print(f"  {len(runs) - len(kept)} of {len(runs)} run(s) dropped by --modalities")
+            runs = kept
+
         if not runs:
-            raise SystemExit(f"No runs matched filters={filters!r} in {entity}/{project}")
+            reason = f"filters={filters!r}"
+            if args.modalities is not None:
+                reason += f", --modalities={args.modalities!r}"
+            raise SystemExit(f"No runs matched {reason} in {entity}/{project}")
 
         print(f"matched {len(runs)} run(s):")
         print_run_table(runs, config_keys)
@@ -472,6 +550,11 @@ def main() -> None:
                 per_run[run.id] = analyze(artifact_dir, missing, args.measure)
 
             print_problems(per_run)
+            if modality_problems:
+                print("WARNING (unparseable modalities):")
+                for p in modality_problems:
+                    print(f"  {p}")
+                print()
             print_aggregate(per_run, args.measure)
 
 

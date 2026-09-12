@@ -690,6 +690,8 @@ min/max across every run matching a W&B config filter:
 
 ./run.sh analyze filter --filters \
     '{"config.modality_dropout": true, "config.modality_dropout_proprio_keep_p": 0.5}'
+
+./run.sh analyze filter --modalities rgb_static,rgb_gripper,language,proprio
 ```
 
 Requires `WANDB_API_KEY` (vars.env or shell env). Filter keys are matched against the
@@ -698,6 +700,16 @@ run's **W&B config**, which is populated only by `FLOWERVLA.save_hyperparameters
 not `model.modality_dropout`); top-level Hydra keys like `seed` or `libero_benchmark`
 aren't in it. `--entity`/`--project` default to `conf/config_libero.yaml`'s
 `logger.entity`/`logger.project`.
+
+`--filters` can't select runs by *trained* modality set: W&B stores `modalities` as a
+Python repr string (a `DictConfig` passed through `str()` on its way into the config), not
+a nested value, so `config.modalities.rgb_static` can't be matched, and the key set itself
+drifted (older runs' `modalities` has 3 keys, not 4, with no `proprio` entry at all). Use
+`--modalities <comma-separated names>` instead — it selects runs client-side by the
+*effective* set of modalities the model was trained to observe (every named modality on,
+every other one off), correctly accounting for both of the above and for `use_proprio`
+gating `modalities.proprio` (a model with `use_proprio=False` never receives proprio
+regardless of what `modalities` says).
 
 Before printing results, it always prints the run ID(s) or filter used, and a `WARNING:`
 block for anything that would otherwise silently skew the report: a matched run with no
