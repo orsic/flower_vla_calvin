@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from typing import Any, Dict, Optional, Tuple, Collection, List
 from functools import partial
 import math
@@ -27,7 +28,8 @@ from flower.models.networks.transformers import (
     ActionSpaceEmbedderParameter,
     ZeroEncoder,
     FlowBlock,
-    stateless_norm
+    stateless_norm,
+    zero_init_output_projections,
 )
 from flower.models.networks.modality_dropout import (
     sample_token_budget,
@@ -38,7 +40,7 @@ from flower.models.networks.modality_dropout import (
 )
 from flower.utils.lr_schedulers.tri_stage_scheduler import TriStageLRScheduler
 from flower.callbacks.ema import EMA
-from flower.models.utils import ActionIndex, generate_policy_prompt
+from flower.models.utils import ActionIndex, generate_policy_prompt, dit_layer_sources, dit_checkpoint_layout
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +80,18 @@ class FLOWERVLA(pl.LightningModule):
         attn_pdrop: float = 0.1,
         resid_pdrop: float = 0.1,
         mlp_pdrop: float = 0.1,
-        
+        lora_dim: int = 256,
+        mlp_hidden_dim: Optional[int] = None,
+
+        # Action-expert capacity: n_layers may exceed the checkpoint's DiT depth
+        # (pretrained_dit_layers). The extra blocks' placement/init/width are controlled
+        # below; see dit_layer_sources() for the placement x init combinations.
+        pretrained_dit_layers: int = 12,
+        extra_layer_init: str = "random",  # random | zero | copy
+        extra_layer_placement: str = "append",  # append | interleave
+        extra_layer_lora_dim: Optional[int] = None,
+        extra_layer_mlp_hidden_dim: Optional[int] = None,
+
         # RoPE Configuration
         use_rope: bool = False,
         use_nope: bool = False,
@@ -204,6 +217,14 @@ class FLOWERVLA(pl.LightningModule):
             use_nope=use_nope,
             query_seq_len=query_seq_len,
             rope_theta=rope_theta,
+            lora_dim=lora_dim,
+            mlp_hidden_dim=mlp_hidden_dim,
+            pretrained_dit_layers=pretrained_dit_layers,
+            extra_layer_init=extra_layer_init,
+            extra_layer_placement=extra_layer_placement,
+            extra_layer_lora_dim=extra_layer_lora_dim,
+            extra_layer_mlp_hidden_dim=extra_layer_mlp_hidden_dim,
+            action_expert_from_scratch=action_expert_from_scratch,
         )
         
         # Initialize state tracking
@@ -302,6 +323,42 @@ class FLOWERVLA(pl.LightningModule):
             new_key = new_key.replace(".mlp.c_proj.", ".mlp.proj.")
             new_state_dict[new_key] = value
 
+        # Remap dit.<checkpoint_idx>.* keys to dit.<module_idx>.* per self.dit_layer_sources
+        # (see dit_layer_sources() in flower/models/utils.py). Duplicates a checkpoint block
+        # across several module slots when extra_layer_init="copy"; drops it entirely when no
+        # module slot maps to it. Skipped under action_expert_from_scratch, since the filter
+        # below discards every non-"vlm." key anyway.
+        #
+        # pretrained_model_path is reused for two different checkpoint shapes (see
+        # dit_checkpoint_layout()'s docstring): the pretrained base at train time
+        # (dit.<checkpoint_idx>.*, remapped below), and a fully-trained/finetuned checkpoint
+        # at eval time (flower/evaluation/utils.py's load_mode_from_safetensor() repoints this
+        # same argument at it), whose dit.<module_idx>.* keys are already in this model's
+        # shape. loaded_base tracks which one this was -- only the former leaves the extra
+        # blocks actually fresh, which gates the zero-init below.
+        loaded_base = True
+        if not self.action_expert_from_scratch:
+            dit_key_re = re.compile(r"^dit\.(\d+)\.(.*)$")
+            by_src: Dict[int, Dict[str, Any]] = {}
+            for key in list(new_state_dict.keys()):
+                m = dit_key_re.match(key)
+                if m:
+                    by_src.setdefault(int(m.group(1)), {})[m.group(2)] = new_state_dict.pop(key)
+
+            if by_src:
+                layout = dit_checkpoint_layout(set(by_src.keys()), len(self.dit), self.pretrained_dit_layers)
+                loaded_base = layout == "pretrained"
+                if loaded_base:
+                    for module_idx, src_idx in enumerate(self.dit_layer_sources):
+                        if src_idx is None:
+                            continue
+                        for rest, value in by_src[src_idx].items():
+                            new_state_dict[f"dit.{module_idx}.{rest}"] = value
+                else:
+                    for module_idx, values in by_src.items():
+                        for rest, value in values.items():
+                            new_state_dict[f"dit.{module_idx}.{rest}"] = value
+
         # When training the action expert from scratch, load only VLM weights so the
         # action expert keeps its random initialisation from __init__.
         if self.action_expert_from_scratch:
@@ -310,6 +367,30 @@ class FLOWERVLA(pl.LightningModule):
 
         # Load the state dict with strict=False to handle mismatches
         missing_keys, unexpected_keys = self.load_state_dict(new_state_dict, strict=False)
+
+        # Zero-init the extra (non-pretrained) DiT blocks' output projections, so they are
+        # the identity function at step 0 instead of scrambling the pretrained blocks' output.
+        # Only meaningful when the pretrained base was just remapped -- a checkpoint already
+        # in module-index shape (loaded_base=False) loaded its extra blocks' real, trained
+        # weights above, and zeroing them here would silently discard that training.
+        if not self.action_expert_from_scratch and loaded_base and self.extra_layer_init == "zero":
+            for i in self.extra_dit_indices:
+                zero_init_output_projections(self.dit[i])
+
+        # Action-expert capacity summary — the previous truncated missing/unexpected key
+        # dump buried this fact; make it explicit every load. n_extra is 0 when loaded_base
+        # is False: every block came from the checkpoint as-is, none is fresh.
+        n_layers = len(self.dit)
+        n_extra = len(self.extra_dit_indices) if loaded_base else 0
+        n_pretrained_loaded = n_layers - n_extra
+        extra_params = (
+            sum(p.numel() for i in self.extra_dit_indices for p in self.dit[i].parameters()) if loaded_base else 0
+        )
+        extra_desc = "duplicated from checkpoint" if self.extra_layer_init == "copy" else f"fresh (init={self.extra_layer_init})"
+        print(
+            f"Action expert: {n_layers} DiT blocks, {n_pretrained_loaded} loaded from checkpoint, "
+            f"{n_extra} {extra_desc}, {extra_params / 1e6:.1f}M params in extra slots"
+        )
 
         # Log mismatches for debugging
         print(f"Pretrained weights loaded with the following issues:")
@@ -402,6 +483,35 @@ class FLOWERVLA(pl.LightningModule):
         use_cross_attn = kwargs['use_cross_attn']
         use_rope = kwargs['use_rope']
         use_nope = kwargs['use_nope']
+        lora_dim = kwargs['lora_dim']
+        mlp_hidden_dim = kwargs['mlp_hidden_dim']
+        extra_lora_dim = kwargs['extra_layer_lora_dim'] if kwargs['extra_layer_lora_dim'] is not None else lora_dim
+        extra_mlp_hidden_dim = (
+            kwargs['extra_layer_mlp_hidden_dim'] if kwargs['extra_layer_mlp_hidden_dim'] is not None else mlp_hidden_dim
+        )
+        if kwargs['extra_layer_init'] == "copy" and (extra_lora_dim != lora_dim or extra_mlp_hidden_dim != mlp_hidden_dim):
+            raise ValueError(
+                "extra_layer_init='copy' duplicates a pretrained block's weights, which requires "
+                "extra_layer_lora_dim/extra_layer_mlp_hidden_dim to match lora_dim/mlp_hidden_dim "
+                f"(got lora_dim={lora_dim} vs extra={extra_lora_dim}, "
+                f"mlp_hidden_dim={mlp_hidden_dim} vs extra={extra_mlp_hidden_dim})"
+            )
+
+        # Action-expert capacity bookkeeping (see dit_layer_sources() in flower/models/utils.py).
+        # self.pretrained_dit_layers/extra_layer_init are read back by _load_pretrained_weights;
+        # self.extra_dit_indices is read back by _get_param_groups for per-family learning rates.
+        self.pretrained_dit_layers = kwargs['pretrained_dit_layers']
+        self.extra_layer_init = kwargs['extra_layer_init']
+        if kwargs['action_expert_from_scratch']:
+            self.dit_layer_sources: List[Optional[int]] = [None] * n_layers
+        else:
+            self.dit_layer_sources = dit_layer_sources(
+                n_layers, self.pretrained_dit_layers, kwargs['extra_layer_placement'], self.extra_layer_init
+            )
+        # Extra-block *positions* are placement-derived, not init-derived (a "copy"-initialized
+        # slot still fills an "extra" position) -- recompute with init="random" to get them.
+        extra_reference = dit_layer_sources(n_layers, self.pretrained_dit_layers, kwargs['extra_layer_placement'], "random")
+        self.extra_dit_indices = {i for i, src in enumerate(extra_reference) if src is None}
 
         self.action_encoders = nn.ModuleDict()
         self.action_decoders = nn.ModuleDict()
@@ -422,7 +532,7 @@ class FLOWERVLA(pl.LightningModule):
         if not use_rope and not use_nope:
             self.positional_encoding = nn.Parameter(torch.randn(1, kwargs['act_window_size'], dit_dim) * 0.1)
 
-        # DiT blocks
+        # DiT blocks. Extra (non-pretrained) blocks may use their own lora_dim/mlp_hidden_dim.
         self.dit = nn.ModuleList([
             FlowBlock(
                 dit_dim, n_heads,
@@ -433,8 +543,10 @@ class FLOWERVLA(pl.LightningModule):
                 use_rope=use_rope,
                 query_seq_len=kwargs['query_seq_len'],
                 rope_theta=kwargs['rope_theta'],
+                lora_dim=extra_lora_dim if i in self.extra_dit_indices else lora_dim,
+                mlp_hidden_dim=extra_mlp_hidden_dim if i in self.extra_dit_indices else mlp_hidden_dim,
 
-            ) for _ in range(n_layers)
+            ) for i in range(n_layers)
         ])
 
         # Create components per action space
@@ -492,23 +604,51 @@ class FLOWERVLA(pl.LightningModule):
         }
 
     def _get_param_groups(self):
-        """Get parameter groups for optimizer"""
+        """
+        Get parameter groups for optimizer, split by family (vlm / pretrained_expert /
+        fresh_expert) x (decay / no_decay), each carrying its own learning rate.
+        pretrained_expert covers everything in the action expert except the extra DiT
+        blocks (self.extra_dit_indices) -- these were all part of pre-training's DiT
+        optimizer. optimizer.dit_learning_rate/new_layer_learning_rate default to null,
+        which falls back to learning_rate/dit_learning_rate respectively -- identical to
+        the single-LR behavior this replaces.
+        """
         no_decay = ['bias', 'LayerNorm', 'layernorm', 'ln', 'norm']
-        decay_group = []
-        no_decay_group = []
+        dit_layer_re = re.compile(r"^dit\.(\d+)\.")
 
-        # Collect all parameters, excluding VLM if frozen
+        base_lr = self.optimizer_config.learning_rate
+        dit_lr = self.optimizer_config.get("dit_learning_rate") or base_lr
+        new_layer_lr = self.optimizer_config.get("new_layer_learning_rate") or dit_lr
+        lrs = {"vlm": base_lr, "pretrained_expert": dit_lr, "fresh_expert": new_layer_lr}
+
+        families = {"vlm": [], "pretrained_expert": [], "fresh_expert": []}
+        no_decay_families = {"vlm": [], "pretrained_expert": [], "fresh_expert": []}
+
         for name, param in self.named_parameters():
-            if param.requires_grad:
-                if any(nd in name.lower() for nd in no_decay):
-                    no_decay_group.append(param)
-                else:
-                    decay_group.append(param)
+            if not param.requires_grad:
+                continue
+            m = dit_layer_re.match(name)
+            if name.startswith("vlm."):
+                family = "vlm"
+            elif m and int(m.group(1)) in self.extra_dit_indices:
+                family = "fresh_expert"
+            else:
+                family = "pretrained_expert"
 
-        return [
-            {"params": decay_group, "weight_decay": self.optimizer_config.transformer_weight_decay},
-            {"params": no_decay_group, "weight_decay": 0.0}
-        ]
+            target = no_decay_families if any(nd in name.lower() for nd in no_decay) else families
+            target[family].append(param)
+
+        groups = []
+        for family in ("vlm", "pretrained_expert", "fresh_expert"):
+            if families[family]:
+                groups.append({
+                    "params": families[family],
+                    "weight_decay": self.optimizer_config.transformer_weight_decay,
+                    "lr": lrs[family],
+                })
+            if no_decay_families[family]:
+                groups.append({"params": no_decay_families[family], "weight_decay": 0.0, "lr": lrs[family]})
+        return groups
 
     def training_step(self, batch: Dict[str, Dict], batch_idx: int) -> torch.Tensor:
         """Lightning training step"""

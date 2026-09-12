@@ -59,12 +59,26 @@ n_layers: 18
 attn_pdrop: 0.1
 resid_pdrop: 0.1
 mlp_pdrop: 0.1
+lora_dim: 256          # adaLN down-projection width (all DiT blocks, unless overridden below)
+mlp_hidden_dim: null    # null -> SwiGlu's default (4*dit_dim, rounded), i.e. 2816 at dit_dim=1024
+
+# Action-expert capacity: the pretrained checkpoint only covers 12 DiT blocks; n_layers=18
+# above means the remaining 6 are extra. See README.md "Action-expert capacity" for details.
+pretrained_dit_layers: 12
+extra_layer_init: random       # random | zero | copy (duplicate a pretrained block)
+extra_layer_placement: append  # append | interleave
+extra_layer_lora_dim: null      # null -> lora_dim
+extra_layer_mlp_hidden_dim: null  # null -> mlp_hidden_dim
 
 # RoPE Configuration
 use_rope: true
 use_nope: false
 query_seq_len: 100
-rope_theta: 32.0
+# The 12 pretrained DiT blocks' rope cos/sin buffers are persistent, so they load the
+# checkpoint's own theta (1000.0) regardless of this value; only the extra blocks above
+# actually use it. Set to 1000.0 so the extra blocks match the pretrained ones instead of
+# silently diverging from them.
+rope_theta: 1000.0
 
 # Optimizer Configuration
 optimizer_type: adamw
@@ -73,6 +87,11 @@ optimizer:
   _target_: torch.optim.AdamW
   transformer_weight_decay: 0.05
   learning_rate: 2e-5
+  # Separate LRs for the action expert. null falls back to learning_rate (dit_learning_rate)
+  # or dit_learning_rate (new_layer_learning_rate) -- i.e. today's single-LR behavior.
+  # Pre-training used 1e-4 for the whole DiT vs 2e-5 for the VLM.
+  dit_learning_rate: null
+  new_layer_learning_rate: null
   betas: [0.9, 0.95]
 
 # Learning Rate Scheduler

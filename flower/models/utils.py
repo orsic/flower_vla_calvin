@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional, Set
 
 
 def generate_policy_prompt(
@@ -70,6 +70,92 @@ def generate_policy_prompt(
     prompt = prompts[prompt_style].strip()
     prompt = ' '.join(line.strip() for line in prompt.split('\n'))
     return prompt
+
+
+def dit_layer_sources(
+    n_layers: int,
+    n_pretrained: int,
+    placement: str = "append",
+    init: str = "random",
+) -> List[Optional[int]]:
+    """
+    Maps each of the model's n_layers DiT block slots to the pretrained checkpoint's
+    layer index it should load from, or None if the slot keeps its fresh
+    (randomly/zero initialized) weights.
+
+    placement:
+        "append"     - all n_pretrained checkpoint blocks come first, in order; the
+                       remaining (n_layers - n_pretrained) slots are extra, at the end.
+        "interleave" - extra slots are spread evenly among the pretrained ones (depth
+                       up-scaling style: one extra slot after each group of pretrained
+                       blocks).
+
+    init:
+        "random" / "zero" - extra slots map to None; how they're initialized is handled
+                             by the caller, not here.
+        "copy"             - extra slots map to a pretrained index instead of None, so
+                             the caller duplicates that block's weights (depth
+                             up-scaling: LLaMA-Pro / SOLAR style).
+    """
+    if n_layers < n_pretrained:
+        raise ValueError(f"n_layers ({n_layers}) must be >= n_pretrained ({n_pretrained})")
+    if placement not in ("append", "interleave"):
+        raise ValueError(f"Invalid placement: {placement}")
+    if init not in ("random", "zero", "copy"):
+        raise ValueError(f"Invalid init: {init}")
+
+    n_extra = n_layers - n_pretrained
+    if n_extra == 0:
+        return list(range(n_pretrained))
+
+    if placement == "append":
+        pretrained_slots: List[Optional[int]] = list(range(n_pretrained))
+        if init == "copy":
+            extra_slots = [(n_pretrained - n_extra + i) % n_pretrained for i in range(n_extra)]
+        else:
+            extra_slots = [None] * n_extra
+        return pretrained_slots + extra_slots
+
+    # interleave: distribute the n_extra slots evenly among n_pretrained blocks by
+    # splitting the pretrained blocks into n_extra groups (as even as possible) and
+    # inserting one extra slot after each group.
+    group_size, remainder = divmod(n_pretrained, n_extra)
+    sources: List[Optional[int]] = []
+    idx = 0
+    for j in range(n_extra):
+        size = group_size + (1 if j < remainder else 0)
+        group = list(range(idx, idx + size))
+        sources.extend(group)
+        idx += size
+        if init == "copy":
+            last_pretrained = group[-1] if group else max(0, idx - 1)
+            sources.append(last_pretrained)
+        else:
+            sources.append(None)
+    return sources
+
+
+def dit_checkpoint_layout(ckpt_indices: Set[int], n_layers: int, n_pretrained: int) -> str:
+    """Which of two shapes a loaded checkpoint's dit.<idx>.* keys are in:
+
+    "module"     - already in this model's module-index space (n_layers blocks) -- e.g. a
+                   finetuned/trained checkpoint, produced by this same model. Load as-is.
+    "pretrained" - the base checkpoint's n_pretrained blocks, in checkpoint-index space --
+                   remap onto module slots via dit_layer_sources().
+
+    Checked in that order, so n_layers == n_pretrained (no extra blocks) resolves to
+    "module" -- the two shapes coincide and the remap would be a no-op anyway. Raises
+    ValueError if ckpt_indices matches neither.
+    """
+    if ckpt_indices == set(range(n_layers)):
+        return "module"
+    if ckpt_indices == set(range(n_pretrained)):
+        return "pretrained"
+    raise ValueError(
+        f"Checkpoint has DiT layers {sorted(ckpt_indices)}, but expected either "
+        f"{sorted(range(n_layers))} (a checkpoint already in this model's {n_layers}-layer "
+        f"shape) or {sorted(range(n_pretrained))} (the {n_pretrained}-layer pretrained base)"
+    )
 
 
 class ActionIndex:

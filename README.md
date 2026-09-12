@@ -278,6 +278,50 @@ Once `use_proprio=True`, proprioception can also be ablated like the other three
 (training-time Bernoulli dropout), or `eval_modalities.proprio=False` (eval-only) — see the
 sections above and "Modality-ablation eval" below.
 
+### Action-expert capacity (`model.n_layers`, `extra_layer_*`, `dit_learning_rate`)
+
+The pretrained `flower_vla_pret` checkpoint only covers **12** DiT blocks
+(`model.pretrained_dit_layers`), but the default config uses `model.n_layers=18` — the
+remaining 6 blocks (113M params, +18.9M params/layer) are extra and don't come from the
+checkpoint. How they're placed, initialized, and trained is controlled by:
+
+| Knob | Values | Effect |
+|---|---|---|
+| `model.n_layers` | int ≥ `pretrained_dit_layers` | Total DiT depth. Anything beyond `pretrained_dit_layers` is "extra". |
+| `model.extra_layer_placement` | `append` (default), `interleave` | `append`: extras go after all pretrained blocks. `interleave`: extras are spread evenly among them (depth up-scaling style). |
+| `model.extra_layer_init` | `random` (default), `zero`, `copy` | `random`: default PyTorch init. `zero`: block is the exact identity at step 0 (self-attn/cross-attn/MLP output projections zeroed), so it can't scramble the pretrained blocks' output before training nudges it away from identity. `copy`: duplicates a pretrained block's weights instead of an extra slot (LLaMA-Pro/SOLAR-style depth up-scaling) — requires `extra_layer_lora_dim`/`extra_layer_mlp_hidden_dim` to match the base width. |
+| `model.extra_layer_lora_dim`, `model.extra_layer_mlp_hidden_dim` | int or `null` | Give the extra blocks their own AdaLN/MLP width instead of the pretrained blocks' (`model.lora_dim`/`model.mlp_hidden_dim`). `null` (default) matches the base width. |
+| `model.optimizer.dit_learning_rate`, `model.optimizer.new_layer_learning_rate` | float or `null` | Separate learning rates for the pretrained action expert and the extra blocks, vs. `model.optimizer.learning_rate` for the VLM. `null` (default) falls back to `learning_rate`/`dit_learning_rate` respectively, i.e. today's single-LR behavior. Pre-training itself used `1e-4` for the whole DiT vs `2e-5` for the VLM. |
+
+The 12 pretrained blocks' RoPE `cos`/`sin` tables are persistent buffers, so they always
+load the checkpoint's own `rope_theta` (1000.0) regardless of `model.rope_theta` — that
+config value only reaches the extra blocks. `model.rope_theta` defaults to `1000.0` so
+extras match the pretrained blocks instead of silently diverging from them.
+
+`model.dit_dim`/`model.n_heads` must stay at `1024`/`16` — changing either discards all
+226.6M params of pretrained DiT weight (the load log always reports how many blocks
+loaded vs. stayed fresh, so this is never silent).
+
+The same loader also reloads a fully-trained/finetuned checkpoint (e.g. at eval time),
+which already has `model.n_layers` blocks rather than the pretrained base's 12 — it tells
+the two apart by the checkpoint's DiT block count, so `model.n_layers` can differ freely
+between runs without breaking eval of older checkpoints, and a trained checkpoint's extra
+blocks are loaded as-is rather than remapped or zero-inited again.
+
+```bash
+# Depth up-scaling: duplicate the last 6 pretrained blocks instead of random-initializing
+# 6 new ones, spread evenly through the stack.
+./run.sh train libero_10 model.extra_layer_init=copy model.extra_layer_placement=interleave
+
+# Give the action expert its own (higher) learning rate, matching pre-training's DiT LR.
+./run.sh train libero_10 model.optimizer.dit_learning_rate=1e-4
+
+# Add real capacity (6 extra blocks) that starts as a no-op and trains faster than the
+# pretrained ones.
+./run.sh train libero_10 model.n_layers=24 model.extra_layer_init=zero \
+    model.optimizer.dit_learning_rate=1e-4 model.optimizer.new_layer_learning_rate=2e-4
+```
+
 ### VS Code Devcontainer
 
 The devcontainer runs the same `flower-vla-eval` image with GPU, all three mounts, and the LIBERO path config wired up automatically.

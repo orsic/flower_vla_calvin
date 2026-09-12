@@ -93,6 +93,14 @@ class TriStageLRScheduler(LearningRateScheduler):
     ):
         super(TriStageLRScheduler, self).__init__(optimizer, configs.lr_scheduler.init_lr)
 
+        # Per-group base LR (e.g. vlm / pretrained_expert / fresh_expert families set by
+        # FLOWERVLA._get_param_groups), captured before the schedule below ever runs.
+        # step() scales each group by its own base_lr/peak_lr ratio instead of overwriting
+        # every group with the same scalar, so distinct family LRs stay distinct across the
+        # whole schedule. When every group shares one base_lr == peak_lr (the pre-existing
+        # single-LR setup), the ratio is 1 and this is identical to the old behavior.
+        self.base_lrs = [g["lr"] for g in optimizer.param_groups]
+
         self.phase_ratio = eval(configs.lr_scheduler.phase_ratio)
 
         self.warmup_steps = int(configs.lr_scheduler.total_steps * self.phase_ratio[0])
@@ -142,7 +150,9 @@ class TriStageLRScheduler(LearningRateScheduler):
         else:
             raise ValueError("Undefined stage")
 
-        self.set_lr(self.optimizer, self.lr)
+        ratio = self.lr / self.peak_lr
+        for group, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
+            group["lr"] = base_lr * ratio
         self.update_step += 1
 
         return self.lr

@@ -338,6 +338,7 @@ class FlowBlock(nn.Module):
                  query_seq_len: int = 128,
                  rope_theta: float = 32,
                  lora_dim: int = 256,
+                 mlp_hidden_dim: Optional[int] = None,
                  use_global_adaln: bool = True) -> None:
         super().__init__()
         self.dim = dim
@@ -355,7 +356,7 @@ class FlowBlock(nn.Module):
             self.cross_attn = FlowerCrossAttention(dim=dim, n_heads=heads,
                                                      attn_pdrop=attn_pdrop, resid_pdrop=resid_pdrop,
                                                      use_rope=False)
-        self.mlp = SwiGlu(dim, dropout=mlp_pdrop)
+        self.mlp = SwiGlu(dim, hidden_dim=mlp_hidden_dim, dropout=mlp_pdrop)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             nn.Linear(dim, lora_dim),  # Down-project
@@ -572,6 +573,18 @@ class ActionSpaceEmbedderParameter(nn.Module):
         return self.mlp(self.action_embeddings)
     
 
+
+
+def zero_init_output_projections(block: "FlowBlock") -> None:
+    """
+    Zeroes a FlowBlock's output projections (self-attn, cross-attn, MLP) so the block is
+    the identity function at init: residual + gate * 0 == residual. All three are
+    bias-free nn.Linear layers, so gradients still flow through them during training.
+    """
+    nn.init.zeros_(block.self_attn.proj.weight)
+    if block.use_cross_attn:
+        nn.init.zeros_(block.cross_attn.proj.weight)
+    nn.init.zeros_(block.mlp.proj.weight)
 
 
 class ZeroEncoder(nn.Module):
