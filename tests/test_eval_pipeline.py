@@ -34,7 +34,7 @@ model:
   use_proprio: {use_proprio}
   modality_dropout: {dropout}
 logger:
-  project: multimodal_policies
+  project: multimodal_florence
   entity: some-entity
 """
     )

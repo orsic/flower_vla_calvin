@@ -52,3 +52,12 @@ def test_shipped_config_still_means_12_pretrained_plus_6_random_appended_one_lr(
         assert cfg.model.optimizer.dit_learning_rate is None
         assert cfg.model.optimizer.new_layer_learning_rate is None
         assert cfg.model.rope_theta == 1000.0
+
+
+def test_wandb_project_is_multimodal_florence():
+    """W&B project name for LIBERO/CALVIN training runs -- see the "Cross-run analysis
+    from W&B" section of README.md for the note about evals of pre-rename runs still
+    landing in the old project."""
+    with initialize(config_path="../conf"):
+        assert compose(config_name="config_libero").logger.project == "multimodal_florence"
+        assert compose(config_name="config_calvin").logger.project == "multimodal_florence"

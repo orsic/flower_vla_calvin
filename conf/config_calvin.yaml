@@ -46,7 +46,7 @@ logger:
   name: logger
   group: mode
   log_model: false
-  project: multimodal_policies
+  project: multimodal_florence
   entity: orsic-university-of-zagreb-faculty-of-electrical-enginee
   id: ???
 

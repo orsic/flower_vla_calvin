@@ -179,7 +179,10 @@ different set of episodes shares the noise draw), so results carry a `batching_m
 static view, wrist view, and language. For each sample in a batch, a Dirichlet distribution
 (α=1 per group) samples proportions that determine how many tokens from each group to keep;
 the remaining tokens are physically removed from the sequence before it enters the Florence-2
-encoder, providing a real compute saving (not masking).
+encoder, providing a real compute saving (not masking). Because the kept proportion is sampled
+independently per sample, every group is still run through its encoder (DaViT / the tokenizer)
+for the whole batch — there's no fixed subset to skip at input time the way a `model.modalities`
+or `eval_modalities` combo can (see below).
 
 The position-correction step ensures every retained token's net positional embedding equals
 its absolute position in the original sequence — removal is analytically equivalent to
@@ -209,9 +212,10 @@ sampling step) and applied by zeroing its conditioning vector — exactly reprod
 
 Unlike `train-dropout` (one model exposed to *randomly varying* modality proportions every
 step), a fixed modality-ablation model trains without dropout but only ever observes a fixed
-subset of `{rgb_static, rgb_gripper, language, proprio}` — the withheld modalities are physically
-removed pre-encoder (tokens) or gated to zero (proprio) in every forward, exactly like
-`eval_modalities` masking, but applied at training time too. This is set with `model.modalities.*`
+subset of `{rgb_static, rgb_gripper, language, proprio}` — a withheld token modality (vision or
+language) is skipped at the very input in every forward: its encoder (DaViT for a view, the
+tokenizer for language) is never run, not just masked out afterwards. Proprio, not being a
+token, is gated to zero instead. This is set with `model.modalities.*`
 Hydra overrides on `./run.sh train`:
 
 ```bash
@@ -558,11 +562,15 @@ reproducible even with a matching seed; gaussian_blur/zoom_blur (ids 11-30) are 
 
 **Modality-ablation eval.** `eval_modalities` in `conf/eval_libero.yaml` /
 `conf/eval_libero_plus.yaml` is functional: setting any of `rgb_static`,
-`rgb_gripper`, `language` to `False` physically removes that modality's tokens
-pre-encoder (mirroring how `train-dropout` trains, but with a fixed on/off group
-instead of Dirichlet-sampled proportions — see `FLOWERVLA.eval_modality_mask` in
-`flower/models/flower.py`, `deterministic_keep_counts` in
-`flower/models/networks/modality_dropout.py`). `proprio` works the same way but isn't
+`rgb_gripper`, `language` to `False` skips that modality at the input — its
+encoder (DaViT for a view, the tokenizer for language) is never run for the withheld
+group, not just masked out afterwards (a fixed on/off group per `FLOWERVLA.eval_modality_mask`
+in `flower/models/flower.py`, vs. `train-dropout`'s Dirichlet-sampled proportions, which
+still runs every group's encoder — see `compact_layout` /
+`deterministic_keep_counts` in `flower/models/networks/modality_dropout.py`). Retained
+tokens still land at exactly the absolute position they'd carry in a full, non-skipped
+sequence, so results are unaffected — only the withheld modality's compute is saved.
+`proprio` works the same way but isn't
 a token — it zeros the proprio conditioning vector instead (`FLOWERVLA.eval_proprio_mask`)
 and requires a `use_proprio=True` checkpoint. At least one of the three vision/language
 modalities must stay on. This works on any checkpoint, not just `train-dropout` ones —
@@ -743,7 +751,11 @@ run's **W&B config**, which is populated only by `FLOWERVLA.save_hyperparameters
 (`flower/models/flower.py`) — its `__init__` argument names, flat (`modality_dropout`,
 not `model.modality_dropout`); top-level Hydra keys like `seed` or `libero_benchmark`
 aren't in it. `--entity`/`--project` default to `conf/config_libero.yaml`'s
-`logger.entity`/`logger.project`.
+`logger.entity`/`logger.project`, currently `multimodal_florence`. New training runs log
+there; `./run.sh pipeline`'s eval-artifact upload targets whatever project the *training
+run's own* saved hydra config recorded, so evals of runs from before this project was
+renamed still land in the old `multimodal_policies` project next to their training
+curves — pass `--project multimodal_policies` to `./run.sh analyze` to see those.
 
 `--filters` can't select runs by *trained* modality set: W&B stores `modalities` as a
 Python repr string (a `DictConfig` passed through `str()` on its way into the config), not

@@ -7,6 +7,13 @@ Tests:
 2. Per-sample variation     — different samples receive different keep-sets.
 3. Position preservation    — position_correct + encoder re-add nets to absolute positions.
 4. Removal ≡ masking oracle — compacted+corrected path matches attention-mask path on Florence-2-base.
+5. Intra-batch variety      — regression guard for the vectorized build_keep_indices/
+                              sample_token_budget: identical per-row counts must still
+                              produce different per-row selections (a broadcast-noise bug
+                              would pass every rectangularity/count check above while
+                              masking the same positions in every batch element).
+6. compact_layout            — absolute-position bookkeeping for input-level modality skipping.
+7. Zero/one-token edge cases — a group with 0 or 1 available/kept tokens.
 """
 
 import pytest
@@ -18,6 +25,7 @@ from flower.models.networks.modality_dropout import (
     position_correct,
     deterministic_keep_counts,
     gather_attention_mask,
+    compact_layout,
 )
 
 
@@ -425,3 +433,176 @@ class TestRemovalEquivalentToMask:
             f"Removal path does not match masking oracle.\n"
             f"Max abs diff: {(removal_out.float() - oracle_retained.float()).abs().max():.6f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 5: Intra-batch variety (vectorization regression guard)
+#
+# The obvious way to get the vectorized build_keep_indices/sample_token_budget wrong is
+# to draw one noise vector and broadcast it across the batch dimension: every count/
+# shape/rectangularity assertion above would still pass, but every sample would mask the
+# *same* positions. TestPerSampleVariation (above) doesn't catch this on its own because
+# there the per-row counts also differ; here we pin identical per-row counts and still
+# require different per-row selections, checked per group so a bug broadcasting only one
+# group's noise doesn't slip through.
+# ---------------------------------------------------------------------------
+
+class TestIntraBatchVariety:
+    def test_identical_counts_still_vary_per_group_across_batch(self):
+        avail = make_avail()
+        # Same counts for every row (bypasses sample_token_budget's per-row Dirichlet
+        # variation) so the only remaining source of per-row difference is the noise
+        # draw inside build_keep_indices itself.
+        counts = deterministic_keep_counts(avail, [True, True, True])
+        half = torch.tensor([NS // 2, NW // 2, LT // 2], dtype=torch.long)
+        kept_counts = half.unsqueeze(0).expand(B, -1).clone()
+        indices = build_keep_indices(
+            make_group_spans(), kept_counts, make_lang_valid_len(), PROMPT_IDX
+        )
+
+        static_sets = [
+            frozenset(i for i in indices[b].tolist() if i < NS) for b in range(B)
+        ]
+        wrist_sets = [
+            frozenset(i for i in indices[b].tolist() if NS <= i < NS + NW) for b in range(B)
+        ]
+        lang_sets = [
+            frozenset(i for i in indices[b].tolist() if i >= LANG_START) for b in range(B)
+        ]
+        for name, sets in [("static", static_sets), ("wrist", wrist_sets), ("lang", lang_sets)]:
+            assert any(s != sets[0] for s in sets[1:]), (
+                f"{name} group: every batch row selected the identical token set despite "
+                f"identical counts — noise is likely broadcast across the batch instead of "
+                f"drawn per-row: {sets}"
+            )
+
+    def test_same_generator_seed_reproduces_selection(self):
+        """Complement of the above: variety must come from per-row sampling, not from an
+        unseeded/non-reproducible source — same generator state -> same selection."""
+        avail = make_avail()
+        counts = deterministic_keep_counts(avail, [True, True, True])
+        half = torch.tensor([NS // 2, NW // 2, LT // 2], dtype=torch.long)
+        kept_counts = half.unsqueeze(0).expand(B, -1).clone()
+
+        gen1 = torch.Generator().manual_seed(0)
+        indices1 = build_keep_indices(
+            make_group_spans(), kept_counts, make_lang_valid_len(), PROMPT_IDX, generator=gen1
+        )
+        gen2 = torch.Generator().manual_seed(0)
+        indices2 = build_keep_indices(
+            make_group_spans(), kept_counts, make_lang_valid_len(), PROMPT_IDX, generator=gen2
+        )
+        assert torch.equal(indices1, indices2)
+
+
+# ---------------------------------------------------------------------------
+# Test 6: compact_layout
+# ---------------------------------------------------------------------------
+
+class TestCompactLayout:
+    def test_all_present_is_the_identity(self):
+        layout = compact_layout(NS, NW, LT, (True, True, True))
+        assert layout.n_compact == NS + NW + 1 + LT
+        assert layout.prompt_idx == PROMPT_IDX
+        assert layout.lang_start == LANG_START
+        assert layout.group_spans == [(0, NS), (NS, NS + NW), (LANG_START, LANG_START + LT)]
+        assert torch.equal(layout.abs_index, torch.arange(NS + NW + 1 + LT))
+
+    @pytest.mark.parametrize(
+        "present",
+        [
+            (True, True, True),
+            (True, True, False),
+            (True, False, True),
+            (False, True, True),
+            (True, False, False),
+            (False, True, False),
+            (False, False, True),
+        ],
+    )
+    def test_abs_index_strictly_increasing_and_matches_present_groups(self, present):
+        layout = compact_layout(NS, NW, LT, present)
+        # abs_index is strictly increasing (a valid absolute-position gather source).
+        if layout.n_compact > 1:
+            assert bool((layout.abs_index[1:] > layout.abs_index[:-1]).all())
+        # The prompt token's absolute index is always Ns+Nw, regardless of what's present.
+        assert layout.abs_index[layout.prompt_idx].item() == PROMPT_IDX
+        # Compact span widths match exactly what's present (0 for an absent group).
+        static_w, wrist_w, lang_w = (e - s for s, e in layout.group_spans)
+        assert static_w == (NS if present[0] else 0)
+        assert wrist_w == (NW if present[1] else 0)
+        assert lang_w == (LT if present[2] else 0)
+        assert layout.n_compact == static_w + wrist_w + 1 + lang_w
+
+    def test_absent_group_reserves_position_space_for_groups_after_it(self):
+        """Dropping wrist shouldn't move the prompt's or language's *absolute* position —
+        only static+wrist-together vs static-only would (wrist is a real modality span
+        being skipped, not zero-width to begin with)."""
+        layout = compact_layout(NS, NW, LT, (True, False, True))
+        # Prompt sits right after static in the compact sequence...
+        assert layout.prompt_idx == NS
+        # ...but its absolute position still reserves the (skipped) wrist span.
+        assert layout.abs_index[layout.prompt_idx].item() == NS + NW
+        # Language's absolute positions likewise start after the reserved wrist span.
+        lang_start_compact = layout.group_spans[2][0]
+        assert layout.abs_index[lang_start_compact].item() == NS + NW + 1
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Zero/one-token edge cases
+# ---------------------------------------------------------------------------
+
+class TestZeroAndOneTokenEdgeCases:
+    def test_group_with_zero_available_contributes_nothing(self):
+        avail = make_avail()
+        avail[:, 1] = 0  # wrist unavailable (e.g. skipped at input)
+        counts = deterministic_keep_counts(avail, [True, True, True])
+        assert (counts[:, 1] == 0).all()
+        indices = build_keep_indices(
+            make_group_spans(), counts, make_lang_valid_len(), PROMPT_IDX
+        )
+        for b in range(B):
+            sel = set(indices[b].tolist())
+            assert not any(NS <= i < NS + NW for i in sel)
+        assert indices.shape[1] == NS + 1 + LT  # no wrist contribution
+
+    def test_group_with_single_available_token_selects_exactly_it(self):
+        """A group of size 1 (kept_counts[:, g] == 1) must select rank-0 deterministically,
+        not raise or silently drop it."""
+        avail = torch.zeros(B, 3, dtype=torch.long)
+        avail[:, 0] = 1  # single static token
+        avail[:, 1] = 0
+        avail[:, 2] = 0
+        counts = deterministic_keep_counts(avail, [True, False, False])
+        assert (counts[:, 0] == 1).all()
+        group_spans = [(0, 1), (1, 1), (2, 2)]
+        indices = build_keep_indices(group_spans, counts, torch.zeros(B, dtype=torch.long), prompt_idx=1)
+        for b in range(B):
+            assert set(indices[b].tolist()) == {0, 1}  # the single static token + prompt
+
+    def test_all_groups_empty_keeps_only_the_prompt(self):
+        avail = torch.zeros(B, 3, dtype=torch.long)
+        counts = deterministic_keep_counts(avail, [False, False, False])
+        indices = build_keep_indices(
+            make_group_spans(), counts, make_lang_valid_len(0), PROMPT_IDX
+        )
+        assert indices.shape == (B, 1)
+        assert (indices == PROMPT_IDX).all()
+
+    def test_language_pool_of_size_one_respects_lang_valid_len(self):
+        """pool_size == 1 for the (last, pad-aware) language group must not crash the
+        padding-noise-masking branch, and must honor lang_valid_len == 0 vs 1."""
+        group_spans = [(0, 0), (0, 0), (0, 1)]
+        avail = torch.zeros(B, 3, dtype=torch.long)
+        avail[:, 2] = 1
+        counts = deterministic_keep_counts(avail, [False, False, True])
+        # lang_valid_len alternates 0/1 across the batch.
+        lang_valid_len = torch.tensor([1, 0, 1, 0], dtype=torch.long)
+        indices = build_keep_indices(group_spans, counts, lang_valid_len, prompt_idx=1)
+        for b in range(B):
+            sel = set(indices[b].tolist())
+            # The prompt (index 1) is always present; the single language slot (index 0)
+            # is only actually a real (non-pad) token when lang_valid_len[b] == 1, but
+            # deterministic_keep_counts keeps the full group regardless (pad exclusion is
+            # gather_attention_mask's job, not build_keep_indices'), so it's selected either way.
+            assert sel == {0, 1}
