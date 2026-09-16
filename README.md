@@ -544,9 +544,38 @@ instead of overwriting the previous combo's result. Result columns are `success`
 written before it existed simply lack the column — `eval_records.py`/`compare_eval_csvs.py`
 read that as proprio-absent, which is factually correct for those older runs.)
 
+**`language` is the clean instruction, not LIBERO-Plus's filename-derived one.**
+Upstream LIBERO-Plus derives the model's prompt from the perturbed BDDL's *filename*
+(`libero.libero.benchmark.grab_language_from_filename`), which leaks the perturbation id
+into the instruction for every category except Language Instructions — e.g. `"turn on
+the stove and put the moka pot on it table 1"` or `"... view 0 0 100 2 6 initstate 0"`.
+`flower_eval_libero.py`'s `task_language()` reads the clean instruction from the BDDL's
+`(:language ...)` field instead whenever `LIBERO_VARIANT=plus`, so `language` always
+matches what the model was actually asked to do. This affects ~85% of LIBERO-Plus
+episodes and is **not** applied to `LIBERO_VARIANT=orig` (upstream LIBERO's
+filename-derived language differs from its BDDLs' text too, in ~22% of the wider
+suites — changing that would shift orig eval off the model's training distribution,
+which is out of scope). One consequence: LIBERO-Plus numbers produced after this fix
+are not comparable to the upstream leaderboard, which evaluates with the
+suffix-contaminated prompts.
+
 `scripts/perturbation_sr.py <result.csv>` prints the success rate per `task_category`
 (plus an overall line) straight from this file — no `task_classification.json` lookup
 needed, since the category is already a column.
+
+`scripts/severity_sr.py <result.csv>` prints success rate by *physical* perturbation
+severity within each category (e.g. camera rotation in degrees, robot joint-space
+offset in radians, corruption type + severity 1-10), recovered by parsing `task_name`
+(and, for Light Conditions, the corresponding scene XML under
+`LIBERO-plus/libero/libero/assets/scenes/`; pass `--libero-plus-root` if the submodule
+isn't at the default location) — see `scripts/perturbation_severity.py`. This is printed
+alongside `difficulty_level` rather than instead of it: `difficulty_level` is an
+upstream per-task annotation, not a measurement, and disagrees with the physical
+magnitude roughly two-thirds of the time for Robot Initial States, and is non-monotone
+for Objects Layout (it pools two physically different sub-mechanisms — distractor count
+and target displacement — into one label). Language Instructions and Background
+Textures have no severity axis (an unordered rewrite id and a texture identity,
+respectively) and get a categorical sub-type breakdown instead.
 
 **Reproducibility:** the model draws one shared flow-matching noise tensor for an entire
 batch on each replan, so a rollout is only reproducible at batch granularity, not

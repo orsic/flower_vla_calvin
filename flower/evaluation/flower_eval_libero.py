@@ -168,6 +168,33 @@ def load_task_classification(suite_name: str) -> Dict[str, Dict[str, Any]]:
     }
 
 
+def task_language(libero_variant: str, bddl_folder: str, task_i) -> str:
+    """Instruction to feed the model for one task.
+
+    LIBERO-Plus derives task.language from the BDDL *filename*
+    (libero.libero.benchmark.grab_language_from_filename), which leaks the perturbation
+    id into the prompt for every category except "Language Instructions" -- e.g.
+    "turn on the stove ... light 25" or "... in the basket view 0 0 100 2 6 initstate 0".
+    The BDDL's own (:language ...) field holds the clean instruction underneath every
+    such perturbation, so read it from there instead when running LIBERO-Plus.
+
+    Scoped to libero_variant == "plus": original LIBERO's filename-derived language is
+    not perturbation-suffixed, but differs from the BDDL text in ~22% of its tasks
+    (paraphrased authoring convention there) -- switching orig eval to this path would
+    silently change what the model is prompted with, which is out of scope here.
+    """
+    if libero_variant != "plus":
+        return task_i.language
+
+    from libero.libero.envs.bddl_utils import get_problem_info
+
+    bddl_file = task_i.bddl_file
+    if "_view_" in bddl_file and "_initstate_" in bddl_file:
+        bddl_file = bddl_file.split("_view_")[0] + ".bddl"
+    bddl_path = os.path.join(bddl_folder, task_i.problem_folder, bddl_file)
+    return get_problem_info(bddl_path)["language_instruction"]
+
+
 def get_log_dir(log_dir):
     if log_dir is not None:
         log_dir = Path(log_dir)
@@ -369,6 +396,7 @@ class EvaluateLibero:
 
         task_name = self.task_names[idx]
         task_meta = self.task_classification.get(task_name, {})
+        language = task_language(self.libero_variant, self.bddl_folder, task_i)
 
         rows: List[Dict[str, Any]] = []
         episode_idx = 0
@@ -442,7 +470,7 @@ class EvaluateLibero:
                 active_ids = list(range(current_batch_size))
                 while steps < self.max_steps:
                     steps += 1
-                    data, goal = self.process_env_obs_batch(obs, task_emb, task_i.language)
+                    data, goal = self.process_env_obs_batch(obs, task_emb, language)
                     # Inference always runs at full width B (even once some episodes
                     # have finished): step_batch draws one shared noise tensor for the
                     # whole batch, so shrinking it would change what gets sampled for
@@ -484,7 +512,7 @@ class EvaluateLibero:
                         "problem_folder": task_i.problem_folder,
                         "bddl_file": task_i.bddl_file,
                         "init_states_file": task_i.init_states_file,
-                        "language": task_i.language,
+                        "language": language,
                         "task_category": task_meta.get("category", ""),
                         "difficulty_level": task_meta.get("difficulty_level", ""),
                         "init_state_idx": int(state_idxs[k]) if state_idxs is not None else -1,
@@ -546,6 +574,7 @@ class EvaluateLibero:
                 "task_i": task_i,
                 "task_name": task_name,
                 "task_meta": self.task_classification.get(task_name, {}),
+                "language": task_language(self.libero_variant, self.bddl_folder, task_i),
                 "initial_states": initial_states,
                 "n_states": n_states,
                 "bddl_path": os.path.join(self.bddl_folder, task_i.problem_folder, task_i.bddl_file),
@@ -627,7 +656,7 @@ class EvaluateLibero:
                 steps = 0
                 model.reset()
 
-                lang_texts = [metas[k]["task_i"].language for k in range(B)]
+                lang_texts = [metas[k]["language"] for k in range(B)]
                 active_ids = list(range(B))
                 while steps < self.max_steps:
                     steps += 1
@@ -670,7 +699,7 @@ class EvaluateLibero:
                         "problem_folder": task_i.problem_folder,
                         "bddl_file": task_i.bddl_file,
                         "init_states_file": task_i.init_states_file,
-                        "language": task_i.language,
+                        "language": m["language"],
                         "task_category": m["task_meta"].get("category", ""),
                         "difficulty_level": m["task_meta"].get("difficulty_level", ""),
                         "init_state_idx": int(state_idxs[k]) if state_idxs[k] is not None else -1,
