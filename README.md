@@ -752,6 +752,35 @@ re-evaluating everything:
 PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
 ```
 
+`PIPELINE_REEVAL=1` does the opposite: instead of merging into the existing `result.csv`
+(which keeps every row the new run doesn't overwrite — stale rows from a category or
+modality combo no longer evaluated), it backs the old file up to `results_<mtime>.csv`
+(named for the old file's own modification time) and re-plans that suite from empty.
+`PIPELINE_REEVAL_SUITES` narrows *which* suites — a comma-separated list of result
+directory names — leaving the rest untouched and unevaluated; omitted, `PIPELINE_REEVAL=1`
+re-evaluates every suite for the run's benchmark. An invalid suite name (wrong benchmark,
+typo) aborts before anything runs.
+
+```bash
+# Re-evaluate everything, keeping the old numbers as a timestamped backup
+PIPELINE_REEVAL=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
+
+# Re-evaluate only LIBERO-Plus, e.g. after a prompt/scoring fix that only affects it --
+# orig_libero_10/result.csv is left alone
+PIPELINE_REEVAL=1 PIPELINE_REEVAL_SUITES=plus_libero_10 \
+    ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
+```
+
+Set these on the `pipeline` invocation itself, not in `vars.env` — `train`/`train-dropout`/
+`train-dropout-resume`'s auto-chained pipeline call explicitly clears both first, since
+re-evaluating a run with no prior results is meaningless and a stale suite name for a
+different benchmark would otherwise abort a freshly finished training run. `PIPELINE_RESUME`
+has no effect on a suite selected for re-evaluation (its `result.csv` is already gone by the
+time resume would check it) but still applies normally to any suite *not* selected. The
+`results_<mtime>.csv` backups stay on disk next to the fresh file — they are never uploaded —
+and on W&B, `upload` simply logs a new `evaluation` artifact version; `./run.sh analyze`
+already reads the newest one, and older versions remain as W&B-side history.
+
 Once every eval finishes, it runs `scripts/pid_modality.py` over the LIBERO `result.csv` and
 uploads both `result.csv` files plus the PID output as a W&B artifact (`eval-<run_id>`, type
 `evaluation`) attached to the *training* run — same project/entity/id `setup_logger` gave it

@@ -10,17 +10,20 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
+import eval_pipeline  # noqa: E402
 from eval_pipeline import (  # noqa: E402
     artifact_name,
     full_modality_combo,
     modality_combos,
     parse_overrides,
     plan_lines,
+    resolve_reeval_variants,
+    rotate_reeval_csvs,
     token_combos,
     wandb_run_id,
 )
 
-from flower.evaluation.eval_records import write_csv  # noqa: E402
+from flower.evaluation.eval_records import read_csv, write_csv  # noqa: E402
 
 
 def _write_train_cfg(train_folder: Path, *, dropout: bool, use_proprio: bool, benchmark="libero_10", seed=42):
@@ -245,3 +248,196 @@ def test_artifact_name_leaves_clean_id_unchanged_besides_prefix():
 def test_artifact_name_matches_wandb_charset():
     run_id = "libero_10_static+wrist+lang+proprio_2026-09-09_13-56-20"
     assert re.fullmatch(r"[A-Za-z0-9._-]+", artifact_name(run_id))
+
+
+# ---------------------------------------------------------------------------
+# resolve_reeval_variants
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_reeval_variants_none_means_both():
+    assert resolve_reeval_variants(None, "libero_10") == {"orig", "plus"}
+
+
+def test_resolve_reeval_variants_single_suite():
+    assert resolve_reeval_variants("plus_libero_10", "libero_10") == {"plus"}
+
+
+def test_resolve_reeval_variants_both_suites_with_whitespace():
+    assert resolve_reeval_variants(" plus_libero_10 , orig_libero_10 ", "libero_10") == {"orig", "plus"}
+
+
+def test_resolve_reeval_variants_duplicate_token_collapses():
+    assert resolve_reeval_variants("plus_libero_10,plus_libero_10", "libero_10") == {"plus"}
+
+
+@pytest.mark.parametrize("suites_arg", ["", ",", " , "])
+def test_resolve_reeval_variants_empty_token_list_raises(suites_arg):
+    with pytest.raises(ValueError):
+        resolve_reeval_variants(suites_arg, "libero_10")
+
+
+@pytest.mark.parametrize("suites_arg", ["orig", "libero_10", "orig_libero_spatial", "garbage"])
+def test_resolve_reeval_variants_unrecognized_token_raises(suites_arg):
+    with pytest.raises(ValueError):
+        resolve_reeval_variants(suites_arg, "libero_10")
+
+
+# ---------------------------------------------------------------------------
+# rotate_reeval_csvs
+# ---------------------------------------------------------------------------
+
+
+def _seed_result_csv(train_folder, variant, benchmark="libero_10", checkpoint_name_="last"):
+    path = train_folder / "eval_logs" / checkpoint_name_ / f"{variant}_{benchmark}" / "result.csv"
+    write_csv(path, [_row(True, True, True, True)])
+    return path
+
+
+def test_rotate_reeval_csvs_only_rotates_selected_variant(tmp_path):
+    train_folder = tmp_path / "run"
+    orig_csv = _seed_result_csv(train_folder, "orig")
+    plus_csv = _seed_result_csv(train_folder, "plus")
+    checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
+
+    rotate_reeval_csvs({"plus"}, {}, str(train_folder), checkpoint, "libero_10")
+
+    assert orig_csv.exists()
+    assert not plus_csv.exists()
+    assert len(list(plus_csv.parent.glob("results_*.csv"))) == 1
+
+
+def test_rotate_reeval_csvs_csv_dir_override_both_selected_rotates_once(tmp_path):
+    train_folder = tmp_path / "run"
+    csv_dir = tmp_path / "shared"
+    shared_csv = csv_dir / "result.csv"
+    write_csv(shared_csv, [_row(True, True, True, True)])
+    checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
+
+    backups = rotate_reeval_csvs(
+        {"orig", "plus"}, {"csv_dir": str(csv_dir)}, str(train_folder), checkpoint, "libero_10"
+    )
+
+    assert len(backups) == 1
+    assert not shared_csv.exists()
+    assert len(list(csv_dir.glob("results_*.csv"))) == 1
+
+
+def test_rotate_reeval_csvs_csv_dir_override_one_variant_raises(tmp_path):
+    train_folder = tmp_path / "run"
+    csv_dir = tmp_path / "shared"
+    write_csv(csv_dir / "result.csv", [_row(True, True, True, True)])
+    checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
+
+    with pytest.raises(ValueError):
+        rotate_reeval_csvs({"plus"}, {"csv_dir": str(csv_dir)}, str(train_folder), checkpoint, "libero_10")
+
+
+def test_rotate_reeval_csvs_missing_file_returns_none(tmp_path):
+    train_folder = tmp_path / "run"
+    checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
+
+    backups = rotate_reeval_csvs({"plus"}, {}, str(train_folder), checkpoint, "libero_10")
+
+    assert backups == [None]
+
+
+# ---------------------------------------------------------------------------
+# plan_lines(reeval_variants=...) -- pure filtering, no rotation
+# ---------------------------------------------------------------------------
+
+
+def test_plan_lines_reeval_variants_restricts_to_plus_only(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=True, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], reeval_variants={"plus"})
+
+    assert [svc for svc, _ in lines] == ["eval-plus"]
+
+
+def test_plan_lines_reeval_variants_restricts_to_orig_only(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=True, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], reeval_variants={"orig"})
+
+    services = [svc for svc, _ in lines]
+    assert services.count("eval") == 14
+    assert "eval-plus" not in services
+
+
+def test_plan_lines_reeval_variants_none_is_unrestricted(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=False)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], reeval_variants=None)
+
+    assert [svc for svc, _ in lines] == ["eval", "eval-plus"]
+
+
+# ---------------------------------------------------------------------------
+# main() "plan" -- --reeval / --reeval-suites CLI wiring, including the
+# rotate-before-plan ordering invariant that keeps --resume from producing an
+# empty plan (see eval_pipeline.py's module docstring).
+# ---------------------------------------------------------------------------
+
+
+def _run_plan_cli(monkeypatch, args):
+    monkeypatch.setattr(sys, "argv", ["eval_pipeline.py", "plan"] + args)
+    eval_pipeline.main()
+
+
+def test_main_reeval_with_resume_replans_rotated_suite_in_full(tmp_path, monkeypatch, capsys):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=False)
+    csv_path = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    # If rotation ran after (or never), --resume would see this "done" combo and the
+    # plan would come back empty -- the exact data-loss failure mode this guards.
+    write_csv(csv_path, [_row(True, True, True, True)])
+
+    _run_plan_cli(
+        monkeypatch,
+        ["--train-folder", str(train_folder), "--resume", "--reeval", "--reeval-suites", "plus_libero_10"],
+    )
+
+    captured = capsys.readouterr()
+    lines = [line for line in captured.out.splitlines() if line]
+    assert len(lines) == 1
+    assert lines[0].split("\t")[0] == "eval-plus"
+    assert not csv_path.exists()
+    assert len(list(csv_path.parent.glob("results_*.csv"))) == 1
+    assert "reeval: rotated" in captured.err
+
+
+def test_main_reeval_stdout_has_only_plan_lines(tmp_path, monkeypatch, capsys):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=False)
+
+    _run_plan_cli(monkeypatch, ["--train-folder", str(train_folder), "--reeval"])
+
+    captured = capsys.readouterr()
+    for line in captured.out.splitlines():
+        if line:
+            assert "\t" in line  # every stdout line is a <service>\t<overrides...> plan line
+    assert "reeval:" in captured.err
+
+
+def test_main_reeval_suites_without_reeval_flag_errors(tmp_path, monkeypatch):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=False)
+
+    with pytest.raises(SystemExit):
+        _run_plan_cli(monkeypatch, ["--train-folder", str(train_folder), "--reeval-suites", "plus_libero_10"])
+
+
+def test_main_reeval_invalid_suite_token_exits_with_message(tmp_path, monkeypatch):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _run_plan_cli(
+            monkeypatch,
+            ["--train-folder", str(train_folder), "--reeval", "--reeval-suites", "plus_libero_spatial"],
+        )
+    assert "libero_spatial" in str(exc_info.value)

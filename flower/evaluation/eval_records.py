@@ -16,7 +16,7 @@ factually correct (every eval predating this column ran with use_proprio=false).
 import csv
 import time
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 
 # Columns that together identify one episode. Used as the merge/dedup key.
 # The four use_* modality flags are part of the key so that evaluating the same
@@ -149,6 +149,24 @@ def merge_result_csv(path: Union[str, Path], rows: List[Dict]) -> List[Dict]:
     merged = merge_rows(read_csv(path), rows)
     write_csv(path, merged)
     return merged
+
+
+def rotate_result_csv(path: Union[str, Path]) -> Optional[Path]:
+    """Move an existing result.csv aside so the next run starts from an empty file.
+
+    Named for the backed-up file's own mtime, not now(): it records when those numbers
+    were measured, which is what you need when comparing it to the run that replaced it.
+    Returns the backup path, or None if there was nothing to rotate.
+    """
+    path = Path(path)
+    if not path.exists():
+        return None
+    stamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(path.stat().st_mtime))
+    backup_path = path.parent / f"results_{stamp}.csv"
+    if backup_path.exists():
+        raise FileExistsError(f"Refusing to overwrite existing backup {backup_path}")
+    path.rename(backup_path)
+    return backup_path
 
 
 def merge_rank_csvs(out_dir: Union[str, Path], world_size: int) -> List[Dict]:

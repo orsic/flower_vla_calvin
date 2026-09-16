@@ -181,7 +181,10 @@ case "$CMD" in
     # On success, chains straight into ./run.sh pipeline on the same GPUs training used.
     # Set SKIP_PIPELINE=1 to queue several trainings without waiting on each one's eval.
     run_train train "$@"
-    [[ -n "${SKIP_PIPELINE:-}" ]] || "$0" pipeline "$TRAIN_RUN_DIR"
+    # PIPELINE_REEVAL[_SUITES] is meaningless for a run that has no prior eval results
+    # yet, and would otherwise leak in from vars.env and abort a freshly-trained run's
+    # chained pipeline if its suite names don't match this benchmark -- clear both.
+    [[ -n "${SKIP_PIPELINE:-}" ]] || PIPELINE_REEVAL= PIPELINE_REEVAL_SUITES= "$0" pipeline "$TRAIN_RUN_DIR"
     ;;
 
   train-frozen)
@@ -196,7 +199,10 @@ case "$CMD" in
     # On success, chains straight into ./run.sh pipeline on the same GPUs training used.
     # Set SKIP_PIPELINE=1 to queue several trainings without waiting on each one's eval.
     run_dropout_train train-dropout "$@"
-    [[ -n "${SKIP_PIPELINE:-}" ]] || "$0" pipeline "$TRAIN_RUN_DIR"
+    # PIPELINE_REEVAL[_SUITES] is meaningless for a run that has no prior eval results
+    # yet, and would otherwise leak in from vars.env and abort a freshly-trained run's
+    # chained pipeline if its suite names don't match this benchmark -- clear both.
+    [[ -n "${SKIP_PIPELINE:-}" ]] || PIPELINE_REEVAL= PIPELINE_REEVAL_SUITES= "$0" pipeline "$TRAIN_RUN_DIR"
     ;;
 
   train-dropout-resume)
@@ -205,7 +211,10 @@ case "$CMD" in
     # On success, chains straight into ./run.sh pipeline on the same GPUs training used.
     # Set SKIP_PIPELINE=1 to queue several trainings without waiting on each one's eval.
     run_dropout_train train-dropout-resume "$@"
-    [[ -n "${SKIP_PIPELINE:-}" ]] || "$0" pipeline "$TRAIN_RUN_DIR"
+    # PIPELINE_REEVAL[_SUITES] is meaningless for a run that has no prior eval results
+    # yet, and would otherwise leak in from vars.env and abort a freshly-trained run's
+    # chained pipeline if its suite names don't match this benchmark -- clear both.
+    [[ -n "${SKIP_PIPELINE:-}" ]] || PIPELINE_REEVAL= PIPELINE_REEVAL_SUITES= "$0" pipeline "$TRAIN_RUN_DIR"
     ;;
 
   eval)
@@ -249,6 +258,9 @@ case "$CMD" in
     #   ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
     #   ./run.sh pipeline /saves/train_logs/libero_10/2026-09-08_10-00-00 eval_batch_size=32 n_eval=10
     #   PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/.../<run>   # skip evaluated combos
+    #   PIPELINE_REEVAL=1 ./run.sh pipeline /saves/train_logs/.../<run>   # discard + redo everything
+    #   PIPELINE_REEVAL=1 PIPELINE_REEVAL_SUITES=plus_libero_10 ./run.sh pipeline /saves/train_logs/.../<run>
+    #                      # discard + redo only plus_libero_10; orig_libero_10 untouched
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline <train_run_dir> [hydra_overrides...]" >&2
         exit 1
@@ -256,9 +268,16 @@ case "$CMD" in
     train_dir="$1"; shift
     resume_flag=()
     [[ -n "${PIPELINE_RESUME:-}" ]] && resume_flag=(--resume)
+    reeval_flag=()
+    if [[ -n "${PIPELINE_REEVAL:-}" ]]; then
+        reeval_flag=(--reeval)
+        if [[ -n "${PIPELINE_REEVAL_SUITES:-}" ]]; then
+            reeval_flag+=(--reeval-suites "$PIPELINE_REEVAL_SUITES")
+        fi
+    fi
 
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell \
-        python scripts/eval_pipeline.py plan --train-folder "$train_dir" "${resume_flag[@]}" -- "$@")"
+        python scripts/eval_pipeline.py plan --train-folder "$train_dir" "${resume_flag[@]}" "${reeval_flag[@]}" -- "$@")"
 
     # Read every plan line into memory before launching anything -- a long-running eval
     # container previously held the loop's plan text on a shared fd for its entire
@@ -353,6 +372,9 @@ case "$CMD" in
     echo "                     training run's W&B artifact. Trailing overrides reach every eval launched."
     echo "                     Example: ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-.../"
     echo "                              PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/.../<run>"
+    echo "                     PIPELINE_REEVAL=1 [PIPELINE_REEVAL_SUITES=orig_<bench>,plus_<bench>]"
+    echo "                     backs up (results_<mtime>.csv) and re-runs the named suites from empty"
+    echo "                     instead of merging into them; omitting the suites list means all of them."
     echo "  analyze <run|filter> ..."
     echo "                     Read the W&B evaluation artifact(s) ./run.sh pipeline uploaded and report"
     echo "                     PID + per-perturbation success rates. Needs WANDB_API_KEY."

@@ -3,6 +3,11 @@
 Pure logic / filesystem tests, no MuJoCo or model dependencies.
 """
 
+import os
+import time
+
+import pytest
+
 from flower.evaluation.eval_records import (
     ALL_COLUMNS,
     batch_seed,
@@ -13,6 +18,7 @@ from flower.evaluation.eval_records import (
     read_csv,
     result_dir,
     rollout_seed,
+    rotate_result_csv,
     write_csv,
 )
 
@@ -253,3 +259,74 @@ def test_merge_rank_csvs_unions_shards_and_deletes_them(tmp_path):
     assert not (tmp_path / "result_rank0.csv").exists()
     assert not (tmp_path / "result_rank1.csv").exists()
     assert (tmp_path / "result.csv").exists()
+
+
+# ---------------------------------------------------------------------------
+# rotate_result_csv
+# ---------------------------------------------------------------------------
+
+def test_rotate_result_csv_names_backup_from_file_mtime(tmp_path):
+    path = tmp_path / "result.csv"
+    write_csv(path, [_row(0, 0, success=1)])
+    mtime = time.mktime((2026, 1, 2, 3, 4, 5, 0, 0, -1))
+    os.utime(path, (mtime, mtime))
+
+    backup = rotate_result_csv(path)
+
+    assert backup == tmp_path / "results_2026-01-02_03-04-05.csv"
+    assert backup.exists()
+    assert not path.exists()
+    assert read_csv(backup)[0]["task_idx"] == "0"
+
+
+def test_rotate_result_csv_none_when_nothing_to_rotate(tmp_path):
+    path = tmp_path / "result.csv"
+    assert rotate_result_csv(path) is None
+    assert not path.exists()
+
+
+def test_rotate_result_csv_refuses_to_clobber_existing_backup(tmp_path):
+    path = tmp_path / "result.csv"
+    write_csv(path, [_row(0, 0, success=1)])
+    mtime = time.mktime((2026, 1, 2, 3, 4, 5, 0, 0, -1))
+    os.utime(path, (mtime, mtime))
+    backup = tmp_path / "results_2026-01-02_03-04-05.csv"
+    write_csv(backup, [_row(1, 0, success=0)])
+
+    with pytest.raises(FileExistsError):
+        rotate_result_csv(path)
+
+    # the pre-existing backup and the not-yet-rotated result.csv both survive
+    assert read_csv(backup)[0]["task_idx"] == "1"
+    assert path.exists()
+
+
+def test_rotate_then_merge_leaves_backup_intact(tmp_path):
+    path = tmp_path / "result.csv"
+    write_csv(path, [_row(0, 0, success=1)])
+    mtime = time.mktime((2026, 1, 2, 3, 4, 5, 0, 0, -1))
+    os.utime(path, (mtime, mtime))
+
+    backup = rotate_result_csv(path)
+    merge_result_csv(path, [_row(1, 0, success=0)])
+
+    assert read_csv(backup)[0]["task_idx"] == "0"
+    on_disk = read_csv(path)
+    assert len(on_disk) == 1
+    assert on_disk[0]["task_idx"] == "1"
+
+
+def test_rotate_then_merge_rank_csvs_ignores_backup(tmp_path):
+    path = tmp_path / "result.csv"
+    write_csv(path, [_row(0, 0, success=1)])
+    mtime = time.mktime((2026, 1, 2, 3, 4, 5, 0, 0, -1))
+    os.utime(path, (mtime, mtime))
+    backup = rotate_result_csv(path)
+
+    write_csv(tmp_path / "result_rank0.csv", [_row(1, 0, success=1)])
+    write_csv(tmp_path / "result_rank1.csv", [_row(2, 0, success=0)])
+    merged = merge_rank_csvs(tmp_path, world_size=2)
+
+    assert {int(row["task_idx"]) for row in merged} == {1, 2}
+    assert backup.exists()
+    assert read_csv(backup)[0]["task_idx"] == "0"
