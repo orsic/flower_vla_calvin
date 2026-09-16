@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import sys
 import time
+import uuid
 from collections import Counter, defaultdict
 from itertools import chain
 from pathlib import Path
@@ -204,7 +205,11 @@ def get_log_dir(log_dir):
         if not log_dir.exists():
             log_dir = Path("/tmp/evaluation")
 
-    log_dir = log_dir / "logs" / time.strftime("%Y-%m-%d_%H-%M-%S")
+    # A random suffix, not just the timestamp, avoids FileExistsError when two eval
+    # processes sharing this log_dir (e.g. concurrent ./run.sh pipeline runs for
+    # different seeds, all passed log_dir=/saves/eval_logs) start within the same second.
+    stamp = f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{uuid.uuid4().hex[:8]}"
+    log_dir = log_dir / "logs" / stamp
     os.makedirs(log_dir, exist_ok=False)
     print(f"logging to {log_dir}")
     return log_dir
