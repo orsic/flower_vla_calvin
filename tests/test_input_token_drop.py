@@ -22,11 +22,16 @@ Tests:
                      call are skipped entirely (the actual feature).
 2. Cold-start probe — the one-time cost of sizing a never-encoded view's reserved
                      position span, and that it isn't paid again afterwards.
-3. Equivalence      — retained tokens' fused features exactly match a full
-                     (nothing skipped) run's features at the same absolute position.
+3. Equivalence      — retained tokens' fused features AND attention_mask exactly match
+                     a full (nothing skipped) run's values at the same absolute
+                     position. The default batch has ragged instruction lengths, so
+                     this also covers a retained language pad landing at the right
+                     compact position.
 4. No NaN/Inf       — attention mask always has the always-kept prompt token, so no
-                     row goes fully-masked; features stay finite; a skipped encoder
-                     is never called with a zero-size batch.
+                     row goes fully-masked (a real constraint given the ragged batch,
+                     not a vacuous one); features stay finite; a skipped encoder is
+                     never called with a zero-size batch; retained language pads are
+                     masked, not silently omitted.
 5. Fixed-mask parity — model.modalities (training-time) and the Dirichlet
                      train-dropout path get the same treatment the docstring above
                      promises.
@@ -166,9 +171,11 @@ class _ObsStub:
 
 
 def _batch(B=2, T=1, C=3, H=6, W=6):
+    # Ragged word counts (5, 3, 5, 3) so the default B=2 batch already has a pad slot,
+    # exercising the fixed-mask path's full-padded-span language convention.
     instructions = [
-        "pick up the red cube", "open the drawer slowly please",
-        "push the button", "close the drawer",
+        "pick up the red cube", "push the button",
+        "open the drawer slowly please", "close the drawer",
     ][:B]
     while len(instructions) < B:
         instructions.append("push the button")
@@ -267,6 +274,9 @@ class TestEquivalence:
         expected = full_out["features"][:, layout.abs_index, :]
         assert torch.allclose(skip_out["features"], expected, atol=1e-5)
 
+        expected_mask = full_out["attention_mask"][:, layout.abs_index]
+        assert torch.equal(skip_out["attention_mask"], expected_mask)
+
 
 # ---------------------------------------------------------------------------
 # 4. No NaN/Inf, no zero-size batch
@@ -286,6 +296,19 @@ class TestNoNaNAndNoEmptyBatch:
         stub = _ObsStub(eval_modality_mask=combo, vlm=vlm)
         stub.encode_observations(_batch())
         assert all(n > 0 for n in vlm.encode_image_batch_sizes)
+
+    def test_retained_language_pads_are_masked_not_omitted(self):
+        """The fixed-mask path keeps the full padded language span (not the per-sample
+        non-pad length) to stay rectangular, relying on attention_mask -- not omission --
+        to exclude retained pad slots. A withheld view also confirms the pad slots land at
+        the right *compact* positions, not absolute ones."""
+        batch = _batch()
+        lengths = [len(t.split()) for t in batch["lang_text"]]
+        Lt = max(lengths)
+        out = _ObsStub(eval_modality_mask=(True, False, True)).encode_observations(batch)
+        lang_mask = out["attention_mask"][:, -Lt:]  # language is the trailing compact group
+        for b, n in enumerate(lengths):
+            assert lang_mask[b].tolist() == [1] * n + [0] * (Lt - n)
 
 
 # ---------------------------------------------------------------------------
