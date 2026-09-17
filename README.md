@@ -577,6 +577,17 @@ and target displacement — into one label). Language Instructions and Backgroun
 Textures have no severity axis (an unordered rewrite id and a texture identity,
 respectively) and get a categorical sub-type breakdown instead.
 
+Pass `--csv OUT.csv` to also write the full breakdown as a machine-readable CSV, one row
+per `(category, axis, bin)`: `axis` is `difficulty_level`, `severity`, or `subtype`
+(Background Textures only); `successes`/`n`/`success_rate`/`ci_low`/`ci_high` are the same
+numbers the printed table shows; `note` carries the "no severity axis" caveat on every row
+of a category that has one (Language Instructions, Background Textures, unclassified rows);
+and a category's rows that didn't match the expected `task_name` pattern get their own
+explicit `<unparsed>` bin (under `axis=severity`) instead of being silently dropped, so a
+category's `n` reconciles across both axes. `./run.sh pipeline` writes this next to every
+LIBERO-Plus `result.csv` as `severity_sr.csv` and uploads it alongside `result.csv`/
+`pid_modality.txt` (see [Pipeline](#pipeline-automated-post-training-evaluation) below).
+
 **Reproducibility:** the model draws one shared flow-matching noise tensor for an entire
 batch on each replan, so a rollout is only reproducible at batch granularity, not
 per-episode — `rollout_seed` is derived from `(seed, task_idx, batch_start_episode)` for
@@ -752,6 +763,11 @@ re-evaluating everything:
 PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
 ```
 
+On a run whose `result.csv` files already cover every combo, `PIPELINE_RESUME=1` plans
+nothing and goes straight to the upload step below — the way to regenerate and re-upload
+`pid_modality.txt`/`severity_sr.csv` (e.g. after a fix to either script) with no GPU work
+at all.
+
 `PIPELINE_REEVAL=1` does the opposite: instead of merging into the existing `result.csv`
 (which keeps every row the new run doesn't overwrite — stale rows from a category or
 modality combo no longer evaluated), it backs the old file up to `results_<mtime>.csv`
@@ -782,18 +798,24 @@ and on W&B, `upload` simply logs a new `evaluation` artifact version; `./run.sh 
 already reads the newest one, and older versions remain as W&B-side history.
 
 Once every eval finishes, it runs `scripts/pid_modality.py` over the LIBERO `result.csv` and
-uploads both `result.csv` files plus the PID output as a W&B artifact (`eval-<run_id>`, type
-`evaluation`) attached to the *training* run — same project/entity/id `setup_logger` gave it
-in `flower/training_libero.py`, reconstructed from the run directory name, so the artifact
-lands next to the training curves without a separate W&B run being created. Prerequisite:
-`./run.sh download-plus` (once, for LIBERO-Plus assets).
+`scripts/severity_sr.py` over the LIBERO-Plus `result.csv` (writing `severity_sr.csv` next
+to it), and uploads both `result.csv` files plus the PID and severity output as a W&B
+artifact (`eval-<run_id>`, type `evaluation`) attached to the *training* run — same
+project/entity/id `setup_logger` gave it in `flower/training_libero.py`, reconstructed from
+the run directory name, so the artifact lands next to the training curves without a
+separate W&B run being created. A missing/broken LIBERO-Plus assets checkout only drops
+`severity_sr.csv` from the artifact (with a warning) rather than failing the whole upload.
+Prerequisite: `./run.sh download-plus` (once, for LIBERO-Plus assets, and specifically for
+`severity_sr.csv`'s Light Conditions rows).
 
 ### Cross-run analysis from W&B
 
 `scripts/analyze_wandb.py` (`./run.sh analyze`) reads that artifact back and reports the
-PID decomposition (`scripts/pid_modality.py`) plus the per-perturbation-category success
-rate (`scripts/perturbation_sr.py`) — either for one or more named runs, or averaged with
-min/max across every run matching a W&B config filter:
+PID decomposition (`scripts/pid_modality.py`), the per-perturbation-category success rate
+(`scripts/perturbation_sr.py`), and the success rate by physical perturbation severity and
+by upstream `difficulty_level` (`scripts/severity_sr.py`, in two separate tables, same
+split as that script's own printed report) — either for one or more named runs, or
+averaged with min/max across every run matching a W&B config filter:
 
 ```bash
 ./run.sh analyze run libero_10_dropout_2026-09-09_13-56-20
@@ -815,6 +837,16 @@ run's own* saved hydra config recorded, so evals of runs from before this projec
 renamed still land in the old `multimodal_policies` project next to their training
 curves — pass `--project multimodal_policies` to `./run.sh analyze` to see those.
 
+The severity/difficulty_level tables are **recomputed from the artifact's
+`libero_plus.csv`**, not read from its `severity_sr.csv` member — same as the PID table is
+recomputed from `libero_orig.csv` rather than read from `pid_modality.txt` — so every
+artifact already uploaded works immediately, including ones logged before
+`severity_sr.csv` existed. Recomputing needs the LIBERO-Plus assets locally for Light
+Conditions rows (`./run.sh download-plus`); pass `--libero-plus-root` if the submodule
+isn't at the default location. A run whose severity computation fails (e.g. assets not
+downloaded) is reported via the `WARNING:` block rather than aborting the whole report,
+same as a run missing a required CSV member.
+
 `--filters` can't select runs by *trained* modality set: W&B stores `modalities` as a
 Python repr string (a `DictConfig` passed through `str()` on its way into the config), not
 a nested value, so `config.modalities.rgb_static` can't be matched, and the key set itself
@@ -827,11 +859,12 @@ regardless of what `modalities` says).
 
 Before printing results, it always prints the run ID(s) or filter used, and a `WARNING:`
 block for anything that would otherwise silently skew the report: a matched run with no
-evaluation artifact, an artifact missing `libero_orig.csv`/`libero_plus.csv`, or runs that
-don't share the same evaluated modality combos, episodes, or LIBERO-Plus categories. Zero
-matched runs is a hard error; everything else is reported and still aggregated, with a
-`runs` column on every table so a cell backed by fewer runs than the header claims is
-visible rather than hidden.
+evaluation artifact, an artifact missing `libero_orig.csv`/`libero_plus.csv`, a run whose
+severity breakdown couldn't be computed, or runs that don't share the same evaluated
+modality combos, episodes, LIBERO-Plus categories, or severity bins. Zero matched runs is
+a hard error; everything else is reported and still aggregated, with a `runs` column on
+every table so a cell backed by fewer runs than the header claims is visible rather than
+hidden.
 
 #### Common Issues
 

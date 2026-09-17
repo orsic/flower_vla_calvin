@@ -7,6 +7,11 @@ docstring), and reports:
   - the PID modality decomposition (scripts/pid_modality.py) over libero_orig.csv
   - the per-perturbation-category success rate (scripts/perturbation_sr.py) over
     libero_plus.csv
+  - the success rate by physical perturbation severity and by upstream
+    difficulty_level (scripts/severity_sr.py) over libero_plus.csv -- recomputed from
+    libero_plus.csv rather than read from the artifact's own severity_sr.csv member
+    (which may not exist for an artifact uploaded before this recomputation existed),
+    same as the PID/perturbation reports above
 
 Two modes:
   run     One or more W&B run IDs -- prints each run's two reports individually.
@@ -40,6 +45,7 @@ import argparse
 import ast
 import itertools
 import json
+import re
 import sys
 import tempfile
 from collections import defaultdict
@@ -52,6 +58,7 @@ from omegaconf import OmegaConf
 
 import pid_modality
 import perturbation_sr
+import severity_sr
 import eval_pipeline
 from compare_eval_csvs import MODALITY_COLUMNS
 
@@ -146,13 +153,24 @@ def download_run(run, dest: Path) -> Tuple[Optional[Path], List[str]]:
     return artifact_dir, missing
 
 
-def analyze(artifact_dir: Optional[Path], missing: List[str], measure: str) -> dict:
-    """{"orig_rows", "plus_rows", "pid", "perturbation", "missing"}. "pid"/"perturbation"
-    are None when the corresponding CSV wasn't in the artifact."""
+def analyze(
+    artifact_dir: Optional[Path],
+    missing: List[str],
+    measure: str,
+    libero_plus_root: str = severity_sr.DEFAULT_LIBERO_PLUS_ROOT,
+) -> dict:
+    """{"orig_rows", "plus_rows", "pid", "perturbation", "severity", "missing"}.
+    "pid"/"perturbation"/"severity" are None when the corresponding CSV wasn't in the
+    artifact. severity_sr.collect() reads scene XMLs for Light Conditions
+    (perturbation_severity.light_severity) -- if the LIBERO-Plus assets aren't checked
+    out locally it raises, which is reported via `missing` rather than aborting the
+    whole run's analysis."""
     orig_rows: List[Dict] = []
     plus_rows: List[Dict] = []
     pid_collected = None
     perturbation = None
+    severity = None
+    missing = list(missing)
 
     if artifact_dir is not None:
         orig_path = artifact_dir / "libero_orig.csv"
@@ -163,12 +181,17 @@ def analyze(artifact_dir: Optional[Path], missing: List[str], measure: str) -> d
         if plus_path.exists():
             plus_rows = pid_modality.load_rows(str(plus_path))
             perturbation = perturbation_sr.category_sr(plus_rows)
+            try:
+                severity = severity_sr.collect(plus_rows, libero_plus_root)
+            except Exception as exc:  # noqa: BLE001 -- see docstring
+                missing.append(f"severity breakdown ({exc})")
 
     return {
         "orig_rows": orig_rows,
         "plus_rows": plus_rows,
         "pid": pid_collected,
         "perturbation": perturbation,
+        "severity": severity,
         "missing": missing,
     }
 
@@ -233,11 +256,16 @@ def _check(per_run: Dict[str, dict], label: str, extract) -> List[str]:
     return lines
 
 
+def severity_bin_set(records: Optional[List[Dict[str, Any]]]) -> frozenset:
+    return frozenset((r["category"], r["axis"], r["bin"]) for r in records) if records else frozenset()
+
+
 def consistency_report(per_run: Dict[str, dict]) -> List[str]:
     lines = []
     lines += _check(per_run, "modality-combo coverage", lambda a: combo_set(a["orig_rows"]))
     lines += _check(per_run, "episode coverage", lambda a: episode_key_set(a["orig_rows"]))
     lines += _check(per_run, "perturbation-category coverage", lambda a: category_count_set(a["plus_rows"]))
+    lines += _check(per_run, "severity-bin coverage", lambda a: severity_bin_set(a["severity"]))
     return lines
 
 
@@ -273,7 +301,7 @@ def print_run_header(run, config_keys: List[str]) -> None:
             print(f"  {key} = {_config_value(run, key)}")
 
 
-def print_single(run_id: str, analysis: dict) -> None:
+def print_single(run_id: str, analysis: dict, libero_plus_root: str) -> None:
     print(f"=== {run_id}: LIBERO (orig) ===")
     if analysis["orig_rows"]:
         pid_modality.report(analysis["pid"])
@@ -283,6 +311,11 @@ def print_single(run_id: str, analysis: dict) -> None:
     print(f"=== {run_id}: LIBERO-Plus ===")
     if analysis["plus_rows"]:
         perturbation_sr.report(analysis["plus_rows"])
+        print()
+        if analysis["severity"] is not None:
+            severity_sr.report(analysis["plus_rows"], libero_plus_root)
+        else:
+            print("  (severity breakdown unavailable -- see WARNING above)")
     else:
         print("  (no libero_plus.csv)")
 
@@ -339,6 +372,21 @@ def perturbation_values(rows: List[Dict]) -> Dict[str, float]:
     return values
 
 
+def severity_values(records: List[Dict[str, Any]]) -> Dict[Tuple[str, str, str], float]:
+    """(category, axis, bin) -> success_rate for every severity_sr.collect() record."""
+    return {(r["category"], r["axis"], r["bin"]): r["success_rate"] for r in records}
+
+
+_NUM_RE = re.compile(r"(\d+)")
+
+
+def _natural_key(s: str) -> tuple:
+    """Order digit runs numerically (fog_1 < fog_2 < fog_10) instead of lexically
+    (plain sorted() would put fog_10 between fog_1 and fog_2) -- ordering is the
+    content of a severity table."""
+    return tuple(int(tok) if tok.isdigit() else tok for tok in _NUM_RE.split(s))
+
+
 def aggregate_scalars(per_run_values: Dict[str, Dict[Any, float]]) -> Dict[Any, dict]:
     """run_id -> {key: value} for every run -> key -> {mean, min, max, runs}. `runs`
     is how many of the input runs actually contributed a value for that key -- the
@@ -385,10 +433,12 @@ def print_aggregate(per_run: Dict[str, dict], measure: str) -> None:
     pid_per_run = {rid: pid_values(a["orig_rows"], measure) for rid, a in per_run.items() if a["orig_rows"]}
     presence_per_run = {rid: presence_values(a["orig_rows"]) for rid, a in per_run.items() if a["orig_rows"]}
     perturbation_per_run = {rid: perturbation_values(a["plus_rows"]) for rid, a in per_run.items() if a["plus_rows"]}
+    severity_per_run = {rid: severity_values(a["severity"]) for rid, a in per_run.items() if a["severity"]}
 
     pid_agg = aggregate_scalars(pid_per_run)
     presence_agg = aggregate_scalars(presence_per_run)
     perturbation_agg = aggregate_scalars(perturbation_per_run)
+    severity_agg = aggregate_scalars(severity_per_run)
 
     if pid_agg:
         rows = sorted(pid_agg.items())
@@ -416,7 +466,34 @@ def print_aggregate(per_run: Dict[str, dict], measure: str) -> None:
         )
         print()
 
-    if not (pid_agg or presence_agg or perturbation_agg):
+    if severity_agg:
+        # axis in ("severity", "subtype") -- the measured breakdown -- vs.
+        # "difficulty_level" -- the upstream annotation severity_sr disagrees with --
+        # kept in separate tables, same as severity_sr.report()'s two titles per
+        # category, rather than pooled into one and losing that distinction.
+        physical = sorted(
+            (k for k in severity_agg if k[1] in ("severity", "subtype")),
+            key=lambda k: (k[0], _natural_key(k[2])),
+        )
+        _print_aggregate_table(
+            "Success rate by physical perturbation severity (mean / min / max across runs):",
+            ["mean", "min", "max"],
+            [(f"{category} / {bin_label}", severity_agg[(category, axis, bin_label)]) for category, axis, bin_label in physical],
+        )
+        print()
+
+        difficulty = sorted(
+            (k for k in severity_agg if k[1] == "difficulty_level"),
+            key=lambda k: (k[0], _natural_key(k[2])),
+        )
+        _print_aggregate_table(
+            "Success rate by upstream difficulty_level (mean / min / max across runs):",
+            ["mean", "min", "max"],
+            [(f"{category} / {bin_label}", severity_agg[(category, axis, bin_label)]) for category, axis, bin_label in difficulty],
+        )
+        print()
+
+    if not (pid_agg or presence_agg or perturbation_agg or severity_agg):
         print("No evaluation data available for any matched run.")
 
 
@@ -448,6 +525,10 @@ def build_parser() -> argparse.ArgumentParser:
         sub.add_argument("--project", default=None)
         sub.add_argument("--measure", default="ccs", choices=sorted(pid_modality.MEASURES))
         sub.add_argument("--config-keys", default=",".join(DEFAULT_CONFIG_KEYS))
+        sub.add_argument(
+            "--libero-plus-root", default=severity_sr.DEFAULT_LIBERO_PLUS_ROOT,
+            help="Path to the LIBERO-Plus checkout (only needed to resolve Light Conditions scene XMLs).",
+        )
 
     subparsers.choices["run"].add_argument("run_ids", nargs="+")
     subparsers.choices["filter"].add_argument("--filters", default="{}")
@@ -497,7 +578,7 @@ def main() -> None:
             for run in runs:
                 print_run_header(run, config_keys)
                 artifact_dir, missing = download_run(run, tmp_path)
-                per_run[run.id] = analyze(artifact_dir, missing, args.measure)
+                per_run[run.id] = analyze(artifact_dir, missing, args.measure, args.libero_plus_root)
             print()
 
             all_problems = fetch_problems + print_problems(per_run)
@@ -508,7 +589,7 @@ def main() -> None:
                 print()
 
             for run in runs:
-                print_single(run.id, per_run[run.id])
+                print_single(run.id, per_run[run.id], args.libero_plus_root)
                 print()
 
     else:  # filter
@@ -547,7 +628,7 @@ def main() -> None:
             per_run = {}
             for run in runs:
                 artifact_dir, missing = download_run(run, tmp_path)
-                per_run[run.id] = analyze(artifact_dir, missing, args.measure)
+                per_run[run.id] = analyze(artifact_dir, missing, args.measure, args.libero_plus_root)
 
             print_problems(per_run)
             if modality_problems:

@@ -3,6 +3,7 @@ training run needs, and resuming a partially-completed sweep.
 
 Pure logic / filesystem tests, no MuJoCo, no model, no wandb network calls.
 """
+import csv
 import re
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import eval_pipeline  # noqa: E402
+import severity_sr  # noqa: E402
 from eval_pipeline import (  # noqa: E402
     artifact_name,
     full_modality_combo,
@@ -21,6 +23,7 @@ from eval_pipeline import (  # noqa: E402
     rotate_reeval_csvs,
     token_combos,
     wandb_run_id,
+    write_severity_csv,
 )
 
 from flower.evaluation.eval_records import read_csv, write_csv  # noqa: E402
@@ -441,3 +444,42 @@ def test_main_reeval_invalid_suite_token_exits_with_message(tmp_path, monkeypatc
             ["--train-folder", str(train_folder), "--reeval", "--reeval-suites", "plus_libero_spatial"],
         )
     assert "libero_spatial" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# write_severity_csv
+# ---------------------------------------------------------------------------
+
+
+def test_write_severity_csv_writes_next_to_plus_csv(tmp_path):
+    plus_csv = tmp_path / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True), _row(True, True, True, True)])
+
+    result = write_severity_csv(plus_csv)
+
+    assert result == plus_csv.parent / "severity_sr.csv"
+    assert result.exists()
+    with open(result, newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert rows  # at least the difficulty_level bin(s) for the (unclassified) category
+
+
+def test_write_severity_csv_returns_none_when_plus_csv_absent(tmp_path):
+    plus_csv = tmp_path / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    assert write_severity_csv(plus_csv) is None
+
+
+def test_write_severity_csv_returns_none_and_warns_on_failure(tmp_path, monkeypatch, capsys):
+    plus_csv = tmp_path / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True)])
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("boom -- LIBERO-Plus assets not downloaded")
+
+    monkeypatch.setattr(severity_sr, "collect", _raise)
+
+    result = write_severity_csv(plus_csv)
+
+    assert result is None
+    assert not (plus_csv.parent / "severity_sr.csv").exists()
+    assert "boom" in capsys.readouterr().err

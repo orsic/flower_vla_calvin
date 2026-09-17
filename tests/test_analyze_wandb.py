@@ -100,13 +100,25 @@ def test_consistency_report_flags_each_axis_independently():
     good_plus = [{"task_category": "A", "success": 1}]
     bad_plus = [{"task_category": "B", "success": 1}]
     per_run = {
-        "r1": {"orig_rows": good_orig, "plus_rows": good_plus},
-        "r2": {"orig_rows": good_orig, "plus_rows": good_plus},
-        "r3": {"orig_rows": bad_orig, "plus_rows": bad_plus},
+        "r1": {"orig_rows": good_orig, "plus_rows": good_plus, "severity": None},
+        "r2": {"orig_rows": good_orig, "plus_rows": good_plus, "severity": None},
+        "r3": {"orig_rows": bad_orig, "plus_rows": bad_plus, "severity": None},
     }
     lines = analyze_wandb.consistency_report(per_run)
     assert any("r3" in line and "modality-combo" in line for line in lines)
     assert any("r3" in line and "perturbation-category" in line for line in lines)
+
+
+def test_consistency_report_flags_severity_bin_coverage():
+    good_severity = [{"category": "Robot Initial States", "axis": "severity", "bin": "0.1rad"}]
+    bad_severity = [{"category": "Robot Initial States", "axis": "severity", "bin": "0.2rad"}]
+    per_run = {
+        "r1": {"orig_rows": [], "plus_rows": [], "severity": good_severity},
+        "r2": {"orig_rows": [], "plus_rows": [], "severity": good_severity},
+        "r3": {"orig_rows": [], "plus_rows": [], "severity": bad_severity},
+    }
+    lines = analyze_wandb.consistency_report(per_run)
+    assert any("r3" in line and "severity-bin coverage" in line for line in lines)
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +169,33 @@ def test_analyze_no_artifact_at_all():
         "plus_rows": [],
         "pid": None,
         "perturbation": None,
+        "severity": None,
         "missing": ["<no evaluation artifact>"],
     }
+
+
+def test_analyze_severity_failure_degrades_instead_of_raising(tmp_path, monkeypatch):
+    """A broken/missing LIBERO-Plus assets checkout must not abort the whole run's
+    analysis -- severity_sr.collect()'s exception is caught, "severity" comes back
+    None, and it's reported through the same "missing" list as an absent CSV member."""
+    artifact_dir = tmp_path / "artifact"
+    write_csv(
+        artifact_dir / "libero_plus.csv",
+        [{**_combo_row(1, 1, 1, 1, 1), "task_category": "Camera Viewpoints"}],
+    )
+
+    import severity_sr
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("LIBERO-Plus assets not downloaded")
+
+    monkeypatch.setattr(severity_sr, "collect", _raise)
+
+    result = analyze_wandb.analyze(artifact_dir, missing=[], measure="ccs")
+
+    assert result["severity"] is None
+    assert result["perturbation"] is not None  # unaffected by the severity failure
+    assert any("severity" in m for m in result["missing"])
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +238,36 @@ def test_perturbation_values_matches_category_sr_plus_overall():
         k: sr for k, (sr, _n) in expected.items()
     }
     assert values["OVERALL"] == pytest.approx(2 / 3)  # 2 successes out of 3 rows total
+
+
+# ---------------------------------------------------------------------------
+# severity_values / _natural_key
+# ---------------------------------------------------------------------------
+
+
+def test_severity_values_keys_by_category_axis_bin():
+    records = [
+        {"category": "Sensor Noise", "axis": "severity", "bin": "fog_1", "success_rate": 0.8},
+        {"category": "Sensor Noise", "axis": "difficulty_level", "bin": "1", "success_rate": 1.0},
+    ]
+    values = analyze_wandb.severity_values(records)
+    assert values == {
+        ("Sensor Noise", "severity", "fog_1"): 0.8,
+        ("Sensor Noise", "difficulty_level", "1"): 1.0,
+    }
+
+
+def test_natural_key_orders_digit_runs_numerically():
+    labels = ["fog_10", "fog_2", "fog_1"]
+    assert sorted(labels, key=analyze_wandb._natural_key) == ["fog_1", "fog_2", "fog_10"]
+
+
+def test_natural_key_orders_other_bin_vocabularies():
+    assert sorted(["rot~15-30deg", "rot~0-15deg"], key=analyze_wandb._natural_key) == [
+        "rot~0-15deg",
+        "rot~15-30deg",
+    ]
+    assert sorted(["0.5rad", "0.1rad"], key=analyze_wandb._natural_key) == ["0.1rad", "0.5rad"]
 
 
 # ---------------------------------------------------------------------------
@@ -343,8 +410,8 @@ def test_print_run_table_lists_every_run(capsys):
 
 def test_print_problems_reports_missing_members(capsys):
     per_run = {
-        "r1": {"missing": [], "orig_rows": [], "plus_rows": []},
-        "r2": {"missing": ["libero_plus.csv"], "orig_rows": [], "plus_rows": []},
+        "r1": {"missing": [], "orig_rows": [], "plus_rows": [], "severity": None},
+        "r2": {"missing": ["libero_plus.csv"], "orig_rows": [], "plus_rows": [], "severity": None},
     }
     lines = analyze_wandb.print_problems(per_run)
     out = capsys.readouterr().out
@@ -353,7 +420,7 @@ def test_print_problems_reports_missing_members(capsys):
 
 
 def test_print_problems_empty_when_nothing_wrong(capsys):
-    per_run = {"r1": {"missing": [], "orig_rows": [], "plus_rows": []}}
+    per_run = {"r1": {"missing": [], "orig_rows": [], "plus_rows": [], "severity": None}}
     lines = analyze_wandb.print_problems(per_run)
     out = capsys.readouterr().out
     assert lines == []
@@ -362,9 +429,9 @@ def test_print_problems_empty_when_nothing_wrong(capsys):
 
 def test_print_aggregate_reports_mean_min_max_and_runs(capsys):
     per_run = {
-        "r1": {"orig_rows": [], "plus_rows": [{"task_category": "Camera Viewpoints", "success": 1}]},
-        "r2": {"orig_rows": [], "plus_rows": [{"task_category": "Camera Viewpoints", "success": 0}]},
-        "r3": {"orig_rows": [], "plus_rows": [{"task_category": "Sensor Noise", "success": 1}]},
+        "r1": {"orig_rows": [], "plus_rows": [{"task_category": "Camera Viewpoints", "success": 1}], "severity": None},
+        "r2": {"orig_rows": [], "plus_rows": [{"task_category": "Camera Viewpoints", "success": 0}], "severity": None},
+        "r3": {"orig_rows": [], "plus_rows": [{"task_category": "Sensor Noise", "success": 1}], "severity": None},
     }
     analyze_wandb.print_aggregate(per_run, "ccs")
     out = capsys.readouterr().out
@@ -388,11 +455,44 @@ def test_print_aggregate_reports_mean_min_max_and_runs(capsys):
 
 def test_print_aggregate_presence_table_shows_modality_order(capsys):
     per_run = {
-        "r1": {"orig_rows": [_combo_row(1, 1, 1, 1, 1)], "plus_rows": []},
-        "r2": {"orig_rows": [_combo_row(1, 1, 1, 1, 0)], "plus_rows": []},
+        "r1": {"orig_rows": [_combo_row(1, 1, 1, 1, 1)], "plus_rows": [], "severity": None},
+        "r2": {"orig_rows": [_combo_row(1, 1, 1, 1, 0)], "plus_rows": [], "severity": None},
     }
     analyze_wandb.print_aggregate(per_run, "ccs")
     out = capsys.readouterr().out
 
     header_line = next(line for line in out.splitlines() if "static" in line and "wrist" in line)
     assert header_line.split()[:4] == list(pid_modality.MODALITY_ORDER)
+
+
+def test_print_aggregate_emits_both_severity_tables(capsys):
+    per_run = {
+        "r1": {
+            "orig_rows": [],
+            "plus_rows": [],
+            "severity": [
+                {"category": "Sensor Noise", "axis": "difficulty_level", "bin": "1", "success_rate": 1.0},
+                {"category": "Sensor Noise", "axis": "severity", "bin": "fog_10", "success_rate": 0.5},
+                {"category": "Sensor Noise", "axis": "severity", "bin": "fog_2", "success_rate": 0.9},
+            ],
+        },
+    }
+    analyze_wandb.print_aggregate(per_run, "ccs")
+    out = capsys.readouterr().out
+
+    assert "Success rate by physical perturbation severity (mean / min / max across runs):" in out
+    assert "Success rate by upstream difficulty_level (mean / min / max across runs):" in out
+    # fog_2 must print before fog_10 (natural-key order), not lexical order
+    severity_lines = [line for line in out.splitlines() if "Sensor Noise / fog" in line]
+    assert [line.split()[0] for line in severity_lines] == ["Sensor", "Sensor"]
+    fog_2_idx = next(i for i, line in enumerate(severity_lines) if "fog_2" in line)
+    fog_10_idx = next(i for i, line in enumerate(severity_lines) if "fog_10" in line)
+    assert fog_2_idx < fog_10_idx
+
+
+def test_print_aggregate_no_severity_tables_when_no_run_has_severity(capsys):
+    per_run = {"r1": {"orig_rows": [], "plus_rows": [], "severity": None}}
+    analyze_wandb.print_aggregate(per_run, "ccs")
+    out = capsys.readouterr().out
+    assert "physical perturbation severity" not in out
+    assert "upstream difficulty_level" not in out

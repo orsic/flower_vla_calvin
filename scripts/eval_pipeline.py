@@ -41,9 +41,13 @@ keys (benchmark_name, checkpoint, train_folder, csv_dir) that change which resul
 `plan --resume` and `upload` read, so overriding e.g. benchmark_name redirects both. Do not
 pass eval_modalities.* through -- it would fight the combo sweep.
 
-`upload` runs scripts/pid_modality.py on the LIBERO (orig) result.csv, then attaches that
-output plus both result.csv files to a W&B artifact on the *training* run (same project/
-entity/id as training_libero.py's setup_logger derives from the run dir).
+`upload` runs scripts/pid_modality.py on the LIBERO (orig) result.csv and
+scripts/severity_sr.py on the LIBERO-Plus result.csv, then attaches that output plus both
+result.csv files to a W&B artifact on the *training* run (same project/entity/id as
+training_libero.py's setup_logger derives from the run dir). Since `plan --resume` treats
+every combo already in a result.csv as done, `PIPELINE_RESUME=1 ./run.sh pipeline
+<train_run_dir>` on a fully-evaluated run plans nothing and goes straight to `upload` --
+the way to regenerate and re-upload these derived files without re-evaluating anything.
 """
 import argparse
 import itertools
@@ -58,6 +62,8 @@ from omegaconf import OmegaConf
 
 sys.path.insert(0, Path(__file__).absolute().parents[1].as_posix())
 from flower.evaluation.eval_records import checkpoint_name, read_csv, rotate_result_csv  # noqa: E402
+
+import severity_sr  # noqa: E402 -- same-directory import, python puts scripts/ on sys.path[0]
 
 TOKEN_MODALITIES = ["rgb_static", "rgb_gripper", "language"]
 FLAG_COLUMNS = {
@@ -294,6 +300,24 @@ def artifact_name(run_id: str) -> str:
     return "eval-" + re.sub(r"[^A-Za-z0-9._-]", "-", run_id)
 
 
+def write_severity_csv(plus_csv: Path) -> Optional[Path]:
+    """severity_sr.csv next to plus_csv, or None if plus_csv is absent or the
+    severity computation fails (e.g. LIBERO-Plus assets not downloaded -- Light
+    Conditions' light_severity reads scene XMLs from there). A missing/broken asset
+    checkout must not cost the whole artifact upload, so this warns and returns None
+    rather than raising."""
+    if not plus_csv.exists():
+        return None
+    try:
+        records = severity_sr.collect(severity_sr.load_rows(str(plus_csv)), severity_sr.DEFAULT_LIBERO_PLUS_ROOT)
+    except Exception as exc:  # noqa: BLE001 -- see docstring
+        print(f"WARNING: severity_sr.py failed on {plus_csv} ({exc}) -- skipping severity_sr.csv", file=sys.stderr)
+        return None
+    csv_path = plus_csv.parent / "severity_sr.csv"
+    severity_sr.write_csv(csv_path, records)
+    return csv_path
+
+
 def upload(train_folder: str, extra_overrides: List[str]) -> None:
     train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
     benchmark_name, resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
@@ -313,6 +337,8 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
         pid_txt.write_text(result.stdout)
         print(result.stdout)
 
+    severity_csv = write_severity_csv(plus_csv)
+
     if not orig_csv.exists() and not plus_csv.exists():
         print(f"Nothing to upload: neither {orig_csv} nor {plus_csv} exists.")
         return
@@ -331,6 +357,8 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
         artifact.add_file(str(plus_csv), name="libero_plus.csv")
     if pid_txt is not None:
         artifact.add_file(str(pid_txt), name="pid_modality.txt")
+    if severity_csv is not None:
+        artifact.add_file(str(severity_csv), name="severity_sr.csv")
     run.log_artifact(artifact)
     run.finish()
     print(f"Logged eval-{run_id} artifact to {train_cfg.logger.project}/{run_id}")
