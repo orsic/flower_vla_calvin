@@ -300,16 +300,22 @@ def artifact_name(run_id: str) -> str:
     return "eval-" + re.sub(r"[^A-Za-z0-9._-]", "-", run_id)
 
 
-def write_severity_csv(plus_csv: Path) -> Optional[Path]:
+def write_severity_csv(plus_csv: Path, orig_csv: Optional[Path] = None) -> Optional[Path]:
     """severity_sr.csv next to plus_csv, or None if plus_csv is absent or the
     severity computation fails (e.g. LIBERO-Plus assets not downloaded -- Light
     Conditions' light_severity reads scene XMLs from there). A missing/broken asset
     checkout must not cost the whole artifact upload, so this warns and returns None
-    rather than raising."""
+    rather than raising. `orig_csv`, when given and present, adds the init-state-matched
+    LIBERO original baseline columns (see severity_sr.py's module docstring); absent,
+    the baseline columns are left empty, same as calling severity_sr.py with no
+    --orig-csv."""
     if not plus_csv.exists():
         return None
+    orig_rows = severity_sr.load_rows(str(orig_csv)) if orig_csv is not None and orig_csv.exists() else None
     try:
-        records = severity_sr.collect(severity_sr.load_rows(str(plus_csv)), severity_sr.DEFAULT_LIBERO_PLUS_ROOT)
+        records = severity_sr.collect(
+            severity_sr.load_rows(str(plus_csv)), severity_sr.DEFAULT_LIBERO_PLUS_ROOT, orig_rows=orig_rows
+        )
     except Exception as exc:  # noqa: BLE001 -- see docstring
         print(f"WARNING: severity_sr.py failed on {plus_csv} ({exc}) -- skipping severity_sr.csv", file=sys.stderr)
         return None
@@ -337,7 +343,7 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
         pid_txt.write_text(result.stdout)
         print(result.stdout)
 
-    severity_csv = write_severity_csv(plus_csv)
+    severity_csv = write_severity_csv(plus_csv, orig_csv)
 
     if not orig_csv.exists() and not plus_csv.exists():
         print(f"Nothing to upload: neither {orig_csv} nor {plus_csv} exists.")

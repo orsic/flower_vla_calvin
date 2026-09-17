@@ -578,15 +578,63 @@ Textures have no severity axis (an unordered rewrite id and a texture identity,
 respectively) and get a categorical sub-type breakdown instead.
 
 Pass `--csv OUT.csv` to also write the full breakdown as a machine-readable CSV, one row
-per `(category, axis, bin)`: `axis` is `difficulty_level`, `severity`, or `subtype`
-(Background Textures only); `successes`/`n`/`success_rate`/`ci_low`/`ci_high` are the same
-numbers the printed table shows; `note` carries the "no severity axis" caveat on every row
-of a category that has one (Language Instructions, Background Textures, unclassified rows);
-and a category's rows that didn't match the expected `task_name` pattern get their own
-explicit `<unparsed>` bin (under `axis=severity`) instead of being silently dropped, so a
-category's `n` reconciles across both axes. `./run.sh pipeline` writes this next to every
-LIBERO-Plus `result.csv` as `severity_sr.csv` and uploads it alongside `result.csv`/
-`pid_modality.txt` (see [Pipeline](#pipeline-automated-post-training-evaluation) below).
+per `(category, axis, bin)`: `axis` is `difficulty_level`, `severity`, `subtype`
+(Background Textures only), or `total` (one `bin=ALL` row per category, the category-level
+counterpart of the paired baseline below); `successes`/`n`/`success_rate`/`ci_low`/`ci_high`
+are the same numbers the printed table shows; `note` carries the "no severity axis" caveat
+on every row of a category that has one (Language Instructions, Background Textures,
+unclassified rows); and a category's rows that didn't match the expected `task_name`
+pattern get their own explicit `<unparsed>` bin (under `axis=severity`) instead of being
+silently dropped, so a category's `n` reconciles across both axes. `./run.sh pipeline`
+writes this next to every LIBERO-Plus `result.csv` as `severity_sr.csv` and uploads it
+alongside `result.csv`/`pid_modality.txt` (see
+[Pipeline](#pipeline-automated-post-training-evaluation) below).
+
+**Known limitation: Robot Initial States currently has no physical effect.** LIBERO-Plus
+implements this one category's perturbation by substituting the robot's Python class
+(`Panda` → `MountedPanda{N}`/`OnTheGroundPanda{N}`, `N` in 1–500 — see
+`LIBERO-plus/libero/libero/envs/robots/new_init.py`), which only changes `init_qpos`,
+applied by `robosuite`'s `robot.reset()`. `flower_eval_libero.py` then calls
+`env.set_init_state()` with the array `get_task_init_states()` returns for this
+category — the *unperturbed* base task's own recorded state — which overwrites that
+qpos with a full MuJoCo-state restore. Verified against a real checkpoint (not just by
+reading code): re-running the exact same checkpoint on the exact same task gives a
+*different* per-severity-band success pattern than the original eval, with no
+reproducible trend, consistent with every episode running from the same unperturbed
+state rather than a real physical perturbation. This is a LIBERO-Plus upstream gap, not
+something specific to this repo's usage — LIBERO-Plus's own reference script
+(`LIBERO-plus/benchmark_scripts/render_single_task.py`) calls `set_init_state()` the
+same unconditional way. It is left unfixed here deliberately, to keep results
+comparable with other work evaluating on this benchmark as shipped;
+`scripts/severity_sr.py`'s `ROBOT_INITSTATE_NOTE` documents it in code, and its printed
+report and `--csv` output both carry the same warning on every Robot Initial States row.
+
+**Paired original baseline.** Pass `--orig-csv <orig_result.csv>` to add an init-state-
+matched LIBERO original baseline to every row (printed as an `orig_sr`/`orig 95% CI`/
+`orig_n` column, or `orig_successes`/`orig_n`/`orig_success_rate`/`orig_ci_low`/
+`orig_ci_high` in the CSV). LIBERO-Plus's own `get_task_init_states`
+(`LIBERO-plus/libero/libero/benchmark/__init__.py`) strips the perturbation suffix off a
+task_name and loads the *original* task's init file, so every LIBERO-Plus episode
+(Objects Layout excepted) runs original init state 0 of its base task, under the same
+modality combo. The baseline for a group is that set of (modality combo, base task) orig
+episodes, deduplicated by task — `orig_n` is the number of distinct base tasks the group
+covers, **not** the number of LIBERO-Plus rows in it, so it is small by construction (a
+severity bin can cover as few as 2 of the suite's 10 tasks) and the Wilson CI
+correspondingly wide; that's expected, not a bug. Objects Layout's init states are
+generated fresh into `libero_newobj/`, not derived from the original task's own init
+file, so its baseline is the task's *nominal* layout rather than the same init state —
+still the meaningful contrast for a layout perturbation, but its rows carry an explicit
+note saying so. Rows without a matching original episode (no orig CSV given, or no base
+task/init-state-0/modality-combo match) leave the baseline columns empty rather than 0.
+`./run.sh pipeline`'s `severity_sr.csv` always includes these columns, populated whenever
+the run's `libero_orig.csv` exists.
+
+A LIBERO-Plus row's own `init_state_idx` reads `0` for every row, always — expected, not
+a bug. The trailing number in its `task_name`/`init_states_file` (e.g. `_table_5`,
+`_initstate_50`) is the perturbation's own parameter id (view sample, robot qpos-offset
+sample, noise instance, texture/light id), applied by `env_wrapper.py` at
+env-construction time from the bddl filename — it is not an index into the init-states
+array, and `n_eval=1` means array index 0 is all that's ever loaded regardless.
 
 **Reproducibility:** the model draws one shared flow-matching noise tensor for an entire
 batch on each replan, so a rollout is only reproducible at batch granularity, not
@@ -846,6 +894,18 @@ Conditions rows (`./run.sh download-plus`); pass `--libero-plus-root` if the sub
 isn't at the default location. A run whose severity computation fails (e.g. assets not
 downloaded) is reported via the `WARNING:` block rather than aborting the whole report,
 same as a run missing a required CSV member.
+
+Whenever at least one matched run's severity breakdown carries an init-state-matched
+LIBERO original baseline (see `scripts/severity_sr.py`'s "Paired original baseline"
+above — the artifact's own `libero_orig.csv` is used automatically, no extra flag),
+three more tables print alongside the per-perturbation, physical-severity, and
+difficulty_level ones: the same three splits, each with a `plus`/`orig` pair of
+mean-min-max columns instead of one. Because `orig_n` (the number of distinct base tasks
+a group covers) can differ across runs whose LIBERO-Plus rows sampled different tasks per
+bin, the `plus_n`/`orig_n` columns render as a single number when every run agrees, or
+`lo-hi` when they don't — rather than an average of counts, which wouldn't mean anything.
+A run whose artifact lacks `libero_orig.csv` simply contributes nothing to these three
+tables; if none do, they're omitted entirely and only the unpaired tables print.
 
 `--filters` can't select runs by *trained* modality set: W&B stores `modalities` as a
 Python repr string (a `DictConfig` passed through `str()` on its way into the config), not

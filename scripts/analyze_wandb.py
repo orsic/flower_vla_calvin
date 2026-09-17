@@ -182,7 +182,7 @@ def analyze(
             plus_rows = pid_modality.load_rows(str(plus_path))
             perturbation = perturbation_sr.category_sr(plus_rows)
             try:
-                severity = severity_sr.collect(plus_rows, libero_plus_root)
+                severity = severity_sr.collect(plus_rows, libero_plus_root, orig_rows=orig_rows or None)
             except Exception as exc:  # noqa: BLE001 -- see docstring
                 missing.append(f"severity breakdown ({exc})")
 
@@ -313,7 +313,7 @@ def print_single(run_id: str, analysis: dict, libero_plus_root: str) -> None:
         perturbation_sr.report(analysis["plus_rows"])
         print()
         if analysis["severity"] is not None:
-            severity_sr.report(analysis["plus_rows"], libero_plus_root)
+            severity_sr.report(analysis["plus_rows"], libero_plus_root, orig_rows=analysis["orig_rows"] or None)
         else:
             print("  (severity breakdown unavailable -- see WARNING above)")
     else:
@@ -377,6 +377,22 @@ def severity_values(records: List[Dict[str, Any]]) -> Dict[Tuple[str, str, str],
     return {(r["category"], r["axis"], r["bin"]): r["success_rate"] for r in records}
 
 
+def severity_orig_values(records: List[Dict[str, Any]]) -> Dict[Tuple[str, str, str], float]:
+    """(category, axis, bin) -> orig_success_rate, for records carrying an init-state-
+    matched LIBERO original baseline (severity_sr.collect(..., orig_rows=...)) --
+    skipped entirely when no run's severity records have one. `.get` guards against
+    older-shaped records (e.g. pre-baseline severity_sr.csv artifacts) with no orig_*
+    keys at all."""
+    return {(r["category"], r["axis"], r["bin"]): r["orig_success_rate"] for r in records if r.get("orig_n", "") != ""}
+
+
+def severity_n_values(records: List[Dict[str, Any]]) -> Dict[Tuple[str, str, str], Tuple[int, int]]:
+    """(category, axis, bin) -> (n, orig_n), same filter as severity_orig_values -- the
+    counts backing the paired success rates, not averaged across runs like the rates
+    themselves (aggregated as a min-max range instead, see _aggregate_n_ranges)."""
+    return {(r["category"], r["axis"], r["bin"]): (r["n"], r["orig_n"]) for r in records if r.get("orig_n", "") != ""}
+
+
 _NUM_RE = re.compile(r"(\d+)")
 
 
@@ -412,6 +428,50 @@ def _print_aggregate_table(title: str, header_cols: List[str], rows: List[Tuple[
         )
 
 
+def _aggregate_n_ranges(per_run_n: Dict[str, Dict[Any, Tuple[int, int]]]) -> Dict[Any, Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """key -> ((plus_n min, plus_n max), (orig_n min, orig_n max)) across runs -- n is a
+    count, not a rate, so it's ranged rather than averaged like aggregate_scalars."""
+    combined: Dict[Any, List[Tuple[int, int]]] = defaultdict(list)
+    for values in per_run_n.values():
+        for key, pair in values.items():
+            combined[key].append(pair)
+    result = {}
+    for key, pairs in combined.items():
+        plus_ns = [p for p, _ in pairs]
+        orig_ns = [o for _, o in pairs]
+        result[key] = ((min(plus_ns), max(plus_ns)), (min(orig_ns), max(orig_ns)))
+    return result
+
+
+def _n_label(n_range: Tuple[int, int]) -> str:
+    lo, hi = n_range
+    return str(lo) if lo == hi else f"{lo}-{hi}"
+
+
+def _print_paired_table(
+    title: str,
+    rows: List[Tuple[str, dict, dict, Tuple[Tuple[int, int], Tuple[int, int]]]],
+) -> None:
+    """Like _print_aggregate_table, but with a second (plus_n/orig_n-labelled) block
+    for the init-state-matched LIBERO original baseline next to each plus value."""
+    print(title)
+    print(
+        f"{'key':<32}"
+        + f"{'plus':>10}{'min':>10}{'max':>10}{'plus_n':>10}"
+        + f"{'orig':>10}{'min':>10}{'max':>10}{'orig_n':>10}"
+        + f"{'runs':>8}"
+    )
+    for key_label, plus_agg, orig_agg, (plus_range, orig_range) in rows:
+        print(
+            f"{key_label:<32}"
+            + f"{plus_agg['mean']:>10.4f}{plus_agg['min']:>10.4f}{plus_agg['max']:>10.4f}"
+            + f"{_n_label(plus_range):>10}"
+            + f"{orig_agg['mean']:>10.4f}{orig_agg['min']:>10.4f}{orig_agg['max']:>10.4f}"
+            + f"{_n_label(orig_range):>10}"
+            + f"{plus_agg['runs']:>8}"
+        )
+
+
 def _print_presence_table(agg: Dict[Tuple[int, int, int, int], dict]) -> None:
     """Same per-modality columns as pid_modality.py's own presence table (rather than
     a bare (1, 1, 1, 1)-style tuple key, whose modality order isn't otherwise stated
@@ -434,11 +494,15 @@ def print_aggregate(per_run: Dict[str, dict], measure: str) -> None:
     presence_per_run = {rid: presence_values(a["orig_rows"]) for rid, a in per_run.items() if a["orig_rows"]}
     perturbation_per_run = {rid: perturbation_values(a["plus_rows"]) for rid, a in per_run.items() if a["plus_rows"]}
     severity_per_run = {rid: severity_values(a["severity"]) for rid, a in per_run.items() if a["severity"]}
+    severity_orig_per_run = {rid: severity_orig_values(a["severity"]) for rid, a in per_run.items() if a["severity"]}
+    severity_n_per_run = {rid: severity_n_values(a["severity"]) for rid, a in per_run.items() if a["severity"]}
 
     pid_agg = aggregate_scalars(pid_per_run)
     presence_agg = aggregate_scalars(presence_per_run)
     perturbation_agg = aggregate_scalars(perturbation_per_run)
     severity_agg = aggregate_scalars(severity_per_run)
+    severity_orig_agg = aggregate_scalars(severity_orig_per_run)
+    severity_n_agg = _aggregate_n_ranges(severity_n_per_run)
 
     if pid_agg:
         rows = sorted(pid_agg.items())
@@ -490,6 +554,48 @@ def print_aggregate(per_run: Dict[str, dict], measure: str) -> None:
             "Success rate by upstream difficulty_level (mean / min / max across runs):",
             ["mean", "min", "max"],
             [(f"{category} / {bin_label}", severity_agg[(category, axis, bin_label)]) for category, axis, bin_label in difficulty],
+        )
+        print()
+
+    if severity_orig_agg:
+        # axis == "total" is the category-level paired comparison (severity_sr.collect()'s
+        # one ALL-bin record per category); "severity"/"subtype" and "difficulty_level" are
+        # the same per-bin breakdowns as the two unpaired tables above, plus an
+        # init-state-matched LIBERO original baseline column next to each. A key only
+        # appears here when at least one run actually produced a baseline for it.
+        total = sorted(k for k in severity_orig_agg if k[1] == "total")
+        _print_paired_table(
+            "Per-perturbation success rate vs. init-state-matched LIBERO original "
+            "(mean / min / max across runs):",
+            [(key[0], severity_agg[key], severity_orig_agg[key], severity_n_agg[key]) for key in total],
+        )
+        print()
+
+        physical = sorted(
+            (k for k in severity_orig_agg if k[1] in ("severity", "subtype")),
+            key=lambda k: (k[0], _natural_key(k[2])),
+        )
+        _print_paired_table(
+            "Success rate by physical perturbation severity vs. init-state-matched "
+            "LIBERO original (mean / min / max across runs):",
+            [
+                (f"{key[0]} / {key[2]}", severity_agg[key], severity_orig_agg[key], severity_n_agg[key])
+                for key in physical
+            ],
+        )
+        print()
+
+        difficulty_paired = sorted(
+            (k for k in severity_orig_agg if k[1] == "difficulty_level"),
+            key=lambda k: (k[0], _natural_key(k[2])),
+        )
+        _print_paired_table(
+            "Success rate by upstream difficulty_level vs. init-state-matched LIBERO "
+            "original (mean / min / max across runs):",
+            [
+                (f"{key[0]} / {key[2]}", severity_agg[key], severity_orig_agg[key], severity_n_agg[key])
+                for key in difficulty_paired
+            ],
         )
         print()
 

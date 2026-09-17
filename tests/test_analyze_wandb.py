@@ -174,6 +174,36 @@ def test_analyze_no_artifact_at_all():
     }
 
 
+def test_analyze_passes_orig_rows_into_severity_baseline(tmp_path):
+    """analyze() must thread its own orig_rows into severity_sr.collect() so the paired
+    baseline (see severity_sr.py's module docstring) is populated, not left empty."""
+    artifact_dir = tmp_path / "artifact"
+    orig_rows = [
+        _combo_row(s, w, l, p, (s + w + l + p) % 2)
+        for s in (0, 1)
+        for w in (0, 1)
+        for l in (0, 1)
+        for p in (0, 1)
+        if s or w or l  # flower_eval_libero.py never evaluates all-tokens-off
+    ]
+    orig_rows.append({**_combo_row(1, 1, 1, 1, 1), "task_name": "foo", "init_state_idx": 0})
+    write_csv(artifact_dir / "libero_orig.csv", orig_rows)
+    write_csv(
+        artifact_dir / "libero_plus.csv",
+        [{
+            **_combo_row(1, 1, 1, 1, 1),
+            "task_category": "Robot Initial States",
+            "task_name": "foo_initstate_50",
+            "difficulty_level": "1",
+        }],
+    )
+
+    result = analyze_wandb.analyze(artifact_dir, missing=[], measure="ccs")
+
+    total = [r for r in result["severity"] if r["axis"] == "total" and r["category"] == "Robot Initial States"]
+    assert total and total[0]["orig_n"] == 1
+
+
 def test_analyze_severity_failure_degrades_instead_of_raising(tmp_path, monkeypatch):
     """A broken/missing LIBERO-Plus assets checkout must not abort the whole run's
     analysis -- severity_sr.collect()'s exception is caught, "severity" comes back
@@ -260,6 +290,37 @@ def test_severity_values_keys_by_category_axis_bin():
 def test_natural_key_orders_digit_runs_numerically():
     labels = ["fog_10", "fog_2", "fog_1"]
     assert sorted(labels, key=analyze_wandb._natural_key) == ["fog_1", "fog_2", "fog_10"]
+
+
+def test_severity_orig_values_skips_records_without_a_baseline():
+    records = [
+        {
+            "category": "Sensor Noise", "axis": "severity", "bin": "fog_1",
+            "success_rate": 0.8, "n": 5, "orig_success_rate": 0.95, "orig_n": 10,
+        },
+        {
+            "category": "Sensor Noise", "axis": "severity", "bin": "fog_2",
+            "success_rate": 0.5, "n": 2, "orig_success_rate": "", "orig_n": "",
+        },
+    ]
+    assert analyze_wandb.severity_orig_values(records) == {("Sensor Noise", "severity", "fog_1"): 0.95}
+    assert analyze_wandb.severity_n_values(records) == {("Sensor Noise", "severity", "fog_1"): (5, 10)}
+
+
+def test_severity_orig_values_tolerates_records_with_no_orig_keys_at_all():
+    records = [{"category": "Sensor Noise", "axis": "severity", "bin": "fog_1", "success_rate": 0.8}]
+    assert analyze_wandb.severity_orig_values(records) == {}
+    assert analyze_wandb.severity_n_values(records) == {}
+
+
+def test_aggregate_n_ranges_min_max_per_key():
+    per_run = {"r1": {"a": (5, 10)}, "r2": {"a": (8, 10)}}
+    assert analyze_wandb._aggregate_n_ranges(per_run) == {"a": ((5, 8), (10, 10))}
+
+
+def test_n_label_collapses_equal_range():
+    assert analyze_wandb._n_label((10, 10)) == "10"
+    assert analyze_wandb._n_label((8, 10)) == "8-10"
 
 
 def test_natural_key_orders_other_bin_vocabularies():
@@ -496,3 +557,90 @@ def test_print_aggregate_no_severity_tables_when_no_run_has_severity(capsys):
     out = capsys.readouterr().out
     assert "physical perturbation severity" not in out
     assert "upstream difficulty_level" not in out
+
+
+# ---------------------------------------------------------------------------
+# print_aggregate -- paired (init-state-matched LIBERO original) tables
+# ---------------------------------------------------------------------------
+
+
+def _paired_severity_record(bin_label, axis, success_rate, n, orig_success_rate, orig_n):
+    return {
+        "category": "Sensor Noise", "axis": axis, "bin": bin_label,
+        "success_rate": success_rate, "n": n,
+        "orig_success_rate": orig_success_rate, "orig_n": orig_n,
+    }
+
+
+def test_print_aggregate_emits_paired_baseline_tables(capsys):
+    per_run = {
+        "r1": {
+            "orig_rows": [], "plus_rows": [],
+            "severity": [
+                _paired_severity_record("ALL", "total", 0.8, 10, 0.95, 10),
+                _paired_severity_record("fog_1", "severity", 0.8, 8, 0.95, 8),
+                _paired_severity_record("1", "difficulty_level", 0.8, 10, 0.95, 10),
+            ],
+        },
+        "r2": {
+            "orig_rows": [], "plus_rows": [],
+            "severity": [
+                _paired_severity_record("ALL", "total", 0.6, 10, 0.90, 8),
+                _paired_severity_record("fog_1", "severity", 0.6, 8, 0.90, 8),
+                _paired_severity_record("1", "difficulty_level", 0.6, 10, 0.90, 8),
+            ],
+        },
+    }
+    analyze_wandb.print_aggregate(per_run, "ccs")
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+
+    total_title = "Per-perturbation success rate vs. init-state-matched LIBERO original (mean / min / max across runs):"
+    severity_title = (
+        "Success rate by physical perturbation severity vs. init-state-matched "
+        "LIBERO original (mean / min / max across runs):"
+    )
+    difficulty_title = (
+        "Success rate by upstream difficulty_level vs. init-state-matched LIBERO "
+        "original (mean / min / max across runs):"
+    )
+    for title in (total_title, severity_title, difficulty_title):
+        assert title in out
+
+    total_idx = lines.index(total_title)
+    total_line = lines[total_idx + 2]
+    assert total_line.strip().startswith("Sensor Noise")
+    assert "8-10" in total_line  # orig_n range across the two runs (10 vs. 8)
+    assert "10" in total_line  # plus_n agrees across runs
+
+
+def test_print_aggregate_no_paired_tables_when_no_run_has_baseline(capsys):
+    per_run = {
+        "r1": {
+            "orig_rows": [], "plus_rows": [],
+            "severity": [{"category": "Sensor Noise", "axis": "severity", "bin": "fog_1", "success_rate": 0.8, "n": 5}],
+        },
+    }
+    analyze_wandb.print_aggregate(per_run, "ccs")
+    out = capsys.readouterr().out
+    assert "init-state-matched LIBERO original" not in out
+
+
+def test_unpaired_severity_tables_exclude_total_axis_records(capsys):
+    per_run = {
+        "r1": {
+            "orig_rows": [], "plus_rows": [],
+            "severity": [
+                _paired_severity_record("ALL", "total", 0.7, 20, 0.9, 10),
+                {"category": "Sensor Noise", "axis": "severity", "bin": "fog_1", "success_rate": 0.8, "n": 5},
+            ],
+        },
+    }
+    analyze_wandb.print_aggregate(per_run, "ccs")
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+
+    title_idx = lines.index("Success rate by physical perturbation severity (mean / min / max across runs):")
+    # only the fog_1 bin row follows (header, then data) -- no "ALL"/total row leaked in
+    assert "ALL" not in lines[title_idx + 2]
+    assert "fog_1" in lines[title_idx + 2]

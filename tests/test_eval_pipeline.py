@@ -483,3 +483,47 @@ def test_write_severity_csv_returns_none_and_warns_on_failure(tmp_path, monkeypa
     assert result is None
     assert not (plus_csv.parent / "severity_sr.csv").exists()
     assert "boom" in capsys.readouterr().err
+
+
+def test_write_severity_csv_with_orig_csv_adds_baseline_columns(tmp_path):
+    plus_csv = tmp_path / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    plus_row = _row(True, True, True, True)
+    plus_row.update({"task_name": "foo_initstate_50", "task_category": "Robot Initial States", "difficulty_level": "1"})
+    write_csv(plus_csv, [plus_row])
+
+    orig_csv = tmp_path / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    orig_row = _row(True, True, True, True)
+    orig_row.update({"task_name": "foo", "init_state_idx": 0})
+    write_csv(orig_csv, [orig_row])
+
+    result = write_severity_csv(plus_csv, orig_csv)
+
+    with open(result, newline="") as f:
+        rows = list(csv.DictReader(f))
+    total = next(r for r in rows if r["axis"] == "total")
+    assert total["orig_n"] == "1"
+
+
+def test_write_severity_csv_without_orig_csv_leaves_baseline_columns_empty(tmp_path):
+    plus_csv = tmp_path / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True)])
+
+    result = write_severity_csv(plus_csv)  # no orig_csv -- default None
+
+    with open(result, newline="") as f:
+        rows = list(csv.DictReader(f))
+    total = next(r for r in rows if r["axis"] == "total")
+    assert total["orig_n"] == ""
+
+
+def test_write_severity_csv_with_absent_orig_csv_path_leaves_baseline_columns_empty(tmp_path):
+    plus_csv = tmp_path / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True)])
+    orig_csv = tmp_path / "eval_logs" / "last" / "orig_libero_10" / "result.csv"  # never written
+
+    result = write_severity_csv(plus_csv, orig_csv)
+
+    with open(result, newline="") as f:
+        rows = list(csv.DictReader(f))
+    total = next(r for r in rows if r["axis"] == "total")
+    assert total["orig_n"] == ""

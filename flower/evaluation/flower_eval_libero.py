@@ -616,6 +616,19 @@ class EvaluateLibero:
                     raise Exception("Failed to create environment")
 
                 env.reset()
+                # For LIBERO-Plus (n_eval=1 -> ep is always 0), this is always index 0 --
+                # correctly so, not a bug: a Plus task's own perturbation parameter (view
+                # angle sample, robot qpos-offset sample, noise instance, texture/light id
+                # -- the number baked into its task_name/init_states_file, e.g. "_table_5",
+                # "_initstate_50") is NOT an index into this states array. It's parsed
+                # straight out of the bddl filename at env-construction time by
+                # LIBERO-plus/libero/libero/envs/env_wrapper.py (e.g. substituted into the
+                # robot class name -> "Panda50", one of the 500 pre-baked variants
+                # LIBERO-plus/libero/libero/envs/robots/new_init.py generates), independent
+                # of which array entry gets loaded here. For every category except Objects
+                # Layout, get_task_init_states() itself loads the *original* task's own
+                # (unperturbed) init file, so index 0 here is the same underlying
+                # object/robot layout as orig LIBERO's own init_state_idx=0 episode.
                 state_idxs = [
                     (ep % m["n_states"]) if m["initial_states"] is not None else None
                     for m, (_, ep) in zip(metas, batch_items)
