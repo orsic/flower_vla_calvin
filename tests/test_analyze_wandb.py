@@ -11,8 +11,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import analyze_wandb  # noqa: E402
+import eval_pipeline  # noqa: E402
 import pid_modality  # noqa: E402
 import perturbation_sr  # noqa: E402
+import severity_sr  # noqa: E402
 
 from flower.evaluation.eval_records import write_csv  # noqa: E402
 
@@ -170,6 +172,7 @@ def test_analyze_no_artifact_at_all():
         "pid": None,
         "perturbation": None,
         "severity": None,
+        "modality_off": {},
         "missing": ["<no evaluation artifact>"],
     }
 
@@ -226,6 +229,172 @@ def test_analyze_severity_failure_degrades_instead_of_raising(tmp_path, monkeypa
     assert result["severity"] is None
     assert result["perturbation"] is not None  # unaffected by the severity failure
     assert any("severity" in m for m in result["missing"])
+
+
+# ---------------------------------------------------------------------------
+# applicable_modality_off / missing_members
+# ---------------------------------------------------------------------------
+
+
+def test_applicable_modality_off_is_all_four_when_use_proprio_true():
+    run = _FakeRun("r1", "n1", {"use_proprio": True})
+    assert analyze_wandb.applicable_modality_off(run) == list(eval_pipeline.MODALITY_OFF_VARIANTS)
+
+
+def test_applicable_modality_off_excludes_no_proprio_when_use_proprio_false():
+    run = _FakeRun("r1", "n1", {"use_proprio": False})
+    variants = analyze_wandb.applicable_modality_off(run)
+    assert "plus_no_proprio" not in variants
+    assert len(variants) == 3
+
+
+def test_applicable_modality_off_excludes_no_proprio_when_use_proprio_absent_from_config():
+    run = _FakeRun("r1", "n1", {})
+    assert "plus_no_proprio" not in analyze_wandb.applicable_modality_off(run)
+
+
+def test_missing_members_lists_required_and_applicable_modality_off_members(tmp_path):
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+
+    missing = analyze_wandb.missing_members(artifact_dir, ["plus_no_static", "plus_no_lang"])
+
+    assert set(missing) == {
+        "libero_orig.csv", "libero_plus.csv", "libero_plus_no_static.csv", "libero_plus_no_lang.csv",
+    }
+
+
+def test_missing_members_never_flags_no_proprio_for_a_non_proprio_run(tmp_path):
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    run = _FakeRun("r1", "n1", {"use_proprio": False})
+
+    missing = analyze_wandb.missing_members(artifact_dir, analyze_wandb.applicable_modality_off(run))
+
+    assert "libero_plus_no_proprio.csv" not in missing
+
+
+def test_missing_members_empty_when_everything_present(tmp_path):
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    for name in ["libero_orig.csv", "libero_plus.csv", "libero_plus_no_static.csv"]:
+        (artifact_dir / name).write_text("")
+
+    assert analyze_wandb.missing_members(artifact_dir, ["plus_no_static"]) == []
+
+
+# ---------------------------------------------------------------------------
+# analyze() -- modality-off loading
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_loads_present_modality_off_csvs(tmp_path):
+    artifact_dir = tmp_path / "artifact"
+    write_csv(
+        artifact_dir / "libero_plus_no_static.csv",
+        [{**_combo_row(0, 1, 1, 1, 1), "task_category": "Camera Viewpoints"}],
+    )
+    write_csv(
+        artifact_dir / "libero_plus_no_lang.csv",
+        [{**_combo_row(1, 1, 0, 1, 1), "task_category": "Camera Viewpoints"}],
+    )
+
+    result = analyze_wandb.analyze(
+        artifact_dir, missing=[], measure="ccs",
+        modality_off_variants=["plus_no_static", "plus_no_wrist", "plus_no_lang", "plus_no_proprio"],
+    )
+
+    assert result["modality_off"]["plus_no_static"] is not None
+    assert result["modality_off"]["plus_no_lang"] is not None
+    assert result["modality_off"]["plus_no_wrist"] is None
+    assert result["modality_off"]["plus_no_proprio"] is None
+
+
+def test_analyze_omits_no_proprio_key_entirely_for_a_non_proprio_run(tmp_path):
+    artifact_dir = tmp_path / "artifact"
+    write_csv(artifact_dir / "libero_plus.csv", [_combo_row(1, 1, 1, 1, 1)])
+
+    result = analyze_wandb.analyze(
+        artifact_dir, missing=[], measure="ccs",
+        modality_off_variants=["plus_no_static", "plus_no_wrist", "plus_no_lang"],  # no_proprio excluded
+    )
+
+    assert "plus_no_proprio" not in result["modality_off"]
+
+
+def test_analyze_modality_off_perturbation_matches_category_sr(tmp_path):
+    artifact_dir = tmp_path / "artifact"
+    rows = [
+        {**_combo_row(0, 1, 1, 1, 1), "task_category": "Camera Viewpoints"},
+        {**_combo_row(0, 1, 1, 1, 0), "task_category": "Camera Viewpoints"},
+    ]
+    write_csv(artifact_dir / "libero_plus_no_static.csv", rows)
+
+    result = analyze_wandb.analyze(
+        artifact_dir, missing=[], measure="ccs", modality_off_variants=["plus_no_static"],
+    )
+
+    loaded_rows = result["modality_off"]["plus_no_static"]["rows"]
+    assert result["modality_off"]["plus_no_static"]["perturbation"] == perturbation_sr.category_sr(loaded_rows)
+
+
+def test_analyze_modality_off_severity_uses_orig_rows_baseline(tmp_path):
+    artifact_dir = tmp_path / "artifact"
+    orig_row = {**_combo_row(0, 1, 1, 1, 1), "task_name": "foo", "init_state_idx": 0}
+    write_csv(artifact_dir / "libero_orig.csv", [orig_row])
+    write_csv(
+        artifact_dir / "libero_plus_no_static.csv",
+        [{
+            **_combo_row(0, 1, 1, 1, 1),
+            "task_category": "Robot Initial States",
+            "task_name": "foo_initstate_50",
+            "difficulty_level": "1",
+        }],
+    )
+
+    result = analyze_wandb.analyze(
+        artifact_dir, missing=[], measure="ccs", modality_off_variants=["plus_no_static"],
+    )
+
+    severity = result["modality_off"]["plus_no_static"]["severity"]
+    total = next(r for r in severity if r["axis"] == "total")
+    assert total["orig_n"] == 1
+
+
+def test_analyze_modality_off_severity_failure_reported_in_missing_not_raised(tmp_path, monkeypatch):
+    artifact_dir = tmp_path / "artifact"
+    write_csv(
+        artifact_dir / "libero_plus_no_static.csv",
+        [{**_combo_row(0, 1, 1, 1, 1), "task_category": "Camera Viewpoints"}],
+    )
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(severity_sr, "collect", _raise)
+
+    result = analyze_wandb.analyze(
+        artifact_dir, missing=[], measure="ccs", modality_off_variants=["plus_no_static"],
+    )
+
+    assert result["modality_off"]["plus_no_static"]["severity"] is None
+    assert result["modality_off"]["plus_no_static"]["perturbation"] is not None
+    assert any("severity_sr_no_static.csv" in m for m in result["missing"])
+
+
+def test_analyze_does_not_double_report_an_absent_modality_off_csv(tmp_path):
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+
+    result = analyze_wandb.analyze(
+        artifact_dir,
+        missing=["libero_plus_no_static.csv"],  # already reported by download_run/missing_members
+        measure="ccs",
+        modality_off_variants=["plus_no_static"],
+    )
+
+    assert result["missing"].count("libero_plus_no_static.csv") == 1
+    assert result["modality_off"]["plus_no_static"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +611,95 @@ def test_parse_modality_spec_unknown_name_raises():
 
 
 # ---------------------------------------------------------------------------
+# print_single -- modality-off blocks
+# ---------------------------------------------------------------------------
+
+
+def test_print_single_summary_prints_one_category_table_per_present_variant(tmp_path, capsys):
+    artifact_dir = tmp_path / "artifact"
+    write_csv(
+        artifact_dir / "libero_plus_no_static.csv",
+        [{**_combo_row(0, 1, 1, 1, 1), "task_category": "Camera Viewpoints"}],
+    )
+    analysis = analyze_wandb.analyze(
+        artifact_dir, missing=[], measure="ccs", modality_off_variants=["plus_no_static"],
+    )
+
+    analyze_wandb.print_single("r1", analysis, severity_sr.DEFAULT_LIBERO_PLUS_ROOT)
+    out = capsys.readouterr().out
+
+    assert "=== r1: LIBERO-Plus (no_static) ===" in out
+    assert "OVERALL" in out
+    assert "by physical severity" not in out
+
+
+def test_print_single_full_adds_the_severity_tables(tmp_path, capsys):
+    artifact_dir = tmp_path / "artifact"
+    write_csv(
+        artifact_dir / "libero_plus_no_static.csv",
+        [{
+            **_combo_row(0, 1, 1, 1, 1),
+            "task_category": "Robot Initial States",
+            "task_name": "foo_initstate_50",
+            "difficulty_level": "1",
+        }],
+    )
+    analysis = analyze_wandb.analyze(
+        artifact_dir, missing=[], measure="ccs", modality_off_variants=["plus_no_static"],
+    )
+
+    analyze_wandb.print_single(
+        "r1", analysis, severity_sr.DEFAULT_LIBERO_PLUS_ROOT, modality_off_detail="full"
+    )
+    out = capsys.readouterr().out
+
+    assert "=== r1: LIBERO-Plus (no_static) ===" in out
+    assert "by physical severity" in out
+
+
+def test_print_single_prints_placeholder_for_an_applicable_but_missing_variant(tmp_path, capsys):
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    analysis = analyze_wandb.analyze(
+        artifact_dir, missing=["libero_plus_no_lang.csv"], measure="ccs",
+        modality_off_variants=["plus_no_lang"],
+    )
+
+    analyze_wandb.print_single("r1", analysis, severity_sr.DEFAULT_LIBERO_PLUS_ROOT)
+    out = capsys.readouterr().out
+
+    assert "=== r1: LIBERO-Plus (no_lang) ===" in out
+    assert "(no no_lang eval)" in out
+
+
+def test_print_single_prints_nothing_for_an_inapplicable_no_proprio(tmp_path, capsys):
+    artifact_dir = tmp_path / "artifact"
+    artifact_dir.mkdir()
+    analysis = analyze_wandb.analyze(
+        artifact_dir, missing=[], measure="ccs",
+        modality_off_variants=["plus_no_static", "plus_no_wrist", "plus_no_lang"],  # no_proprio excluded
+    )
+
+    analyze_wandb.print_single("r1", analysis, severity_sr.DEFAULT_LIBERO_PLUS_ROOT)
+    out = capsys.readouterr().out
+
+    assert "no_proprio" not in out
+
+
+def test_print_single_unchanged_when_no_modality_off_data(tmp_path, capsys):
+    artifact_dir = tmp_path / "artifact"
+    write_csv(artifact_dir / "libero_orig.csv", [_combo_row(1, 1, 1, 1, 1)])
+    analysis = analyze_wandb.analyze(artifact_dir, missing=[], measure="ccs", modality_off_variants=[])
+
+    analyze_wandb.print_single("r1", analysis, severity_sr.DEFAULT_LIBERO_PLUS_ROOT)
+    out = capsys.readouterr().out
+
+    assert "=== r1: LIBERO (orig) ===" in out
+    assert "=== r1: LIBERO-Plus ===" in out
+    assert "no_" not in out
+
+
+# ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
 
@@ -557,6 +815,160 @@ def test_print_aggregate_no_severity_tables_when_no_run_has_severity(capsys):
     out = capsys.readouterr().out
     assert "physical perturbation severity" not in out
     assert "upstream difficulty_level" not in out
+
+
+# ---------------------------------------------------------------------------
+# print_aggregate / print_modality_off_aggregate -- modality-off tables
+# ---------------------------------------------------------------------------
+
+
+def _modality_off_rows(category, success):
+    return [{"task_category": category, "success": success}]
+
+
+def test_print_aggregate_modality_off_table_rows_are_category_by_variant(capsys):
+    per_run = {
+        "r1": {
+            "orig_rows": [], "plus_rows": [], "severity": None,
+            "modality_off": {
+                "plus_no_static": {"rows": _modality_off_rows("Camera Viewpoints", 1), "perturbation": None, "severity": None},
+                "plus_no_lang": {"rows": _modality_off_rows("Camera Viewpoints", 0), "perturbation": None, "severity": None},
+            },
+        },
+    }
+    analyze_wandb.print_aggregate(per_run, "ccs")
+    out = capsys.readouterr().out
+
+    assert "LIBERO-Plus with one modality withheld (mean / min / max across runs):" in out
+    assert "Camera Viewpoints [no_static]" in out
+    assert "OVERALL [no_static]" in out
+    assert "OVERALL [no_lang]" in out
+    # OVERALL rows come after every real-category row.
+    lines = out.splitlines()
+    overall_idx = min(i for i, line in enumerate(lines) if line.strip().startswith("OVERALL"))
+    category_idx = max(i for i, line in enumerate(lines) if line.strip().startswith("Camera Viewpoints ["))
+    assert category_idx < overall_idx
+
+
+def test_print_aggregate_modality_off_table_omitted_when_no_run_has_data(capsys):
+    per_run = {"r1": {"orig_rows": [], "plus_rows": [], "severity": None, "modality_off": {}}}
+    analyze_wandb.print_aggregate(per_run, "ccs")
+    out = capsys.readouterr().out
+    assert "one modality withheld" not in out
+
+
+def test_print_aggregate_modality_off_runs_column_counts_contributing_runs(capsys):
+    per_run = {
+        "r1": {
+            "orig_rows": [], "plus_rows": [], "severity": None,
+            "modality_off": {
+                "plus_no_static": {"rows": _modality_off_rows("Camera Viewpoints", 1), "perturbation": None, "severity": None},
+                "plus_no_lang": {"rows": _modality_off_rows("Camera Viewpoints", 1), "perturbation": None, "severity": None},
+            },
+        },
+        "r2": {
+            "orig_rows": [], "plus_rows": [], "severity": None,
+            "modality_off": {
+                "plus_no_static": {"rows": _modality_off_rows("Camera Viewpoints", 0), "perturbation": None, "severity": None},
+            },
+        },
+    }
+    analyze_wandb.print_aggregate(per_run, "ccs")
+    out = capsys.readouterr().out
+
+    no_static_line = next(line for line in out.splitlines() if "Camera Viewpoints [no_static]" in line)
+    no_lang_line = next(line for line in out.splitlines() if "Camera Viewpoints [no_lang]" in line)
+    assert no_static_line.split()[-1] == "2"
+    assert no_lang_line.split()[-1] == "1"
+
+
+def _modality_off_severity_records():
+    return [
+        {"category": "Sensor Noise", "axis": "difficulty_level", "bin": "1", "success_rate": 1.0},
+        {"category": "Sensor Noise", "axis": "severity", "bin": "fog_10", "success_rate": 0.5},
+        {"category": "Sensor Noise", "axis": "severity", "bin": "fog_2", "success_rate": 0.9},
+    ]
+
+
+def test_print_aggregate_modality_off_severity_tables_only_in_full_detail(capsys):
+    per_run = {
+        "r1": {
+            "orig_rows": [], "plus_rows": [], "severity": None,
+            "modality_off": {
+                "plus_no_static": {
+                    "rows": _modality_off_rows("Sensor Noise", 1),
+                    "perturbation": None,
+                    "severity": _modality_off_severity_records(),
+                },
+            },
+        },
+    }
+    analyze_wandb.print_aggregate(per_run, "ccs", modality_off_detail="summary")
+    summary_out = capsys.readouterr().out
+    assert "physical perturbation severity, one modality withheld" not in summary_out
+
+    analyze_wandb.print_aggregate(per_run, "ccs", modality_off_detail="full")
+    full_out = capsys.readouterr().out
+    assert "Success rate by physical perturbation severity, one modality withheld (mean / min / max across runs):" in full_out
+    assert "Success rate by upstream difficulty_level, one modality withheld (mean / min / max across runs):" in full_out
+
+
+def test_print_aggregate_modality_off_severity_tables_omitted_when_no_run_has_severity(capsys):
+    per_run = {
+        "r1": {
+            "orig_rows": [], "plus_rows": [], "severity": None,
+            "modality_off": {
+                "plus_no_static": {"rows": _modality_off_rows("Sensor Noise", 1), "perturbation": None, "severity": None},
+            },
+        },
+    }
+    analyze_wandb.print_aggregate(per_run, "ccs", modality_off_detail="full")
+    out = capsys.readouterr().out
+    assert "physical perturbation severity, one modality withheld" not in out
+    assert "upstream difficulty_level, one modality withheld" not in out
+
+
+def test_print_aggregate_modality_off_severity_rows_group_variants_under_the_same_bin(capsys):
+    per_run = {
+        "r1": {
+            "orig_rows": [], "plus_rows": [], "severity": None,
+            "modality_off": {
+                "plus_no_static": {
+                    "rows": _modality_off_rows("Sensor Noise", 1),
+                    "perturbation": None,
+                    "severity": _modality_off_severity_records(),
+                },
+                "plus_no_lang": {
+                    "rows": _modality_off_rows("Sensor Noise", 1),
+                    "perturbation": None,
+                    "severity": _modality_off_severity_records(),
+                },
+            },
+        },
+    }
+    analyze_wandb.print_aggregate(per_run, "ccs", modality_off_detail="full")
+    out = capsys.readouterr().out
+
+    fog2_lines = [i for i, line in enumerate(out.splitlines()) if "fog_2 [" in line]
+    fog10_lines = [i for i, line in enumerate(out.splitlines()) if "fog_10 [" in line]
+    assert len(fog2_lines) == 2 and len(fog10_lines) == 2
+    # fog_2 (both variants) sorts before fog_10 (both variants) -- natural-key order.
+    assert max(fog2_lines) < min(fog10_lines)
+
+
+def test_print_aggregate_no_data_message_accounts_for_modality_off_only_runs(capsys):
+    per_run = {
+        "r1": {
+            "orig_rows": [], "plus_rows": [], "severity": None,
+            "modality_off": {
+                "plus_no_static": {"rows": _modality_off_rows("Camera Viewpoints", 1), "perturbation": None, "severity": None},
+            },
+        },
+    }
+    analyze_wandb.print_aggregate(per_run, "ccs")
+    out = capsys.readouterr().out
+    assert "No evaluation data available for any matched run." not in out
+    assert "one modality withheld" in out
 
 
 # ---------------------------------------------------------------------------

@@ -14,13 +14,21 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import eval_pipeline  # noqa: E402
 import severity_sr  # noqa: E402
 from eval_pipeline import (  # noqa: E402
+    MODALITY_OFF_VARIANTS,
+    all_variants,
+    artifact_members,
     artifact_name,
     full_modality_combo,
     modality_combos,
+    modality_off_combo,
+    modality_off_csv_paths,
+    modality_off_member,
+    modality_off_severity_member,
     parse_overrides,
     plan_lines,
     resolve_reeval_variants,
     rotate_reeval_csvs,
+    suite_dir_name,
     token_combos,
     wandb_run_id,
     write_severity_csv,
@@ -95,6 +103,68 @@ def test_modality_combos_with_proprio_is_fourteen_no_proprio_only():
 
 
 # ---------------------------------------------------------------------------
+# modality-off naming helpers -- suite_dir_name / modality_off_combo / all_variants /
+# modality_off_member / modality_off_severity_member
+# ---------------------------------------------------------------------------
+
+
+def test_suite_dir_name_orig_and_plus_unchanged():
+    assert suite_dir_name("orig", "libero_10") == "orig_libero_10"
+    assert suite_dir_name("plus", "libero_10") == "plus_libero_10"
+
+
+@pytest.mark.parametrize(
+    "variant,expected_suffix",
+    [
+        ("plus_no_static", "no_static"),
+        ("plus_no_wrist", "no_wrist"),
+        ("plus_no_lang", "no_lang"),
+        ("plus_no_proprio", "no_proprio"),
+    ],
+)
+def test_suite_dir_name_modality_off_puts_benchmark_in_the_middle(variant, expected_suffix):
+    assert suite_dir_name(variant, "libero_10") == f"plus_libero_10_{expected_suffix}"
+
+
+def test_suite_dir_name_follows_benchmark_override():
+    assert suite_dir_name("plus_no_lang", "libero_spatial") == "plus_libero_spatial_no_lang"
+
+
+@pytest.mark.parametrize("variant", list(MODALITY_OFF_VARIANTS))
+def test_modality_off_combo_turns_off_exactly_one(variant):
+    combo = modality_off_combo(variant)
+    off_count = sum(1 for v in combo.values() if v is False)
+    assert off_count == 1
+    key, _suffix = MODALITY_OFF_VARIANTS[variant]
+    assert combo[key] is False
+
+
+def test_all_variants_is_six_with_proprio_five_without():
+    with_proprio = all_variants(True)
+    without_proprio = all_variants(False)
+    assert len(with_proprio) == 6
+    assert len(without_proprio) == 5
+    assert "plus_no_proprio" in with_proprio
+    assert "plus_no_proprio" not in without_proprio
+
+
+def test_modality_off_member_names_are_distinct_and_prefixed():
+    csv_names = {modality_off_member(v) for v in MODALITY_OFF_VARIANTS}
+    sev_names = {modality_off_severity_member(v) for v in MODALITY_OFF_VARIANTS}
+    assert csv_names == {
+        "libero_plus_no_static.csv", "libero_plus_no_wrist.csv",
+        "libero_plus_no_lang.csv", "libero_plus_no_proprio.csv",
+    }
+    assert sev_names == {
+        "severity_sr_no_static.csv", "severity_sr_no_wrist.csv",
+        "severity_sr_no_lang.csv", "severity_sr_no_proprio.csv",
+    }
+    assert not csv_names & sev_names
+    assert "libero_plus.csv" not in csv_names
+    assert "severity_sr.csv" not in sev_names
+
+
+# ---------------------------------------------------------------------------
 # parse_overrides
 # ---------------------------------------------------------------------------
 
@@ -120,10 +190,13 @@ def test_plan_lines_regular_run_is_eval_then_eval_plus(tmp_path):
 
     lines = plan_lines(str(train_folder), resume=False, extra_overrides=[])
 
-    assert [svc for svc, _ in lines] == ["eval", "eval-plus"]
+    # One full-modality eval-plus, then one per withheld modality -- no_proprio is
+    # excluded since this checkpoint never receives proprioception.
+    services = [svc for svc, _ in lines]
+    assert services == ["eval"] + ["eval-plus"] * 4
 
 
-def test_plan_lines_dropout_no_proprio_is_seven_plus_one(tmp_path):
+def test_plan_lines_dropout_no_proprio_is_seven_plus_four(tmp_path):
     train_folder = tmp_path / "run"
     _write_train_cfg(train_folder, dropout=True, use_proprio=False)
 
@@ -131,11 +204,11 @@ def test_plan_lines_dropout_no_proprio_is_seven_plus_one(tmp_path):
 
     services = [svc for svc, _ in lines]
     assert services.count("eval") == 7
-    assert services.count("eval-plus") == 1
+    assert services.count("eval-plus") == 4
     assert services[-1] == "eval-plus"
 
 
-def test_plan_lines_dropout_with_proprio_is_fourteen_plus_one(tmp_path):
+def test_plan_lines_dropout_with_proprio_is_fourteen_plus_five(tmp_path):
     train_folder = tmp_path / "run"
     _write_train_cfg(train_folder, dropout=True, use_proprio=True)
 
@@ -143,7 +216,7 @@ def test_plan_lines_dropout_with_proprio_is_fourteen_plus_one(tmp_path):
 
     services = [svc for svc, _ in lines]
     assert services.count("eval") == 14
-    assert services.count("eval-plus") == 1
+    assert services.count("eval-plus") == 5
 
 
 def test_plan_lines_default_checkpoint_and_train_folder(tmp_path):
@@ -187,9 +260,9 @@ def test_plan_lines_resume_skips_already_evaluated_combo(tmp_path):
 
     lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
 
-    # The one combo a non-dropout run needs on LIBERO is already in result.csv; only
-    # eval-plus (untouched) remains.
-    assert [svc for svc, _ in lines] == ["eval-plus"]
+    # The one combo a non-dropout run needs on LIBERO is already in result.csv; the
+    # full-modality eval-plus and all 4 modality-off eval-plus lines remain (untouched).
+    assert [svc for svc, _ in lines] == ["eval-plus"] * 5
 
 
 def test_plan_lines_resume_keeps_uncovered_combo(tmp_path):
@@ -202,7 +275,7 @@ def test_plan_lines_resume_keeps_uncovered_combo(tmp_path):
     lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
 
     assert [svc for svc, _ in lines].count("eval") == 13
-    assert [svc for svc, _ in lines].count("eval-plus") == 1
+    assert [svc for svc, _ in lines].count("eval-plus") == 5
 
 
 def test_plan_lines_resume_accounts_for_no_proprio_model(tmp_path):
@@ -218,7 +291,176 @@ def test_plan_lines_resume_accounts_for_no_proprio_model(tmp_path):
     lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
 
     assert [svc for svc, _ in lines].count("eval") == 6
-    assert [svc for svc, _ in lines].count("eval-plus") == 1
+    assert [svc for svc, _ in lines].count("eval-plus") == 4
+
+
+# ---------------------------------------------------------------------------
+# plan_lines -- modality-off eval-plus lines
+# ---------------------------------------------------------------------------
+
+
+def _modality_off_lines(lines):
+    """The 4 (or fewer) eval-plus lines that carry a csv_dir= override -- the
+    full-modality eval-plus line never does (see test_plan_lines_full_plus_line_has_no_csv_dir_override)."""
+    return [
+        (svc, overrides)
+        for svc, overrides in lines
+        if svc == "eval-plus" and any(o.startswith("csv_dir=") for o in overrides)
+    ]
+
+
+def test_plan_lines_modality_off_lines_withhold_exactly_one_modality(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+    modality_off_lines = _modality_off_lines(lines)
+
+    assert len(modality_off_lines) == 4
+    seen_off_keys = set()
+    for _svc, overrides in modality_off_lines:
+        flags = {o.split("=")[0].split(".")[1]: o.split("=")[1] for o in overrides if o.startswith("eval_modalities.")}
+        off_keys = [k for k, v in flags.items() if v == "False"]
+        assert len(off_keys) == 1
+        seen_off_keys.add(off_keys[0])
+    assert seen_off_keys == {"rgb_static", "rgb_gripper", "language", "proprio"}
+
+
+def test_plan_lines_modality_off_lines_carry_their_own_csv_dir(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+    modality_off_overrides = [overrides for _svc, overrides in _modality_off_lines(lines)]
+
+    expected_dir = train_folder / "eval_logs" / "last" / "plus_libero_10_no_static"
+    assert any(f"csv_dir={expected_dir}" in overrides for overrides in modality_off_overrides)
+
+
+def test_plan_lines_full_plus_line_has_no_csv_dir_override(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+    full_plus_lines = [
+        overrides for svc, overrides in lines
+        if svc == "eval-plus" and not any(o.startswith("csv_dir=") for o in overrides)
+    ]
+
+    assert len(full_plus_lines) == 1
+
+
+def test_plan_lines_modality_off_lines_keep_the_real_benchmark_name(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+
+    for _svc, overrides in _modality_off_lines(lines):
+        assert "benchmark_name=libero_10" in overrides
+
+
+def test_plan_lines_user_overrides_still_last_on_modality_off_lines(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=["n_eval=5", "eval_batch_size=32"])
+
+    for _svc, overrides in _modality_off_lines(lines):
+        assert overrides[-2:] == ["n_eval=5", "eval_batch_size=32"]
+
+
+def test_plan_lines_user_csv_dir_override_wins_over_the_emitted_one(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=["csv_dir=/x"])
+
+    # A modality-off line has both the planner's own csv_dir= and the user's -- the
+    # user's must be the last one on the line (last-wins Hydra convention).
+    modality_off_lines = [
+        overrides for svc, overrides in lines
+        if svc == "eval-plus" and overrides.count("csv_dir=/x") == 1 and any(
+            o.startswith("csv_dir=") and o != "csv_dir=/x" for o in overrides
+        )
+    ]
+    assert len(modality_off_lines) == 4
+    for overrides in modality_off_lines:
+        csv_dir_overrides = [o for o in overrides if o.startswith("csv_dir=")]
+        assert csv_dir_overrides[-1] == "csv_dir=/x"
+
+
+def test_plan_lines_skips_no_proprio_variant_when_model_has_no_proprio(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=False)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+
+    for _svc, overrides in lines:
+        assert "eval_modalities.proprio=False" not in overrides
+    assert not any("no_proprio" in o for _svc, overrides in lines for o in overrides)
+
+
+def test_plan_lines_skip_modality_off_flag_suppresses_all_four(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], skip_modality_off=True)
+
+    assert [svc for svc, _ in lines] == ["eval", "eval-plus"]
+
+
+def test_plan_lines_resume_skips_a_completed_modality_off_suite(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    csv_path = train_folder / "eval_logs" / "last" / "plus_libero_10_no_lang" / "result.csv"
+    write_csv(csv_path, [_row(True, True, False, True)])
+
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
+
+    # orig ("eval") + full-plus stay (not seeded); no_static/no_wrist/no_proprio stay;
+    # no_lang is done.
+    assert len(lines) == 5
+    for _svc, overrides in lines:
+        assert "csv_dir=" + str(train_folder / "eval_logs" / "last" / "plus_libero_10_no_lang") not in "".join(overrides)
+
+
+def test_plan_lines_resume_modality_off_matches_effective_proprio(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=False)
+    csv_path = train_folder / "eval_logs" / "last" / "plus_libero_10_no_static" / "result.csv"
+    write_csv(csv_path, [_row(False, True, True, False)])  # use_proprio=0, as a real run would write
+
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
+
+    services_and_overrides = [(svc, overrides) for svc, overrides in lines]
+    assert not any(
+        any("no_static" in o for o in overrides) for _svc, overrides in services_and_overrides
+    )
+
+
+def test_plan_lines_resume_full_plus_csv_does_not_mark_modality_off_done(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    csv_path = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(csv_path, [_row(True, True, True, True)])
+
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
+
+    # orig ("eval") isn't seeded, so it stays; full-plus is done; all 4 modality-off stay.
+    assert [svc for svc, _ in lines] == ["eval"] + ["eval-plus"] * 4
+
+
+def test_plan_lines_resume_modality_off_csv_does_not_mark_full_plus_done(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    csv_path = train_folder / "eval_logs" / "last" / "plus_libero_10_no_static" / "result.csv"
+    write_csv(csv_path, [_row(False, True, True, True)])
+
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
+
+    # orig ("eval") + full-plus + no_wrist + no_lang + no_proprio; no_static is done.
+    assert len(lines) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +500,16 @@ def test_artifact_name_matches_wandb_charset():
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_reeval_variants_none_means_both():
-    assert resolve_reeval_variants(None, "libero_10") == {"orig", "plus"}
+def test_resolve_reeval_variants_none_means_every_suite():
+    assert resolve_reeval_variants(None, "libero_10") == {
+        "orig", "plus", "plus_no_static", "plus_no_wrist", "plus_no_lang", "plus_no_proprio",
+    }
+
+
+def test_resolve_reeval_variants_none_excludes_no_proprio_without_proprio():
+    assert resolve_reeval_variants(None, "libero_10", use_proprio=False) == {
+        "orig", "plus", "plus_no_static", "plus_no_wrist", "plus_no_lang",
+    }
 
 
 def test_resolve_reeval_variants_single_suite():
@@ -280,10 +530,45 @@ def test_resolve_reeval_variants_empty_token_list_raises(suites_arg):
         resolve_reeval_variants(suites_arg, "libero_10")
 
 
-@pytest.mark.parametrize("suites_arg", ["orig", "libero_10", "orig_libero_spatial", "garbage"])
+@pytest.mark.parametrize(
+    "suites_arg",
+    ["orig", "libero_10", "orig_libero_spatial", "garbage", "plus_libero_10_no_gripper", "plus_no_static"],
+)
 def test_resolve_reeval_variants_unrecognized_token_raises(suites_arg):
     with pytest.raises(ValueError):
         resolve_reeval_variants(suites_arg, "libero_10")
+
+
+@pytest.mark.parametrize(
+    "suites_arg,expected",
+    [
+        ("plus_libero_10_no_static", {"plus_no_static"}),
+        ("plus_libero_10_no_wrist", {"plus_no_wrist"}),
+        ("plus_libero_10_no_lang", {"plus_no_lang"}),
+        ("plus_libero_10_no_proprio", {"plus_no_proprio"}),
+        ("plus_libero_10,plus_libero_10_no_lang", {"plus", "plus_no_lang"}),
+    ],
+)
+def test_resolve_reeval_variants_modality_off_suite_names(suites_arg, expected):
+    assert resolve_reeval_variants(suites_arg, "libero_10") == expected
+
+
+def test_resolve_reeval_variants_no_proprio_suite_is_skipped_with_a_note_on_a_no_proprio_run(capsys):
+    result = resolve_reeval_variants(
+        "plus_libero_10_no_proprio,plus_libero_10_no_lang", "libero_10", use_proprio=False
+    )
+    assert result == {"plus_no_lang"}
+    assert "use_proprio=False" in capsys.readouterr().err
+
+
+def test_resolve_reeval_variants_only_inapplicable_suite_raises():
+    with pytest.raises(ValueError):
+        resolve_reeval_variants("plus_libero_10_no_proprio", "libero_10", use_proprio=False)
+
+
+def test_resolve_reeval_variants_error_message_lists_the_new_suites():
+    with pytest.raises(ValueError, match="plus_libero_10_no_static"):
+        resolve_reeval_variants("garbage", "libero_10")
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +595,7 @@ def test_rotate_reeval_csvs_only_rotates_selected_variant(tmp_path):
     assert len(list(plus_csv.parent.glob("results_*.csv"))) == 1
 
 
-def test_rotate_reeval_csvs_csv_dir_override_both_selected_rotates_once(tmp_path):
+def test_rotate_reeval_csvs_csv_dir_override_every_variant_selected_rotates_once(tmp_path):
     train_folder = tmp_path / "run"
     csv_dir = tmp_path / "shared"
     shared_csv = csv_dir / "result.csv"
@@ -318,7 +603,11 @@ def test_rotate_reeval_csvs_csv_dir_override_both_selected_rotates_once(tmp_path
     checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
 
     backups = rotate_reeval_csvs(
-        {"orig", "plus"}, {"csv_dir": str(csv_dir)}, str(train_folder), checkpoint, "libero_10"
+        set(eval_pipeline.all_variants(True)),
+        {"csv_dir": str(csv_dir)},
+        str(train_folder),
+        checkpoint,
+        "libero_10",
     )
 
     assert len(backups) == 1
@@ -376,7 +665,7 @@ def test_plan_lines_reeval_variants_none_is_unrestricted(tmp_path):
 
     lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], reeval_variants=None)
 
-    assert [svc for svc, _ in lines] == ["eval", "eval-plus"]
+    assert [svc for svc, _ in lines] == ["eval"] + ["eval-plus"] * 4
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +733,37 @@ def test_main_reeval_invalid_suite_token_exits_with_message(tmp_path, monkeypatc
             ["--train-folder", str(train_folder), "--reeval", "--reeval-suites", "plus_libero_spatial"],
         )
     assert "libero_spatial" in str(exc_info.value)
+
+
+def test_main_reeval_modality_off_suite_replans_only_that_line(tmp_path, monkeypatch, capsys):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    csv_path = train_folder / "eval_logs" / "last" / "plus_libero_10_no_lang" / "result.csv"
+    write_csv(csv_path, [_row(True, True, False, True)])
+
+    _run_plan_cli(
+        monkeypatch,
+        ["--train-folder", str(train_folder), "--resume", "--reeval", "--reeval-suites", "plus_libero_10_no_lang"],
+    )
+
+    captured = capsys.readouterr()
+    lines = [line for line in captured.out.splitlines() if line]
+    assert len(lines) == 1
+    fields = lines[0].split("\t")
+    assert fields[0] == "eval-plus"
+    assert "eval_modalities.language=False" in fields
+    assert not csv_path.exists()
+    assert len(list(csv_path.parent.glob("results_*.csv"))) == 1
+
+
+def test_main_skip_modality_off_flag_suppresses_the_four_lines(tmp_path, monkeypatch, capsys):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    _run_plan_cli(monkeypatch, ["--train-folder", str(train_folder), "--skip-modality-off"])
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert [line.split("\t")[0] for line in lines] == ["eval", "eval-plus"]
 
 
 # ---------------------------------------------------------------------------
@@ -527,3 +847,151 @@ def test_write_severity_csv_with_absent_orig_csv_path_leaves_baseline_columns_em
         rows = list(csv.DictReader(f))
     total = next(r for r in rows if r["axis"] == "total")
     assert total["orig_n"] == ""
+
+
+def test_write_severity_csv_writes_into_a_modality_off_suite_dir(tmp_path):
+    modality_off_csv = tmp_path / "eval_logs" / "last" / "plus_libero_10_no_static" / "result.csv"
+    write_csv(modality_off_csv, [_row(False, True, True, True)])
+
+    result = write_severity_csv(modality_off_csv)
+
+    assert result == modality_off_csv.parent / "severity_sr.csv"
+    assert result.parent.name == "plus_libero_10_no_static"
+
+
+# ---------------------------------------------------------------------------
+# modality_off_csv_paths / artifact_members
+# ---------------------------------------------------------------------------
+
+
+def test_modality_off_csv_paths_point_at_the_new_suite_dirs(tmp_path):
+    train_folder = tmp_path / "run"
+    checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
+
+    paths = modality_off_csv_paths(str(train_folder), checkpoint, "libero_10", use_proprio=True)
+
+    assert set(paths) == set(MODALITY_OFF_VARIANTS)
+    assert paths["plus_no_static"].parent.name == "plus_libero_10_no_static"
+
+
+def test_modality_off_csv_paths_omits_no_proprio_when_not_applicable(tmp_path):
+    train_folder = tmp_path / "run"
+    checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
+
+    paths = modality_off_csv_paths(str(train_folder), checkpoint, "libero_10", use_proprio=False)
+
+    assert "plus_no_proprio" not in paths
+    assert len(paths) == 3
+
+
+def _seed_modality_off_csv(train_folder, suffix, benchmark="libero_10", checkpoint_name_="last", row=None):
+    path = train_folder / "eval_logs" / checkpoint_name_ / f"plus_{benchmark}_{suffix}" / "result.csv"
+    write_csv(path, [row or _row(True, True, True, True)])
+    return path
+
+
+def test_artifact_members_includes_every_present_modality_off_csv_and_its_severity_sibling(tmp_path):
+    train_folder = tmp_path / "run"
+    orig_csv = train_folder / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    plus_csv = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True)])
+    modality_off_csvs = {
+        "plus_no_static": _seed_modality_off_csv(train_folder, "no_static"),
+        "plus_no_wrist": _seed_modality_off_csv(train_folder, "no_wrist"),
+        "plus_no_lang": _seed_modality_off_csv(train_folder, "no_lang"),
+        "plus_no_proprio": _seed_modality_off_csv(train_folder, "no_proprio"),
+    }
+
+    members = artifact_members(orig_csv, plus_csv, modality_off_csvs, pid_txt=None)
+    names = {name for _path, name in members}
+
+    assert names == {
+        "libero_plus.csv", "severity_sr.csv",
+        "libero_plus_no_static.csv", "severity_sr_no_static.csv",
+        "libero_plus_no_wrist.csv", "severity_sr_no_wrist.csv",
+        "libero_plus_no_lang.csv", "severity_sr_no_lang.csv",
+        "libero_plus_no_proprio.csv", "severity_sr_no_proprio.csv",
+    }
+
+
+def test_artifact_members_member_names_are_unique(tmp_path):
+    train_folder = tmp_path / "run"
+    orig_csv = train_folder / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    write_csv(orig_csv, [_row(True, True, True, True)])
+    plus_csv = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True)])
+    modality_off_csvs = {"plus_no_static": _seed_modality_off_csv(train_folder, "no_static")}
+    pid_txt = train_folder / "eval_logs" / "last" / "orig_libero_10" / "pid_modality.txt"
+    pid_txt.write_text("dummy")
+
+    members = artifact_members(orig_csv, plus_csv, modality_off_csvs, pid_txt)
+    names = [name for _path, name in members]
+
+    assert len(names) == len(set(names))
+
+
+def test_artifact_members_skips_absent_modality_off_csvs(tmp_path):
+    train_folder = tmp_path / "run"
+    orig_csv = train_folder / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    plus_csv = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True)])
+    modality_off_csvs = {
+        "plus_no_static": _seed_modality_off_csv(train_folder, "no_static"),
+        "plus_no_wrist": train_folder / "eval_logs" / "last" / "plus_libero_10_no_wrist" / "result.csv",  # not written
+    }
+
+    members = artifact_members(orig_csv, plus_csv, modality_off_csvs, pid_txt=None)
+    names = {name for _path, name in members}
+
+    assert "libero_plus_no_static.csv" in names
+    assert "libero_plus_no_wrist.csv" not in names
+    assert "severity_sr_no_wrist.csv" not in names
+
+
+def test_artifact_members_severity_failure_drops_only_that_member(tmp_path, monkeypatch, capsys):
+    train_folder = tmp_path / "run"
+    orig_csv = train_folder / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    plus_csv = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True)])
+    modality_off_csvs = {"plus_no_static": _seed_modality_off_csv(train_folder, "no_static")}
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(severity_sr, "collect", _raise)
+
+    members = artifact_members(orig_csv, plus_csv, modality_off_csvs, pid_txt=None)
+    names = {name for _path, name in members}
+
+    assert "libero_plus_no_static.csv" in names
+    assert not any(name.startswith("severity_sr") for name in names)
+    assert "boom" in capsys.readouterr().err
+
+
+def test_artifact_members_empty_when_nothing_exists(tmp_path):
+    train_folder = tmp_path / "run"
+    orig_csv = train_folder / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    plus_csv = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+
+    assert artifact_members(orig_csv, plus_csv, {}, pid_txt=None) == []
+
+
+def test_artifact_members_modality_off_severity_uses_the_orig_baseline(tmp_path):
+    train_folder = tmp_path / "run"
+    orig_csv = train_folder / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    orig_row = _row(False, True, True, True)
+    orig_row.update({"task_name": "foo", "init_state_idx": 0})
+    write_csv(orig_csv, [orig_row])
+    plus_csv = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True)])
+    modality_off_row = _row(False, True, True, True)
+    modality_off_row.update({"task_name": "foo_initstate_50", "task_category": "Robot Initial States", "difficulty_level": "1"})
+    modality_off_csvs = {"plus_no_static": _seed_modality_off_csv(train_folder, "no_static", row=modality_off_row)}
+
+    members = artifact_members(orig_csv, plus_csv, modality_off_csvs, pid_txt=None)
+    sev_path = next(path for path, name in members if name == "severity_sr_no_static.csv")
+
+    with open(sev_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    total = next(r for r in rows if r["axis"] == "total")
+    assert total["orig_n"] == "1"

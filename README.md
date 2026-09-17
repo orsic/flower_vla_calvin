@@ -524,7 +524,11 @@ Every `./run.sh eval` / `./run.sh eval-plus` run writes one row per episode to:
 e.g. `$CKPT_DROP/eval_logs/last/plus_libero_10/result.csv`. `checkpoint_name` is the
 checkpoint file's stem (`last.ckpt` → `last`) or, for a HuggingFace-layout checkpoint
 directory, the directory name. Override the whole path with `csv_dir=<path>` when
-`train_folder` isn't writable (e.g. a shared read-only checkpoint). Re-running (e.g. one `task_category` at a time) **merges**
+`train_folder` isn't writable (e.g. a shared read-only checkpoint) — this is exactly how
+`./run.sh pipeline`'s modality-withheld LIBERO-Plus evals (see
+[Pipeline](#pipeline-automated-post-training-evaluation) below) each land in their own
+`plus_<benchmark_name>_no_<modality>/result.csv` instead of the default
+`<variant>_<benchmark_name>` layout. Re-running (e.g. one `task_category` at a time) **merges**
 into the existing file — a rerun of the same task/episode/checkpoint replaces that row in
 place, everything else is kept — so running all 7 Plus categories separately accumulates
 into one complete `result.csv`. On multi-GPU, each worker writes `result_rank<i>.csv`
@@ -787,12 +791,38 @@ manually for it.
 It reads `<train_run_dir>/.hydra/config.yaml` to branch:
 
 - **Regular training** (`model.modality_dropout=False`): one full-modality LIBERO eval, then
-  one full-modality LIBERO-Plus eval.
+  one full-modality LIBERO-Plus eval, then one LIBERO-Plus eval per withheld modality (below).
 - **`train-dropout` runs** (`model.modality_dropout=True`): every non-empty combination of
   `{rgb_static, rgb_gripper, language}` on LIBERO — 7 combos, or 14 if the run also used
   `model.use_proprio=True` (each token combo crossed with proprio on/off; "proprio only" is
   never evaluated, since the model requires at least one vision/language modality) — then one
-  full-modality LIBERO-Plus eval.
+  full-modality LIBERO-Plus eval, then one LIBERO-Plus eval per withheld modality (below).
+
+**LIBERO-Plus with one modality withheld at inference.** In addition to the full-modality
+LIBERO-Plus eval, the pipeline plans 4 more, in this order — each with exactly one of
+`rgb_gripper` (3rd-person/wrist), `rgb_static` (1st-person/agentview), `proprio`, or
+`language` off and the other three on — using the same `eval_modalities.*` mechanism as
+[Modality-ablation eval](#evaluation-results-csv) above. Each writes to its own
+`plus_<benchmark>_no_<modality>/result.csv` (`no_wrist`/`no_static`/`no_proprio`/`no_lang`) via
+an explicit `csv_dir=` override — never merged into `plus_<benchmark>/result.csv`, since
+`scripts/perturbation_sr.py`/`scripts/severity_sr.py` both assume a LIBERO-Plus `result.csv`
+holds exactly one modality combo. `benchmark_name=` on these lines stays the real LIBERO
+benchmark-registry key (e.g. `libero_10`); the modality suffix can only travel via `csv_dir=`.
+`no_proprio` is never planned for a `model.use_proprio=False` checkpoint — `EvaluateLibero`
+raises on `eval_modalities.proprio=False` there (there is no proprioception to withhold), so
+planning it would crash the eval container, not just waste a duplicate run.
+
+Since this makes the LIBERO-Plus portion of the pipeline take roughly 5x as long (each of the
+4 extra evals covers the same ~2519 LIBERO-Plus tasks as the full-modality one),
+`PIPELINE_SKIP_MODALITY_OFF=1` skips planning all 4 — e.g. to keep `train`/`train-dropout`'s
+auto-chained pipeline call from ballooning while queuing several trainings back to back:
+
+```bash
+PIPELINE_SKIP_MODALITY_OFF=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
+```
+
+Catch the skipped evals up later the same way as any other suite, via `PIPELINE_REEVAL_SUITES`
+below (e.g. `PIPELINE_REEVAL_SUITES=plus_libero_10_no_static,plus_libero_10_no_lang`).
 
 Every combo appends into the same `result.csv` (see [Evaluation results (CSV)](#evaluation-results-csv)
 above), so a dropout run's file ends up exactly the "full sweep" `scripts/pid_modality.py`
@@ -811,19 +841,24 @@ re-evaluating everything:
 PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
 ```
 
-On a run whose `result.csv` files already cover every combo, `PIPELINE_RESUME=1` plans
-nothing and goes straight to the upload step below — the way to regenerate and re-upload
-`pid_modality.txt`/`severity_sr.csv` (e.g. after a fix to either script) with no GPU work
-at all.
+On a run whose `result.csv` files already cover every combo (including all 4
+modality-off suites — resume covers those exactly like `orig_<bench>`/`plus_<bench>`),
+`PIPELINE_RESUME=1` plans nothing and goes straight to the upload step below — the way to
+regenerate and re-upload `pid_modality.txt`/`severity_sr.csv` (e.g. after a fix to either
+script) with no GPU work at all.
 
 `PIPELINE_REEVAL=1` does the opposite: instead of merging into the existing `result.csv`
 (which keeps every row the new run doesn't overwrite — stale rows from a category or
 modality combo no longer evaluated), it backs the old file up to `results_<mtime>.csv`
 (named for the old file's own modification time) and re-plans that suite from empty.
 `PIPELINE_REEVAL_SUITES` narrows *which* suites — a comma-separated list of result
-directory names — leaving the rest untouched and unevaluated; omitted, `PIPELINE_REEVAL=1`
-re-evaluates every suite for the run's benchmark. An invalid suite name (wrong benchmark,
-typo) aborts before anything runs.
+directory names, one of `orig_<bench>`, `plus_<bench>`, or `plus_<bench>_no_<modality>`
+(`no_wrist`/`no_static`/`no_proprio`/`no_lang`) — leaving the rest untouched and
+unevaluated; omitted, `PIPELINE_REEVAL=1` re-evaluates every suite for the run's
+benchmark. An invalid suite name (wrong benchmark, typo) aborts before anything runs; a
+suite name that's merely inapplicable to this run (`plus_<bench>_no_proprio` on a
+`model.use_proprio=False` checkpoint) is skipped with a note on stderr instead — a real,
+just-not-here suite name is a milder case than a typo.
 
 ```bash
 # Re-evaluate everything, keeping the old numbers as a timestamped backup
@@ -832,6 +867,10 @@ PIPELINE_REEVAL=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-
 # Re-evaluate only LIBERO-Plus, e.g. after a prompt/scoring fix that only affects it --
 # orig_libero_10/result.csv is left alone
 PIPELINE_REEVAL=1 PIPELINE_REEVAL_SUITES=plus_libero_10 \
+    ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
+
+# Re-evaluate only the language-withheld LIBERO-Plus eval
+PIPELINE_REEVAL=1 PIPELINE_REEVAL_SUITES=plus_libero_10_no_lang \
     ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
 ```
 
@@ -846,13 +885,18 @@ and on W&B, `upload` simply logs a new `evaluation` artifact version; `./run.sh 
 already reads the newest one, and older versions remain as W&B-side history.
 
 Once every eval finishes, it runs `scripts/pid_modality.py` over the LIBERO `result.csv` and
-`scripts/severity_sr.py` over the LIBERO-Plus `result.csv` (writing `severity_sr.csv` next
-to it), and uploads both `result.csv` files plus the PID and severity output as a W&B
-artifact (`eval-<run_id>`, type `evaluation`) attached to the *training* run — same
-project/entity/id `setup_logger` gave it in `flower/training_libero.py`, reconstructed from
-the run directory name, so the artifact lands next to the training curves without a
-separate W&B run being created. A missing/broken LIBERO-Plus assets checkout only drops
-`severity_sr.csv` from the artifact (with a warning) rather than failing the whole upload.
+`scripts/severity_sr.py` over the LIBERO-Plus `result.csv` and over each present
+modality-off `result.csv` (writing a `severity_sr.csv` next to each), and uploads all of
+that as a W&B artifact (`eval-<run_id>`, type `evaluation`) attached to the *training*
+run — same project/entity/id `setup_logger` gave it in `flower/training_libero.py`,
+reconstructed from the run directory name, so the artifact lands next to the training
+curves without a separate W&B run being created. Every member is optional and simply
+omitted when its source `result.csv` doesn't exist yet (e.g. a suite not evaluated, or
+`no_proprio` on a non-proprio run): `libero_orig.csv`, `libero_plus.csv`,
+`pid_modality.txt`, `severity_sr.csv`, plus, per present modality-off suite,
+`libero_plus_no_<modality>.csv` and `severity_sr_no_<modality>.csv` — up to 12 members
+total. A missing/broken LIBERO-Plus assets checkout only drops the affected
+`severity_sr*.csv` member(s) (with a warning) rather than failing the whole upload.
 Prerequisite: `./run.sh download-plus` (once, for LIBERO-Plus assets, and specifically for
 `severity_sr.csv`'s Light Conditions rows).
 
@@ -860,9 +904,10 @@ Prerequisite: `./run.sh download-plus` (once, for LIBERO-Plus assets, and specif
 
 `scripts/analyze_wandb.py` (`./run.sh analyze`) reads that artifact back and reports the
 PID decomposition (`scripts/pid_modality.py`), the per-perturbation-category success rate
-(`scripts/perturbation_sr.py`), and the success rate by physical perturbation severity and
+(`scripts/perturbation_sr.py`), the success rate by physical perturbation severity and
 by upstream `difficulty_level` (`scripts/severity_sr.py`, in two separate tables, same
-split as that script's own printed report) — either for one or more named runs, or
+split as that script's own printed report), and the same per-category success rate for
+each present modality-withheld LIBERO-Plus eval — either for one or more named runs, or
 averaged with min/max across every run matching a W&B config filter:
 
 ```bash
@@ -872,6 +917,10 @@ averaged with min/max across every run matching a W&B config filter:
     '{"config.modality_dropout": true, "config.modality_dropout_proprio_keep_p": 0.5}'
 
 ./run.sh analyze filter --modalities rgb_static,rgb_gripper,language,proprio
+
+# Also show the severity / difficulty_level breakdown for each withheld-modality eval,
+# not just its per-category success rate
+./run.sh analyze run libero_10_dropout_2026-09-09_13-56-20 --modality-off-detail full
 ```
 
 Requires `WANDB_API_KEY` (vars.env or shell env). Filter keys are matched against the
@@ -907,6 +956,25 @@ bin, the `plus_n`/`orig_n` columns render as a single number when every run agre
 A run whose artifact lacks `libero_orig.csv` simply contributes nothing to these three
 tables; if none do, they're omitted entirely and only the unpaired tables print.
 
+**Modality-absent LIBERO-Plus reports.** For each of the (up to 4) modality-withheld
+LIBERO-Plus evals present in a run's artifact, single-run mode prints a
+`=== <run_id>: LIBERO-Plus (no_<modality>) ===` block with the same per-category success
+rate table as the full-modality report; pass `--modality-off-detail full` to also add its
+severity/difficulty_level breakdown. A variant that's applicable to the run but missing
+from the artifact prints a `(no no_<modality> eval)` placeholder; `no_proprio` on a
+`model.use_proprio=False` checkpoint prints nothing at all for that run — it's not
+applicable, not incomplete. Aggregate (`filter`) mode adds one combined table, "LIBERO-Plus
+with one modality withheld", with rows labelled `<category> [no_<modality>]` (`OVERALL`
+rows last) so the same category's four ablations sit next to each other — plus the same
+two severity-axis tables under `--modality-off-detail full` — omitted entirely when no
+matched run has any modality-off data. Two caveats worth knowing when reading these
+numbers: withholding `language` makes the Language Instructions perturbation category
+degenerate (every LLM rewrite of an instruction becomes the same no-language input, so
+that category stops measuring rewrite robustness); and the paired plus/orig baseline
+(above) is deliberately *not* shown for modality-off evals — a non-dropout run's
+`libero_orig.csv` never has a modality-off combo, so every such baseline cell would be
+`orig_n=0`/`nan`.
+
 `--filters` can't select runs by *trained* modality set: W&B stores `modalities` as a
 Python repr string (a `DictConfig` passed through `str()` on its way into the config), not
 a nested value, so `config.modalities.rgb_static` can't be matched, and the key set itself
@@ -919,12 +987,14 @@ regardless of what `modalities` says).
 
 Before printing results, it always prints the run ID(s) or filter used, and a `WARNING:`
 block for anything that would otherwise silently skew the report: a matched run with no
-evaluation artifact, an artifact missing `libero_orig.csv`/`libero_plus.csv`, a run whose
-severity breakdown couldn't be computed, or runs that don't share the same evaluated
-modality combos, episodes, LIBERO-Plus categories, or severity bins. Zero matched runs is
-a hard error; everything else is reported and still aggregated, with a `runs` column on
-every table so a cell backed by fewer runs than the header claims is visible rather than
-hidden.
+evaluation artifact, an artifact missing `libero_orig.csv`/`libero_plus.csv` or an
+applicable-but-absent `libero_plus_no_<modality>.csv` (never `no_proprio` on a
+`model.use_proprio=False` run — that one simply isn't applicable), a run whose severity
+breakdown (full-modality or modality-off) couldn't be computed, or runs that don't share
+the same evaluated modality combos, episodes, LIBERO-Plus categories, or severity bins.
+Zero matched runs is a hard error; everything else is reported and still aggregated, with
+a `runs` column on every table so a cell backed by fewer runs than the header claims is
+visible rather than hidden.
 
 #### Common Issues
 

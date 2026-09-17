@@ -78,7 +78,10 @@ def _run_pipeline(tmp_path, extra_env=None):
     env["FAKE_EVAL_LOG"] = str(eval_log)
     env["FAKE_PLAN_LOG"] = str(plan_log)
     env["FAKE_UPLOAD_LOG"] = str(upload_log)
-    for key in ("PIPELINE_RESUME", "PIPELINE_REEVAL", "PIPELINE_REEVAL_SUITES", "FAKE_PLAN_EXIT", "FAKE_PLAN_EMPTY"):
+    for key in (
+        "PIPELINE_RESUME", "PIPELINE_REEVAL", "PIPELINE_REEVAL_SUITES", "PIPELINE_SKIP_MODALITY_OFF",
+        "FAKE_PLAN_EXIT", "FAKE_PLAN_EMPTY",
+    ):
         env.pop(key, None)
     env.update(extra_env or {})
 
@@ -133,6 +136,26 @@ def test_pipeline_passes_reeval_and_suites_when_both_set(tmp_path):
 
     assert "--reeval" in plan_lines[0]
     assert "--reeval-suites plus_libero_10" in plan_lines[0]
+
+
+def test_pipeline_passes_modality_off_reeval_suite_through(tmp_path):
+    _, _, plan_lines, _ = _run_pipeline(
+        tmp_path, extra_env={"PIPELINE_REEVAL": "1", "PIPELINE_REEVAL_SUITES": "plus_libero_10_no_static"}
+    )
+
+    assert "--reeval-suites plus_libero_10_no_static" in plan_lines[0]
+
+
+def test_pipeline_omits_skip_modality_off_flag_by_default(tmp_path):
+    _, _, plan_lines, _ = _run_pipeline(tmp_path)
+
+    assert "--skip-modality-off" not in plan_lines[0]
+
+
+def test_pipeline_passes_skip_modality_off_flag_when_env_set(tmp_path):
+    _, _, plan_lines, _ = _run_pipeline(tmp_path, extra_env={"PIPELINE_SKIP_MODALITY_OFF": "1"})
+
+    assert "--skip-modality-off" in plan_lines[0]
 
 
 def test_pipeline_aborts_when_plan_fails(tmp_path):

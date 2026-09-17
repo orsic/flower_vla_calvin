@@ -33,19 +33,34 @@ Branching (read from <train-folder>/.hydra/config.yaml):
     model.use_proprio=True (14 combos total), plus one full-modality "eval-plus" line.
     "proprio only" is never emitted: flower_eval_libero.py rejects an eval with all three
     token modalities off.
+  - Either way, plus one more "eval-plus" line per single withheld modality
+    (MODALITY_OFF_VARIANTS: rgb_gripper/rgb_static/proprio/language off in turn, the
+    other three on) -- each writing to its own plus_<bench>_no_<modality>/result.csv via
+    an explicit csv_dir= override, since perturbation_sr.py/severity_sr.py both assume
+    exactly one modality combo per LIBERO-Plus result.csv. The proprio variant is never
+    emitted for a model.use_proprio=False checkpoint: flower_eval_libero.py's
+    EvaluateLibero raises on eval_modalities.proprio=False there (there is no
+    proprioception to withhold), so planning it would crash the eval container, not just
+    waste a duplicate run. --skip-modality-off (PIPELINE_SKIP_MODALITY_OFF=1) suppresses
+    all 4 of these lines, e.g. to keep a chained ./run.sh train-dropout -> pipeline run
+    from taking ~5x longer on its LIBERO-Plus portion; catch them up later with
+    `--reeval --reeval-suites plus_<bench>_no_<modality>`.
 
 --overrides (after a literal "--") are Hydra overrides appended, unmodified, to every
 emitted line -- last on the line, so they take precedence (see run.sh's run_train/eval
 helpers for the same last-wins convention). They are also inspected for the handful of
 keys (benchmark_name, checkpoint, train_folder, csv_dir) that change which result.csv
 `plan --resume` and `upload` read, so overriding e.g. benchmark_name redirects both. Do not
-pass eval_modalities.* through -- it would fight the combo sweep.
+pass eval_modalities.* or csv_dir through -- the first fights the combo sweep, the second
+collapses every LIBERO-Plus suite (including all 4 modality-off ones) into one file.
 
 `upload` runs scripts/pid_modality.py on the LIBERO (orig) result.csv and
-scripts/severity_sr.py on the LIBERO-Plus result.csv, then attaches that output plus both
-result.csv files to a W&B artifact on the *training* run (same project/entity/id as
-training_libero.py's setup_logger derives from the run dir). Since `plan --resume` treats
-every combo already in a result.csv as done, `PIPELINE_RESUME=1 ./run.sh pipeline
+scripts/severity_sr.py on the LIBERO-Plus result.csv and on each present modality-off
+result.csv, then attaches all of that (up to 2 + 2*4 = 10 files, plus the 2 raw orig/plus
+result.csv's -- 12 total) to a W&B artifact on the *training* run (same project/entity/id
+as training_libero.py's setup_logger derives from the run dir); every member is optional
+and simply omitted when its source result.csv doesn't exist yet. Since `plan --resume`
+treats every combo already in a result.csv as done, `PIPELINE_RESUME=1 ./run.sh pipeline
 <train_run_dir>` on a fully-evaluated run plans nothing and goes straight to `upload` --
 the way to regenerate and re-upload these derived files without re-evaluating anything.
 """
@@ -71,6 +86,18 @@ FLAG_COLUMNS = {
     "rgb_gripper": "use_rgb_gripper",
     "language": "use_language",
     "proprio": "use_proprio",
+}
+
+# Variant token -> (eval_modalities key to switch off, result-directory/artifact-member
+# suffix). Suffixes reuse compare_eval_csvs.MODALITY_COLUMNS' short names
+# (wrist/static/proprio/lang) rather than a second vocabulary. Iteration order is the
+# canonical plan/report order (3rd-person, then 1st-person, then proprio, then
+# language), here and in analyze_wandb.py.
+MODALITY_OFF_VARIANTS = {
+    "plus_no_wrist": ("rgb_gripper", "no_wrist"),
+    "plus_no_static": ("rgb_static", "no_static"),
+    "plus_no_proprio": ("proprio", "no_proprio"),
+    "plus_no_lang": ("language", "no_lang"),
 }
 
 
@@ -102,6 +129,57 @@ def modality_combos(use_proprio: bool) -> List[Dict[str, bool]]:
     return combos
 
 
+def modality_off_combo(variant: str) -> Dict[str, bool]:
+    """full_modality_combo() with exactly the one modality MODALITY_OFF_VARIANTS[variant]
+    names switched off."""
+    key, _suffix = MODALITY_OFF_VARIANTS[variant]
+    combo = full_modality_combo()
+    combo[key] = False
+    return combo
+
+
+def all_variants(use_proprio: bool) -> List[str]:
+    """Every result-directory variant a run can be evaluated under, in plan order.
+    "plus_no_proprio" is absent when use_proprio is False: EvaluateLibero.__init__
+    raises on eval_modalities.proprio=False there (flower_eval_libero.py) -- it is
+    structurally not applicable to such a run, not an eval that merely hasn't run yet."""
+    variants = ["orig", "plus"] + list(MODALITY_OFF_VARIANTS)
+    if not use_proprio:
+        variants.remove("plus_no_proprio")
+    return variants
+
+
+def suite_dir_name(variant: str, benchmark_name: str) -> str:
+    """Result-directory name for one variant. orig/plus keep eval_records.result_dir's
+    "<variant>_<suite>" layout; a modality-off suite is "plus_<suite>_no_<modality>" --
+    the benchmark has to stay in the middle since benchmark_name= (the LIBERO
+    benchmark-registry key) can't itself carry the modality suffix, so that suffix can
+    only live in the directory name."""
+    if variant in MODALITY_OFF_VARIANTS:
+        _key, suffix = MODALITY_OFF_VARIANTS[variant]
+        return f"plus_{benchmark_name}_{suffix}"
+    return f"{variant}_{benchmark_name}"
+
+
+def modality_off_member(variant: str) -> str:
+    """W&B artifact member name for one modality-off result.csv."""
+    _key, suffix = MODALITY_OFF_VARIANTS[variant]
+    return f"libero_plus_{suffix}.csv"
+
+
+def modality_off_severity_member(variant: str) -> str:
+    """W&B artifact member name for one modality-off severity_sr.csv -- distinct from
+    the full-modality suite's "severity_sr.csv" even though both files are literally
+    named severity_sr.csv on disk (they live in different suite directories)."""
+    _key, suffix = MODALITY_OFF_VARIANTS[variant]
+    return f"severity_sr_{suffix}.csv"
+
+
+def _use_proprio(train_folder: str) -> bool:
+    """model.use_proprio from <train_folder>/.hydra/config.yaml."""
+    return bool(OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml").model.use_proprio)
+
+
 def parse_overrides(overrides: List[str]) -> Dict[str, str]:
     """"key=value" tokens -> dict, last occurrence wins (mirrors Hydra's own semantics)."""
     parsed = {}
@@ -112,16 +190,14 @@ def parse_overrides(overrides: List[str]) -> Dict[str, str]:
     return parsed
 
 
-def _csv_path(train_folder: str, checkpoint: str, variant: str, benchmark_name: str) -> Path:
+def _csv_path_for_suite(train_folder: str, checkpoint: str, suite_dir: str) -> Path:
     """Same layout as eval_records.result_dir, without its mkdir side effect (plan/upload
     only read this path, never create it)."""
-    return (
-        Path(train_folder)
-        / "eval_logs"
-        / checkpoint_name(checkpoint)
-        / f"{variant}_{benchmark_name}"
-        / "result.csv"
-    )
+    return Path(train_folder) / "eval_logs" / checkpoint_name(checkpoint) / suite_dir / "result.csv"
+
+
+def _csv_path(train_folder: str, checkpoint: str, variant: str, benchmark_name: str) -> Path:
+    return _csv_path_for_suite(train_folder, checkpoint, suite_dir_name(variant, benchmark_name))
 
 
 def _variant_csv_path(
@@ -140,16 +216,22 @@ def _variant_csv_path(
     return _csv_path(resolved_train_folder, checkpoint, variant, benchmark_name)
 
 
-def resolve_reeval_variants(suites_arg: Optional[str], benchmark_name: str) -> Set[str]:
-    """Parse --reeval-suites into a set of variants ("orig"/"plus") to re-evaluate.
+def resolve_reeval_variants(
+    suites_arg: Optional[str], benchmark_name: str, use_proprio: bool = True
+) -> Set[str]:
+    """Parse --reeval-suites into a set of variants ("orig"/"plus"/one of
+    MODALITY_OFF_VARIANTS) to re-evaluate.
 
     suites_arg is None when --reeval-suites wasn't passed at all -- re-evaluate every
-    suite for this benchmark. When passed, each comma-separated token must name a result
-    directory exactly (e.g. "plus_libero_10"), checked against the *resolved*
-    benchmark_name so a trailing benchmark_name= override is honored. A token for a
-    different benchmark is almost certainly a mistake, not something to silently ignore.
+    suite this run can have. When passed, each comma-separated token must name a result
+    directory exactly (e.g. "plus_libero_10", "plus_libero_10_no_static"), checked
+    against the *resolved* benchmark_name so a trailing benchmark_name= override is
+    honored. A token for a different benchmark is almost certainly a mistake, not
+    something to silently ignore -- but a token that names a real suite this
+    (use_proprio=False) run simply can't have (plus_<bench>_no_proprio) is a milder case:
+    skipped with a note, not an error, unless it's the only suite named.
     """
-    valid = {f"orig_{benchmark_name}": "orig", f"plus_{benchmark_name}": "plus"}
+    valid = {suite_dir_name(v, benchmark_name): v for v in all_variants(use_proprio)}
     if suites_arg is None:
         return set(valid.values())
     tokens = [token.strip() for token in suites_arg.split(",") if token.strip()]
@@ -158,14 +240,26 @@ def resolve_reeval_variants(suites_arg: Optional[str], benchmark_name: str) -> S
             f"--reeval-suites was given but named no suite -- expected a comma-separated "
             f"list from {sorted(valid)}"
         )
+    not_applicable = {suite_dir_name(v, benchmark_name) for v in all_variants(True)} - set(valid)
     variants: Set[str] = set()
     for token in tokens:
+        if token in not_applicable:
+            print(
+                f"reeval: skipping {token!r} -- this checkpoint has model.use_proprio=False, "
+                "so there is no proprioception to withhold",
+                file=sys.stderr,
+            )
+            continue
         if token not in valid:
             raise ValueError(
                 f"--reeval-suites: {token!r} is not a result directory for benchmark "
                 f"{benchmark_name!r} -- expected one of {sorted(valid)}"
             )
         variants.add(valid[token])
+    if not variants:
+        raise ValueError(
+            f"--reeval-suites named no suite that applies to this run -- expected one of {sorted(valid)}"
+        )
     return variants
 
 
@@ -175,6 +269,7 @@ def rotate_reeval_csvs(
     resolved_train_folder: str,
     checkpoint: str,
     benchmark_name: str,
+    use_proprio: bool = True,
 ) -> List[Optional[Path]]:
     """Back up each selected variant's result.csv so plan_lines starts it from empty.
 
@@ -182,11 +277,11 @@ def rotate_reeval_csvs(
     per-invocation or after planning both silently lose data.
     """
     csv_dir_override = parsed.get("csv_dir")
-    if csv_dir_override and variants != {"orig", "plus"}:
+    if csv_dir_override and variants != set(all_variants(use_proprio)):
         raise ValueError(
-            f"csv_dir={csv_dir_override} makes orig and plus share one result.csv; "
-            "--reeval-suites cannot rotate one without discarding the other. Select "
-            "both suites, or drop csv_dir."
+            f"csv_dir={csv_dir_override} makes every suite share one result.csv; "
+            "--reeval-suites cannot rotate one without discarding the others. Select "
+            "every suite, or drop csv_dir."
         )
 
     paths: List[Path] = []
@@ -246,6 +341,7 @@ def plan_lines(
     resume: bool,
     extra_overrides: List[str],
     reeval_variants: Optional[Set[str]] = None,
+    skip_modality_off: bool = False,
 ) -> List[Tuple[str, List[str]]]:
     """reeval_variants, when given, restricts the plan to those variants only -- the
     caller (main()) is expected to have already rotated their result.csv files aside, so
@@ -281,6 +377,20 @@ def plan_lines(
         plus_combo = full_modality_combo()
         if not already_done("plus", plus_combo):
             overrides = _eval_overrides(benchmark_name, resolved_train_folder, checkpoint, plus_combo)
+            lines.append(("eval-plus", overrides + extra_overrides))
+
+    if not skip_modality_off:
+        for variant in all_variants(use_proprio):
+            if variant not in MODALITY_OFF_VARIANTS:
+                continue
+            if reeval_variants is not None and variant not in reeval_variants:
+                continue
+            combo = modality_off_combo(variant)
+            if already_done(variant, combo):
+                continue
+            csv_dir = _csv_path(resolved_train_folder, checkpoint, variant, benchmark_name).parent
+            overrides = _eval_overrides(benchmark_name, resolved_train_folder, checkpoint, combo)
+            overrides.append(f"csv_dir={csv_dir}")
             lines.append(("eval-plus", overrides + extra_overrides))
 
     return lines
@@ -324,12 +434,62 @@ def write_severity_csv(plus_csv: Path, orig_csv: Optional[Path] = None) -> Optio
     return csv_path
 
 
+def modality_off_csv_paths(
+    train_folder: str, checkpoint: str, benchmark_name: str, use_proprio: bool
+) -> Dict[str, Path]:
+    """variant -> result.csv path, for every modality-off suite this run can have --
+    plus_no_proprio is absent from the dict entirely when use_proprio is False (see
+    all_variants)."""
+    return {
+        variant: _csv_path(train_folder, checkpoint, variant, benchmark_name)
+        for variant in all_variants(use_proprio)
+        if variant in MODALITY_OFF_VARIANTS
+    }
+
+
+def artifact_members(
+    orig_csv: Path,
+    plus_csv: Path,
+    modality_off_csvs: Dict[str, Path],
+    pid_txt: Optional[Path],
+) -> List[Tuple[Path, str]]:
+    """(file, artifact member name) for every derived/raw file that actually exists.
+    Every member is optional: a suite that hasn't been evaluated yet, or whose severity
+    computation failed (missing LIBERO-Plus assets), is simply left out of the artifact
+    rather than failing the upload -- analyze_wandb.py reports it as missing instead."""
+    members: List[Tuple[Path, str]] = []
+    if orig_csv.exists():
+        members.append((orig_csv, "libero_orig.csv"))
+    if plus_csv.exists():
+        members.append((plus_csv, "libero_plus.csv"))
+    if pid_txt is not None:
+        members.append((pid_txt, "pid_modality.txt"))
+    severity_csv = write_severity_csv(plus_csv, orig_csv)
+    if severity_csv is not None:
+        members.append((severity_csv, "severity_sr.csv"))
+    for variant, csv_path in modality_off_csvs.items():
+        if not csv_path.exists():
+            continue
+        members.append((csv_path, modality_off_member(variant)))
+        # Same call as the full-modality suite above -- severity_sr keys the paired
+        # baseline on (modality_combo, base_task), so a dropout run's orig result.csv
+        # (which holds all 14 combos) supplies this same ablation's unperturbed LIBERO
+        # numbers here for free. A non-dropout run's orig (1 combo only) just yields
+        # orig_n=0 for this variant -- expected, not an error.
+        modality_off_severity_csv = write_severity_csv(csv_path, orig_csv)
+        if modality_off_severity_csv is not None:
+            members.append((modality_off_severity_csv, modality_off_severity_member(variant)))
+    return members
+
+
 def upload(train_folder: str, extra_overrides: List[str]) -> None:
     train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
     benchmark_name, resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
+    use_proprio = _use_proprio(train_folder)
 
     orig_csv = _csv_path(resolved_train_folder, checkpoint, "orig", benchmark_name)
     plus_csv = _csv_path(resolved_train_folder, checkpoint, "plus", benchmark_name)
+    modality_off_csvs = modality_off_csv_paths(resolved_train_folder, checkpoint, benchmark_name, use_proprio)
 
     pid_txt = None
     if orig_csv.exists():
@@ -343,10 +503,10 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
         pid_txt.write_text(result.stdout)
         print(result.stdout)
 
-    severity_csv = write_severity_csv(plus_csv, orig_csv)
+    members = artifact_members(orig_csv, plus_csv, modality_off_csvs, pid_txt)
 
-    if not orig_csv.exists() and not plus_csv.exists():
-        print(f"Nothing to upload: neither {orig_csv} nor {plus_csv} exists.")
+    if not any(p.exists() for p in [orig_csv, plus_csv, *modality_off_csvs.values()]):
+        print(f"Nothing to upload: no result.csv found under {orig_csv.parent.parent}.")
         return
 
     run_id = wandb_run_id(resolved_train_folder)
@@ -357,14 +517,8 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
         resume="allow",
     )
     artifact = wandb.Artifact(artifact_name(run_id), type="evaluation")
-    if orig_csv.exists():
-        artifact.add_file(str(orig_csv), name="libero_orig.csv")
-    if plus_csv.exists():
-        artifact.add_file(str(plus_csv), name="libero_plus.csv")
-    if pid_txt is not None:
-        artifact.add_file(str(pid_txt), name="pid_modality.txt")
-    if severity_csv is not None:
-        artifact.add_file(str(severity_csv), name="severity_sr.csv")
+    for path, name in members:
+        artifact.add_file(str(path), name=name)
     run.log_artifact(artifact)
     run.finish()
     print(f"Logged eval-{run_id} artifact to {train_cfg.logger.project}/{run_id}")
@@ -379,6 +533,7 @@ def main() -> None:
     plan_p.add_argument("--resume", action="store_true")
     plan_p.add_argument("--reeval", action="store_true")
     plan_p.add_argument("--reeval-suites", default=None)
+    plan_p.add_argument("--skip-modality-off", action="store_true")
     plan_p.add_argument("overrides", nargs="*")
 
     upload_p = subparsers.add_parser("upload")
@@ -395,16 +550,21 @@ def main() -> None:
         if args.reeval:
             benchmark_name, resolved_train_folder, checkpoint = _resolve(args.train_folder, args.overrides)
             parsed = parse_overrides(args.overrides)
+            use_proprio = _use_proprio(args.train_folder)
             try:
-                reeval_variants = resolve_reeval_variants(args.reeval_suites, benchmark_name)
+                reeval_variants = resolve_reeval_variants(args.reeval_suites, benchmark_name, use_proprio)
                 # Rotation must happen here, before plan_lines: see the module docstring
                 # and plan_lines' own docstring for why the reverse order silently loses
                 # data (resume would read the not-yet-rotated file and plan nothing).
-                rotate_reeval_csvs(reeval_variants, parsed, resolved_train_folder, checkpoint, benchmark_name)
+                rotate_reeval_csvs(
+                    reeval_variants, parsed, resolved_train_folder, checkpoint, benchmark_name, use_proprio
+                )
             except ValueError as exc:
                 sys.exit(str(exc))
 
-        for service, overrides in plan_lines(args.train_folder, args.resume, args.overrides, reeval_variants):
+        for service, overrides in plan_lines(
+            args.train_folder, args.resume, args.overrides, reeval_variants, args.skip_modality_off
+        ):
             print("\t".join([service] + overrides))
     elif args.cmd == "upload":
         upload(args.train_folder, args.overrides)

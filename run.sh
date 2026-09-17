@@ -252,15 +252,23 @@ case "$CMD" in
 
   pipeline)
     # Post-training evaluation for one completed training run: LIBERO (all modality
-    # combos for a dropout run, full-modality otherwise) + LIBERO-Plus, then upload the
-    # result.csv files + a scripts/pid_modality.py summary onto that run's W&B artifact.
-    # Trailing Hydra overrides reach both the planner and every eval it launches, e.g.:
+    # combos for a dropout run, full-modality otherwise) + LIBERO-Plus (full-modality,
+    # plus one eval per withheld modality: rgb_gripper/rgb_static/proprio/language),
+    # then upload the result.csv files + a scripts/pid_modality.py summary onto that
+    # run's W&B artifact. Trailing Hydra overrides reach both the planner and every eval
+    # it launches, e.g.:
     #   ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
     #   ./run.sh pipeline /saves/train_logs/libero_10/2026-09-08_10-00-00 eval_batch_size=32 n_eval=10
     #   PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/.../<run>   # skip evaluated combos
     #   PIPELINE_REEVAL=1 ./run.sh pipeline /saves/train_logs/.../<run>   # discard + redo everything
     #   PIPELINE_REEVAL=1 PIPELINE_REEVAL_SUITES=plus_libero_10 ./run.sh pipeline /saves/train_logs/.../<run>
     #                      # discard + redo only plus_libero_10; orig_libero_10 untouched
+    #   PIPELINE_REEVAL=1 PIPELINE_REEVAL_SUITES=plus_libero_10_no_lang ./run.sh pipeline /saves/train_logs/.../<run>
+    #                      # discard + redo only the language-withheld LIBERO-Plus eval
+    #   PIPELINE_SKIP_MODALITY_OFF=1 ./run.sh pipeline /saves/train_logs/.../<run>
+    #                      # skip the 4 modality-withheld LIBERO-Plus evals this run
+    #                      # (they make the LIBERO-Plus portion ~5x longer); catch them
+    #                      # up later with PIPELINE_REEVAL_SUITES=plus_<bench>_no_<modality>
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline <train_run_dir> [hydra_overrides...]" >&2
         exit 1
@@ -275,9 +283,12 @@ case "$CMD" in
             reeval_flag+=(--reeval-suites "$PIPELINE_REEVAL_SUITES")
         fi
     fi
+    skip_modality_off_flag=()
+    [[ -n "${PIPELINE_SKIP_MODALITY_OFF:-}" ]] && skip_modality_off_flag=(--skip-modality-off)
 
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell \
-        python scripts/eval_pipeline.py plan --train-folder "$train_dir" "${resume_flag[@]}" "${reeval_flag[@]}" -- "$@")"
+        python scripts/eval_pipeline.py plan --train-folder "$train_dir" \
+        "${resume_flag[@]}" "${reeval_flag[@]}" "${skip_modality_off_flag[@]}" -- "$@")"
 
     # Read every plan line into memory before launching anything -- a long-running eval
     # container previously held the loop's plan text on a shared fd for its entire
@@ -368,13 +379,19 @@ case "$CMD" in
     echo "  pipeline <train_run_dir> [hydra_overrides...]"
     echo "                     Full post-training eval for one run: LIBERO + LIBERO-Plus, or (if the"
     echo "                     run used model.modality_dropout) every modality combo on LIBERO + full"
-    echo "                     LIBERO-Plus. Uploads result.csv + scripts/pid_modality.py output to the"
-    echo "                     training run's W&B artifact. Trailing overrides reach every eval launched."
+    echo "                     LIBERO-Plus -- plus one more LIBERO-Plus eval per withheld modality"
+    echo "                     (rgb_gripper/rgb_static/proprio/language), each its own result.csv."
+    echo "                     Uploads result.csv + scripts/pid_modality.py output to the training"
+    echo "                     run's W&B artifact. Trailing overrides reach every eval launched."
     echo "                     Example: ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-.../"
     echo "                              PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/.../<run>"
-    echo "                     PIPELINE_REEVAL=1 [PIPELINE_REEVAL_SUITES=orig_<bench>,plus_<bench>]"
-    echo "                     backs up (results_<mtime>.csv) and re-runs the named suites from empty"
-    echo "                     instead of merging into them; omitting the suites list means all of them."
+    echo "                     PIPELINE_REEVAL=1 [PIPELINE_REEVAL_SUITES=orig_<bench>,plus_<bench>,"
+    echo "                     plus_<bench>_no_<modality>] backs up (results_<mtime>.csv) and re-runs"
+    echo "                     the named suites from empty instead of merging into them; omitting the"
+    echo "                     suites list means all of them."
+    echo "                     PIPELINE_SKIP_MODALITY_OFF=1 skips the 4 modality-withheld LIBERO-Plus"
+    echo "                     evals (they make the LIBERO-Plus portion ~5x longer); catch them up"
+    echo "                     later with PIPELINE_REEVAL_SUITES=plus_<bench>_no_<modality>."
     echo "  analyze <run|filter> ..."
     echo "                     Read the W&B evaluation artifact(s) ./run.sh pipeline uploaded and report"
     echo "                     PID + per-perturbation success rates. Needs WANDB_API_KEY."
