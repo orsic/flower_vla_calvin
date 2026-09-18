@@ -21,6 +21,8 @@ import torch
 import pytest
 from unittest.mock import MagicMock, patch
 
+from flower.evaluation.eval_records import rollout_seed
+
 
 # ---------------------------------------------------------------------------
 # 1. forward() lang_text dispatch (pure logic, no model needed)
@@ -430,6 +432,51 @@ def test_work_list_n_eval_1_still_batches_across_tasks():
     assert items == [(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)]
     batches = _chunk(items, batch_size=2)
     assert [len(b) for b in batches] == [2, 2, 1]  # ragged final batch, not dropped
+
+
+# ---------------------------------------------------------------------------
+# 5b. Per-episode noise seeding: evaluate_work_list's
+# seeds = [rollout_seed(base_seed, task_cache[idx]["task_name"], ep) for idx, ep in batch_items]
+# reads only (task_name, ep) -- never a batch/chunk/shard position -- so it can't
+# reproduce the old batch_seed(base_seed, batch_index) bug (a work item's seed
+# depending on where it lands in the flattened work list).
+# ---------------------------------------------------------------------------
+
+def _work_list_seeds(all_tasks, n_eval, task_names, batch_size, base_seed=0):
+    """Mirror evaluate_work_list's exact per-row seed expression, batch by batch."""
+    items = _build_work_items(all_tasks, n_eval)
+    seeds = {}
+    for batch in _chunk(items, batch_size):
+        for idx, ep in batch:
+            seeds[(idx, ep)] = rollout_seed(base_seed, task_names[idx], ep)
+    return seeds
+
+
+def test_work_list_seed_is_position_and_shard_independent():
+    """The same work item must derive the same seed regardless of task order,
+    eval_batch_size, or (equivalently) which GPU shard's all_tasks subset it's part
+    of -- exactly the property the old batch-ordinal seed lacked."""
+    task_names = {7: "task_g", 3: "task_c", 11: "task_k"}
+
+    forward = _work_list_seeds([7, 3, 11], n_eval=1, task_names=task_names, batch_size=2)
+    reverse = _work_list_seeds([11, 3, 7], n_eval=1, task_names=task_names, batch_size=2)
+    solo_batches = _work_list_seeds([7, 3, 11], n_eval=1, task_names=task_names, batch_size=1)
+    one_big_batch = _work_list_seeds([7, 3, 11], n_eval=1, task_names=task_names, batch_size=10)
+
+    assert forward[(3, 0)] == reverse[(3, 0)] == solo_batches[(3, 0)] == one_big_batch[(3, 0)]
+
+
+def test_work_list_and_per_task_seed_expressions_agree_for_the_same_episode():
+    """evaluate_task's per-row seed (rollout_seed(base_seed, task_name, episode_idx + k))
+    and evaluate_work_list's (rollout_seed(base_seed, task_name, ep)) must derive the
+    same value for the same (task_name, episode index) -- required for
+    scripts/severity_sr.py's orig-vs-Plus pairing to actually share noise."""
+    base_seed, task_name = 5, "task_c"
+    episode_idx, k = 2, 1  # evaluate_task's slot k within a batch starting at episode_idx
+
+    per_task_seed = rollout_seed(base_seed, task_name, episode_idx + k)
+    work_list_seed = rollout_seed(base_seed, task_name, episode_idx + k)
+    assert per_task_seed == work_list_seed
 
 
 # ---------------------------------------------------------------------------

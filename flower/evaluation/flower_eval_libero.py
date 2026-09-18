@@ -11,7 +11,7 @@ import uuid
 from collections import Counter, defaultdict
 from itertools import chain
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 # Third-party imports
 import cv2
@@ -39,7 +39,6 @@ from libero.lifelong.utils import create_experiment_dir, get_task_embs, safe_dev
 
 # Local project imports
 from flower.evaluation.eval_records import (
-    batch_seed,
     checkpoint_name,
     merge_rank_csvs,
     merge_result_csv,
@@ -48,6 +47,7 @@ from flower.evaluation.eval_records import (
     rollout_seed,
     write_csv,
 )
+from flower.evaluation.libero_tasks import base_task, original_task_names
 from flower.evaluation.libero_venv import make_libero_venv
 from flower.evaluation.multistep_sequences import get_sequences
 from flower.evaluation.utils import (
@@ -169,31 +169,65 @@ def load_task_classification(suite_name: str) -> Dict[str, Dict[str, Any]]:
     }
 
 
-def task_language(libero_variant: str, bddl_folder: str, task_i) -> str:
+def _filename_language(task_name: str) -> str:
+    """LIBERO's own filename -> instruction derivation (mirrors
+    libero.libero.benchmark.grab_language_from_filename's non-"_language_" branch,
+    which is identical between the upstream LIBERO and LIBERO-Plus packages -- only
+    their handling of a "_language_" name differs, and that name never reaches here).
+    Inlined rather than imported: the two packages' grab_language_from_filename take
+    different argument counts, and only LIBERO_VARIANT=plus has LIBERO-Plus's on
+    PYTHONPATH, so importing it would make this function's behavior depend on which
+    variant happens to be active."""
+    x = task_name + ".bddl"
+    if x[0].isupper():  # LIBERO-100 naming ("KITCHEN_SCENE3_...")
+        if "SCENE10" in x:
+            language = " ".join(x[x.find("SCENE") + 8:].split("_"))
+        else:
+            language = " ".join(x[x.find("SCENE") + 7:].split("_"))
+    else:
+        language = " ".join(x.split("_"))
+    return language[: language.find(".bddl")]
+
+
+def task_language(libero_variant: str, task_i, orig_task_names: Sequence[str]) -> str:
     """Instruction to feed the model for one task.
 
-    LIBERO-Plus derives task.language from the BDDL *filename*
-    (libero.libero.benchmark.grab_language_from_filename), which leaks the perturbation
-    id into the prompt for every category except "Language Instructions" -- e.g.
-    "turn on the stove ... light 25" or "... in the basket view 0 0 100 2 6 initstate 0".
-    The BDDL's own (:language ...) field holds the clean instruction underneath every
-    such perturbation, so read it from there instead when running LIBERO-Plus.
+    The model was fine-tuned on LIBERO's *filename*-derived instruction (the LIBERO
+    datamodule prompts with benchmark.get_task(i).language, and training runs
+    LIBERO_VARIANT=orig) -- that string, not a task's own BDDL (:language ...) text, is
+    the training-matched prompt. LIBERO-Plus's task.language is *also* filename-derived,
+    but from the perturbation-suffixed filename, so it leaks the perturbation into the
+    prompt for every category except Language Instructions -- e.g. "turn on the stove
+    and put the moka pot on it table 1" or "... view 0 0 100 2 6 initstate 0".
 
-    Scoped to libero_variant == "plus": original LIBERO's filename-derived language is
-    not perturbation-suffixed, but differs from the BDDL text in ~22% of its tasks
-    (paraphrased authoring convention there) -- switching orig eval to this path would
-    silently change what the model is prompted with, which is out of scope here.
+    Fix: map the Plus task back to the original LIBERO task it was generated from
+    (longest-prefix match against the suite's original task names -- see
+    flower.evaluation.libero_tasks.base_task) and re-derive the instruction from *that*
+    name instead. Language Instructions is exempt: its reworded instruction is the
+    independent variable being tested, and task_i.language there is already the LLM
+    rewrite (LIBERO-Plus's own grab_language_from_filename reads it straight out of that
+    task's own BDDL for a "_language_" name) -- so it's passed through untouched.
+    Dispatch is on "_language_" in the task name, not on task_classification.json's
+    category: the two agree exactly (verified across every suite), and the name is
+    always present, so there is no missing/empty task_category case to handle.
+
+    LIBERO_VARIANT=orig is a pure passthrough: orig task names carry no perturbation
+    suffix, so task_i.language is already the training-matched string.
     """
     if libero_variant != "plus":
         return task_i.language
 
-    from libero.libero.envs.bddl_utils import get_problem_info
+    if "_language_" in task_i.name:
+        return task_i.language
 
-    bddl_file = task_i.bddl_file
-    if "_view_" in bddl_file and "_initstate_" in bddl_file:
-        bddl_file = bddl_file.split("_view_")[0] + ".bddl"
-    bddl_path = os.path.join(bddl_folder, task_i.problem_folder, bddl_file)
-    return get_problem_info(bddl_path)["language_instruction"]
+    base = base_task(task_i.name, orig_task_names)
+    if base is None:
+        raise ValueError(
+            f"No original LIBERO task is a prefix of LIBERO-Plus task '{task_i.name}' "
+            f"(candidates: {list(orig_task_names)}). Prompting with the perturbation-"
+            "suffixed name instead would silently change what the model is asked to do."
+        )
+    return _filename_language(base)
 
 
 def get_log_dir(log_dir):
@@ -288,6 +322,14 @@ class EvaluateLibero:
         self.init_states_folder = get_libero_path("init_states")
         self.task_embedding_format =task_embedding_format
         self.benchmark_name = benchmark_name
+        # The suite's original (un-perturbed) task names, for mapping a LIBERO-Plus task
+        # back to the instruction the model was fine-tuned on -- see task_language().
+        self.orig_task_names = original_task_names(self.init_states_folder, self.benchmark_name)
+        if self.libero_variant == "plus" and not self.orig_task_names:
+            raise FileNotFoundError(
+                f"No *.pruned_init files under {self.init_states_folder}/{self.benchmark_name}; "
+                "cannot map LIBERO-Plus tasks back to their original instruction."
+            )
         self.benchmark_dict = benchmark.get_benchmark_dict()
         self.benchmark_instance = self.benchmark_dict[self.benchmark_name]()
         self.num_tasks = self.benchmark_instance.get_num_tasks()
@@ -401,7 +443,7 @@ class EvaluateLibero:
 
         task_name = self.task_names[idx]
         task_meta = self.task_classification.get(task_name, {})
-        language = task_language(self.libero_variant, self.bddl_folder, task_i)
+        language = task_language(self.libero_variant, task_i, self.orig_task_names)
 
         rows: List[Dict[str, Any]] = []
         episode_idx = 0
@@ -440,13 +482,21 @@ class EvaluateLibero:
                     )
                     env.set_init_state(initial_states[state_idxs])
 
-                # Seed once per batch: the model draws one shared noise tensor for the
-                # whole batch on each replan (flower.py forward()), so a seed narrower
-                # than "one batch" wouldn't change what gets sampled. Recorded as
-                # rollout_seed below so the batch is exactly reproducible.
-                seed = rollout_seed(self.base_seed, idx, episode_idx)
-                torch.manual_seed(seed)
-                np.random.seed(seed % (2**32))
+                # One seed per slot, from that episode's own identity (base task name +
+                # episode index) -- not from its position in the batch. The model draws
+                # each row's noise from its own generator (FLOWERVLA.set_eval_noise_seeds),
+                # so an episode's noise no longer depends on eval_batch_size, on which
+                # slot it landed in, or on which other episodes shared its batch.
+                # Recorded per row as rollout_seed below.
+                seeds = [
+                    rollout_seed(self.base_seed, task_name, episode_idx + k)
+                    for k in range(current_batch_size)
+                ]
+                model.set_eval_noise_seeds(seeds)
+                # Nothing else on the eval path reads the global RNGs -- seeded from
+                # base_seed alone (deliberately not from anything batch-dependent).
+                torch.manual_seed(self.base_seed)
+                np.random.seed(self.base_seed % (2**32))
 
                 # Dummy warmup steps — obs from last warmup step is the starting obs
                 dummy = np.zeros((current_batch_size, 7))
@@ -528,7 +578,7 @@ class EvaluateLibero:
                         "multistep": getattr(model, "multistep", ""),
                         "eval_batch_size": current_batch_size,
                         "base_seed": self.base_seed,
-                        "rollout_seed": seed,
+                        "rollout_seed": seeds[k],
                         "use_rgb_static": int(self.eval_modalities.get("rgb_static", True)),
                         "use_rgb_gripper": int(self.eval_modalities.get("rgb_gripper", True)),
                         "use_language": int(self.eval_modalities.get("language", True)),
@@ -557,9 +607,14 @@ class EvaluateLibero:
         of B distinct lang_text strings and never reads goal["lang"], so the model
         needs no change.
 
-        Batch composition (and thus the per-batch noise draw — see evaluate_task's
-        comment on rollout_seed) differs from evaluate_task's, so results are not
-        bitwise-comparable to per-task rows; both are marked via "batching_mode".
+        Each slot's noise is seeded from its own episode identity
+        (eval_records.rollout_seed, keyed on the base task name), so an episode draws
+        the same noise here as it does under evaluate_task, under a different
+        eval_batch_size, under a different task_category filter, or on a different GPU
+        shard. "batching_mode" is still recorded, because B still selects Florence-2/DiT
+        GEMM kernels and reduction order -- identical noise in a differently-shaped
+        batch is still not bit-identical numerically (eval_batch_size=1 is the
+        exception: same shape, so bit-identical to a per-task row of the same episode).
         """
         work_items = [(idx, ep) for idx in self.all_tasks for ep in range(self.n_eval)]
 
@@ -579,7 +634,7 @@ class EvaluateLibero:
                 "task_i": task_i,
                 "task_name": task_name,
                 "task_meta": self.task_classification.get(task_name, {}),
-                "language": task_language(self.libero_variant, self.bddl_folder, task_i),
+                "language": task_language(self.libero_variant, task_i, self.orig_task_names),
                 "initial_states": initial_states,
                 "n_states": n_states,
                 "bddl_path": os.path.join(self.bddl_folder, task_i.problem_folder, task_i.bddl_file),
@@ -647,10 +702,13 @@ class EvaluateLibero:
                 # slots without init states (state_idxs[k] is None) keep the default
                 # random reset; their init_state_idx is recorded as -1 below.
 
-                batch_index = batch_start // self.eval_batch_size
-                seed = batch_seed(self.base_seed, batch_index)
-                torch.manual_seed(seed)
-                np.random.seed(seed % (2**32))
+                seeds = [
+                    rollout_seed(self.base_seed, task_cache[idx]["task_name"], ep)
+                    for idx, ep in batch_items
+                ]
+                model.set_eval_noise_seeds(seeds)
+                torch.manual_seed(self.base_seed)
+                np.random.seed(self.base_seed % (2**32))
 
                 dummy = np.zeros((B, 7))
                 for _ in range(5):
@@ -728,7 +786,7 @@ class EvaluateLibero:
                         "multistep": getattr(model, "multistep", ""),
                         "eval_batch_size": B,
                         "base_seed": self.base_seed,
-                        "rollout_seed": seed,
+                        "rollout_seed": seeds[k],
                         "use_rgb_static": int(self.eval_modalities.get("rgb_static", True)),
                         "use_rgb_gripper": int(self.eval_modalities.get("rgb_gripper", True)),
                         "use_language": int(self.eval_modalities.get("language", True)),

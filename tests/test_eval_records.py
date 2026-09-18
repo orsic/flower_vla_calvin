@@ -10,7 +10,7 @@ import pytest
 
 from flower.evaluation.eval_records import (
     ALL_COLUMNS,
-    batch_seed,
+    base_task_name,
     checkpoint_name,
     merge_rank_csvs,
     merge_result_csv,
@@ -86,38 +86,103 @@ def test_result_dir_orig_vs_plus_dont_collide(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# base_task_name
+# ---------------------------------------------------------------------------
+
+_ORIG_BASE = "LIVING_ROOM_SCENE2_put_both_the_alphabet_soup_and_the_tomato_sauce_in_the_basket"
+
+
+@pytest.mark.parametrize(
+    "plus_name",
+    [
+        f"{_ORIG_BASE}_view_0_0_100_2_6_initstate_0",  # Camera Viewpoints
+        f"{_ORIG_BASE}_table_1",  # Background Textures
+        f"{_ORIG_BASE}_tb_1",  # Background Textures (alt suffix)
+        f"{_ORIG_BASE}_light_3",  # Light Conditions
+        f"{_ORIG_BASE}_view_0_0_100_0_0_initstate_51",  # Robot Initial States
+        f"{_ORIG_BASE}_view_0_0_100_0_0_initstate_0_noise_12",  # Sensor Noise
+        f"{_ORIG_BASE}_add_10",  # Objects Layout
+        f"{_ORIG_BASE}_level1_sample3",  # Objects Layout (alt suffix)
+        f"{_ORIG_BASE}_language_2_view_0_0_100_0_0_initstate_0",  # Language Instructions
+    ],
+)
+def test_base_task_name_strips_each_category_suffix(plus_name):
+    assert base_task_name(plus_name) == _ORIG_BASE
+
+
+def test_base_task_name_strips_moved_infix():
+    """libero_goal's Objects Layout variants carry an extra "_moved" infix."""
+    assert base_task_name("open_the_middle_drawer_of_the_cabinet_moved_level1_sample1") == (
+        "open_the_middle_drawer_of_the_cabinet"
+    )
+
+
+def test_base_task_name_noop_on_original_names():
+    assert base_task_name(_ORIG_BASE) == _ORIG_BASE
+
+
+def test_base_task_name_does_not_strip_table_center():
+    """Regression guard: a bare, non-digit-anchored "_table_" also appears inside an
+    ORIGINAL libero_spatial task name -- must not be mistaken for the Background
+    Textures perturbation marker (which is always digit-anchored, "_table_<N>")."""
+    name = "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate"
+    assert base_task_name(name) == name
+
+
+# ---------------------------------------------------------------------------
 # rollout_seed
 # ---------------------------------------------------------------------------
 
 def test_rollout_seed_stable():
-    assert rollout_seed(0, 3, 5) == rollout_seed(0, 3, 5)
+    assert rollout_seed(0, "task_a", 5) == rollout_seed(0, "task_a", 5)
 
 
-def test_rollout_seed_distinct_across_task_and_episode():
+def test_rollout_seed_distinct_across_task_episode_and_base_seed():
     seeds = {
-        rollout_seed(0, 0, 0),
-        rollout_seed(0, 1, 0),
-        rollout_seed(0, 0, 1),
-        rollout_seed(1, 0, 0),
+        rollout_seed(0, "task_a", 0),
+        rollout_seed(0, "task_b", 0),
+        rollout_seed(0, "task_a", 1),
+        rollout_seed(1, "task_a", 0),
     }
     assert len(seeds) == 4
 
 
-# ---------------------------------------------------------------------------
-# batch_seed (cross_task_batching)
-# ---------------------------------------------------------------------------
+def test_rollout_seed_shared_across_plus_variants_of_one_base_task():
+    """The whole point: every LIBERO-Plus variant of a base task, across every
+    perturbation category, must derive the SAME seed at the same episode index --
+    common random numbers, so an orig-vs-Plus success delta is attributable to the
+    perturbation rather than to an unrelated noise draw."""
+    variants = [
+        _ORIG_BASE,
+        f"{_ORIG_BASE}_view_0_0_100_2_6_initstate_0",
+        f"{_ORIG_BASE}_table_1",
+        f"{_ORIG_BASE}_light_3",
+        f"{_ORIG_BASE}_view_0_0_100_0_0_initstate_0_noise_12",
+    ]
+    seeds = {rollout_seed(0, name, 0) for name in variants}
+    assert len(seeds) == 1
 
-def test_batch_seed_stable():
-    assert batch_seed(0, 2) == batch_seed(0, 2)
 
+def test_rollout_seed_independent_of_pythonhashseed():
+    """crc32, not hash(): str hashing is PYTHONHASHSEED-randomized, which would give a
+    different seed on every process -- including between one run's multi-GPU eval
+    workers."""
+    import subprocess
+    import sys
 
-def test_batch_seed_distinct_across_base_seed_and_batch_index():
-    seeds = {
-        batch_seed(0, 0),
-        batch_seed(0, 1),
-        batch_seed(1, 0),
-    }
-    assert len(seeds) == 3
+    code = (
+        "from flower.evaluation.eval_records import rollout_seed; "
+        "print(rollout_seed(0, 'some_task_name', 3))"
+    )
+    outs = []
+    for hashseed in ("0", "1"):
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            env={**os.environ, "PYTHONHASHSEED": hashseed},
+            capture_output=True, text=True, check=True,
+        )
+        outs.append(result.stdout.strip())
+    assert outs[0] == outs[1]
 
 
 # ---------------------------------------------------------------------------

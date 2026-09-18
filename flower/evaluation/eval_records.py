@@ -14,7 +14,9 @@ rather than indexing directly — those legacy rows read as proprio-absent, whic
 factually correct (every eval predating this column ran with use_proprio=false).
 """
 import csv
+import re
 import time
+import zlib
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -89,14 +91,48 @@ def result_dir(
     return out_dir
 
 
-def rollout_seed(base_seed: int, task_idx: int, episode_idx: int) -> int:
-    """Deterministic seed for the batch/episode starting at (task_idx, episode_idx)."""
-    return base_seed * 1_000_003 + task_idx * 1_009 + episode_idx
+# Perturbation markers LIBERO-Plus appends to an original task name. Digit-anchored
+# on purpose: a bare "_table_" also matches the *original* libero_spatial task
+# "pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate", which would
+# then alias onto a different base task. LIBERO-Plus's own get_task_init_states uses
+# re.sub(r'_table_\d+', ...) for the same reason.
+_PERTURBATION_SUFFIX = re.compile(r"_(?:language|view|table|tb|light|add|noise|level)_?\d")
 
 
-def batch_seed(base_seed: int, batch_index: int) -> int:
-    """Deterministic seed for the cross_task_batching batch starting at batch_index."""
-    return base_seed * 1_000_003 + batch_index * 1_009
+def base_task_name(task_name: str) -> str:
+    """The original LIBERO task a LIBERO-Plus task_name was generated from.
+
+    Every Plus name is <orig task name><perturbation suffix>; truncating at the first
+    marker recovers the original. libero_goal's Objects Layout variants additionally
+    carry a "_moved" infix ("..._cabinet_moved_level1_sample1"), stripped after.
+
+    A no-op on an original LIBERO task name: no task name in any of the shipped suites
+    contains a marker, which is what lets a LIBERO-Plus episode and its original-LIBERO
+    counterpart (scripts/severity_sr.py's paired baseline) share this function's output
+    as a noise-seeding key -- see rollout_seed below.
+    """
+    match = _PERTURBATION_SUFFIX.search(task_name)
+    base = task_name[: match.start()] if match else task_name
+    return base[: -len("_moved")] if base.endswith("_moved") else base
+
+
+def rollout_seed(base_seed: int, task_name: str, episode_idx: int) -> int:
+    """Deterministic seed for one episode's flow-matching noise stream.
+
+    Keyed on the episode's *base* task name, not on task_idx: task_idx indexes the
+    active benchmark instance (0-9 under LIBERO_VARIANT=orig, 0-2518 under plus,
+    unrelated orderings), so it cannot relate a Plus episode to the original episode
+    scripts/severity_sr.py's paired_baseline() compares it against, nor two Plus
+    variants of one base task (e.g. two Camera-Viewpoint camera angles) to each other.
+    Keying on the base name instead gives all of them one shared noise stream (common
+    random numbers), which is what makes an orig-vs-Plus success delta attributable to
+    the perturbation rather than to an unrelated noise draw -- see
+    flower.models.flower.inference_noise, which consumes this per batch slot.
+
+    crc32, not hash(): str hashing is PYTHONHASHSEED-randomized, so hash() would give a
+    different seed on every process, including between one run's multi-GPU eval workers.
+    """
+    return base_seed * 1_000_003 + zlib.crc32(base_task_name(task_name).encode()) * 1_009 + episode_idx
 
 
 def _row_key(row: Dict) -> tuple:

@@ -64,6 +64,9 @@ from perturbation_severity import (  # noqa: E402
     sensor_noise_severity,
 )
 
+sys.path.insert(0, Path(__file__).absolute().parents[1].as_posix())
+from flower.evaluation.libero_tasks import base_task  # noqa: E402,F401 -- re-exported for callers of this module
+
 DEFAULT_LIBERO_PLUS_ROOT = str(Path(__file__).parents[1] / "LIBERO-plus")
 
 UNORDERED_NOTE = {
@@ -105,6 +108,44 @@ ROBOT_INITSTATE_NOTE = (
     "ROBOT_INITSTATE_NOTE comment), so every episode currently runs from the unperturbed "
     "base task's own state; the severity bins below do not reflect a real physical "
     "perturbation. Left as-is to stay comparable with other work on this benchmark."
+)
+
+# WHAT STILL SEPARATES A PLUS GROUP FROM ITS PAIRED ORIG BASELINE (verified against a
+# real checkpoint, not just by reading code -- see
+# scripts/debug_camera_viewpoint_batching_noise.py). Sampling noise used to be the
+# dominant term: flower_eval_libero.py seeded one shared noise draw per *batch*, keyed
+# on the batch's ordinal position (eval_records.batch_seed, now removed), so two Plus
+# variants of one base task -- and that task's orig episode -- drew uncorrelated noise.
+# Fixed: eval_records.rollout_seed now keys on the base task name
+# (eval_records.base_task_name), so every Plus variant of a task and its orig episode 0
+# share one noise stream. Confirmed empirically on the real libero_10 checkpoint: all 20
+# Camera Viewpoints variants of one base task, statically withheld (no_static combo,
+# the category confirmed physically inert to such a model), derived the exact same
+# rollout_seed regardless of cross-task batch/slot, and all 20 landed on the same
+# success outcome -- steps_taken varied by at most 5 steps out of ~350 (residual #3
+# below), never enough to flip success/failure. Three sources remain, and a residual
+# orig-vs-plus gap should be attributed to them before it is attributed to the
+# perturbation:
+#   1. orig_n is tiny by construction -- paired_baseline() dedups by base task, so a
+#      severity bin can rest on as few as 1-2 orig episodes (see this module's
+#      docstring).
+#   2. Task-weighting mismatch: orig_success_rate is an unweighted mean over *distinct
+#      base tasks*, while success_rate pools Plus *episodes* over a task/episode
+#      distribution that is unbalanced across base tasks (a category holds a different
+#      variant count per task). The two are therefore not the same estimator even at
+#      infinite n, and can differ by several points on a suite whose per-task SRs are
+#      spread out. Not noise -- doesn't shrink with more Plus episodes.
+#   3. Residual batch-shape numerics: batch width still selects Florence-2/DiT GEMM
+#      kernels and reduction order (matmul is non-associative), so a shared noise draw
+#      does not imply a bit-identical trajectory over ~500 steps. Only eval_batch_size=1
+#      removes this; see README.md's Reproducibility paragraph.
+PLUS_VS_ORIG_RESIDUAL_NOTE = (
+    "orig-vs-plus divergence beyond this point is expected from (1) orig_n being tiny by "
+    "construction (paired_baseline dedups by base task), (2) an unweighted-per-task vs. "
+    "episode-weighted-per-Plus-episode estimator mismatch, and (3) residual batch-shape "
+    "numerics -- not from the perturbation, which shares a noise stream with its orig "
+    "baseline as of eval_records.rollout_seed's base-task-name keying. See this module's "
+    "PLUS_VS_ORIG_RESIDUAL_NOTE comment."
 )
 
 # Severity-axis bin label for a row _severity_bin() couldn't parse -- reported as its
@@ -196,19 +237,6 @@ def _combo(row: Dict[str, str]) -> Tuple[int, int, int, int]:
     orig result.csv can hold all 14 combos."""
     cols = [MODALITY_COLUMNS[m] for m in ("static", "wrist", "lang", "proprio")]
     return tuple(int(row.get(col) or 0) for col in cols)
-
-
-def base_task(task_name: str, orig_task_names: Sequence[str]) -> Optional[str]:
-    """The original LIBERO task a LIBERO-Plus task_name was generated from, by longest
-    prefix match (every Plus name is <orig task_name>_<perturbation suffix>, e.g.
-    "..._table_1", "..._initstate_50", "..._rewrite_3"). None when no original task
-    name is a prefix -- such a row is excluded from the paired baseline rather than
-    guessed at. The "_" boundary keeps one task from matching as a spurious prefix of
-    another task's name."""
-    candidates = [t for t in orig_task_names if task_name == t or task_name.startswith(t + "_")]
-    if not candidates:
-        return None
-    return max(candidates, key=len)
 
 
 def orig_init0_index(orig_rows: List[Dict[str, str]]) -> Dict[Tuple[Tuple[int, int, int, int], str], int]:
@@ -470,6 +498,8 @@ def report(
         "for several categories (most starkly Robot Initial States and Objects Layout), "
         "so treat it as informational, not as this model's ground-truth severity."
     )
+    if orig_rows:
+        print(f"\nNote: {PLUS_VS_ORIG_RESIDUAL_NOTE}")
 
 
 def main() -> None:

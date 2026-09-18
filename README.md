@@ -169,9 +169,10 @@ both. See `flower/evaluation/libero_venv.py` for the full writeup, credit, and b
 `cross_task_batching` (`conf/eval_libero.yaml`, default `false`; `true` in `conf/eval_libero_plus.yaml`)
 fills each batch with episodes drawn from different tasks instead of one task at a time. It's
 required whenever `n_eval` is smaller than `eval_batch_size` — LIBERO-Plus's `n_eval=1` means the
-per-task path can never fill a batch — but it also changes what gets sampled per batch (a
-different set of episodes shares the noise draw), so results carry a `batching_mode` column
-(`per_task` / `cross_task`) and aren't bitwise-comparable across the two modes.
+per-task path can never fill a batch. Results still carry a `batching_mode` column (`per_task` /
+`cross_task`), because batch width selects Florence-2/DiT GEMM kernels and reduction order — but
+each episode's own flow-matching noise no longer depends on which mode produced it (see
+Reproducibility below).
 
 ### Modality-token dropout (`train-dropout`)
 
@@ -548,20 +549,36 @@ instead of overwriting the previous combo's result. Result columns are `success`
 written before it existed simply lack the column — `eval_records.py`/`compare_eval_csvs.py`
 read that as proprio-absent, which is factually correct for those older runs.)
 
-**`language` is the clean instruction, not LIBERO-Plus's filename-derived one.**
-Upstream LIBERO-Plus derives the model's prompt from the perturbed BDDL's *filename*
-(`libero.libero.benchmark.grab_language_from_filename`), which leaks the perturbation id
-into the instruction for every category except Language Instructions — e.g. `"turn on
-the stove and put the moka pot on it table 1"` or `"... view 0 0 100 2 6 initstate 0"`.
-`flower_eval_libero.py`'s `task_language()` reads the clean instruction from the BDDL's
-`(:language ...)` field instead whenever `LIBERO_VARIANT=plus`, so `language` always
-matches what the model was actually asked to do. This affects ~85% of LIBERO-Plus
-episodes and is **not** applied to `LIBERO_VARIANT=orig` (upstream LIBERO's
-filename-derived language differs from its BDDLs' text too, in ~22% of the wider
-suites — changing that would shift orig eval off the model's training distribution,
-which is out of scope). One consequence: LIBERO-Plus numbers produced after this fix
-are not comparable to the upstream leaderboard, which evaluates with the
-suffix-contaminated prompts.
+**`language` is the instruction the model was fine-tuned on, not LIBERO-Plus's
+perturbation-suffixed one.** Upstream LIBERO derives a task's prompt from its BDDL
+*filename* (`libero.libero.benchmark.grab_language_from_filename`), and that is what
+training uses — the LIBERO datamodule prompts with `benchmark.get_task(i).language`,
+under `LIBERO_VARIANT=orig`. LIBERO-Plus inherits the same derivation, so its
+`task.language` leaks the perturbation id into the prompt for every category except
+Language Instructions — e.g. `"turn on the stove and put the moka pot on it table 1"`
+or `"... view 0 0 100 2 6 initstate 0"` (~85% of Plus tasks). `flower_eval_libero.py`'s
+`task_language()` instead maps the Plus task back to the original LIBERO task it was
+generated from — longest-prefix match against the suite's original task names, read
+from `<init_states>/<suite>/*.pruned_init` (`flower/evaluation/libero_tasks.py`; 0
+unmatched out of 2402/2518/2591/2519 tasks) — and re-derives the instruction from
+*that* name. Language Instructions is exempt: its reworded instruction is the
+independent variable, and upstream already returns the LLM rewrite from the task's own
+BDDL for a `_language_` name, so it is passed through untouched. (`"_language_"` in a
+task name matches the `Language Instructions` category exactly across every suite, so
+no `task_category` lookup is involved and a missing or empty `task_category` cannot
+affect the prompt.) `LIBERO_VARIANT=orig` is a pure passthrough.
+
+Reading the BDDL's own `(:language ...)` field — what this eval did previously — is
+*not* equivalent: upstream LIBERO's filename-derived text and its BDDL text disagree
+for 10/10 `libero_spatial`, 10/10 `libero_object` and 5/10 `libero_goal` tasks (`"pick
+up the black bowl between the plate and the ramekin …"` vs `"pick the akita black bowl
+between the plate and the ramekin …"`), so the BDDL text is off the model's training
+distribution on those suites. They agree byte-for-byte on all 10 `libero_10` tasks,
+which is why **this is an exact no-op for `libero_10`** (0 of 2519 prompts change, so
+no `libero_10` result needs re-evaluating); it changes prompts on
+`libero_spatial`/`libero_object`/`libero_goal` instead. One consequence: LIBERO-Plus
+numbers produced here are not comparable to the upstream leaderboard, which evaluates
+with the suffix-contaminated prompts.
 
 `scripts/perturbation_sr.py <result.csv>` prints the success rate per `task_category`
 (plus an overall line) straight from this file — no `task_classification.json` lookup
@@ -640,13 +657,20 @@ sample, noise instance, texture/light id), applied by `env_wrapper.py` at
 env-construction time from the bddl filename — it is not an index into the init-states
 array, and `n_eval=1` means array index 0 is all that's ever loaded regardless.
 
-**Reproducibility:** the model draws one shared flow-matching noise tensor for an entire
-batch on each replan, so a rollout is only reproducible at batch granularity, not
-per-episode — `rollout_seed` is derived from `(seed, task_idx, batch_start_episode)` for
-`per_task` rows, or `(seed, batch_index)` for `cross_task` rows, and recorded per row
-along with `eval_batch_size`/`batching_mode`; reproducing a row requires matching all of
-these. The two batching modes draw different noise for the same episode, so their
-`success`/`steps_taken` are not expected to match.
+**Reproducibility:** each episode's flow-matching noise is drawn from its own
+generator, seeded by `rollout_seed(seed, base_task_name, episode_idx)` and recorded per
+row as `rollout_seed` — so an episode's noise is independent of `eval_batch_size`, of
+its slot in the batch, of which other episodes shared that batch, of `batching_mode`,
+of the `task_category` filter, and of GPU shard assignment.
+`flower.evaluation.eval_records.base_task_name` strips LIBERO-Plus's perturbation
+suffix, so every Plus variant of a task and that task's original-LIBERO episode 0 — the
+row `scripts/severity_sr.py` pairs it against — share one noise stream (common random
+numbers: a paired comparison, which is the point). Generators are CPU-side, so the draw
+is identical across GPU models and counts. This does **not** make the two batching
+modes bit-identical: batch width still selects Florence-2/DiT GEMM kernels and
+reduction order, so only `eval_batch_size=1` reproduces exactly across modes. Results
+collected before this change used a per-batch seed with no task-identity component and
+are not reproducible against the current code.
 **Known exception:** LIBERO-Plus Sensor-Noise tasks using motion_blur, fog, or
 glass_blur corruption (noise ids 1-10, 31-40, 41-50) call unseeded `np.random` on every
 rendered frame inside the vendored env, so those specific episodes are not bit-exact

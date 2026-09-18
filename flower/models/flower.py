@@ -45,6 +45,39 @@ from flower.models.utils import ActionIndex, generate_policy_prompt, dit_layer_s
 
 logger = logging.getLogger(__name__)
 
+
+def inference_noise(
+    batch_size: int,
+    act_window_size: int,
+    action_dim: int,
+    device,
+    generators: Optional[List[torch.Generator]] = None,
+) -> torch.Tensor:
+    """Initial flow-matching noise for one replan, [B, act_window_size, action_dim].
+
+    generators=None (training, validation, CALVIN rollouts, and any eval that hasn't
+    opted in via FLOWERVLA.set_eval_noise_seeds) draws one batched sample from the
+    global RNG -- byte-identical to a plain torch.randn(B, T, D) call.
+
+    Otherwise builds each row from its own CPU torch.Generator and stacks them, so row
+    k's noise depends only on that generator's own seed and how many times it's been
+    drawn from -- never on k, on B, or on which other rows share the batch. CPU (not
+    CUDA) generators so the draw is also identical across GPU models and counts; the
+    tensor is small (B * act_window_size * action_dim floats), so the extra H2D copy is
+    negligible. See FLOWERVLA.set_eval_noise_seeds for why this matters: LIBERO-Plus's
+    cross_task_batching groups unrelated tasks into one batch, so without per-row
+    seeding an episode's noise depends on which batch it happened to land in.
+    """
+    if generators is None:
+        return torch.randn(batch_size, act_window_size, action_dim, device=device)
+    if len(generators) != batch_size:
+        raise ValueError(
+            f"inference_noise: {len(generators)} per-slot generators for a batch of {batch_size}"
+        )
+    rows = [torch.randn(1, act_window_size, action_dim, generator=g) for g in generators]
+    return torch.cat(rows, dim=0).to(device)
+
+
 class FLOWERVLA(pl.LightningModule):
     def __init__(
         self,
@@ -153,6 +186,14 @@ class FLOWERVLA(pl.LightningModule):
         # Eval-time proprio mask: None (default) = unchanged. False withholds proprio at eval,
         # mirroring eval_modality_mask above but for the Bernoulli-gated (non-token) modality.
         self.eval_proprio_mask: Optional[bool] = None
+
+        # Eval-time per-episode noise seeding: None (default) = unchanged single batched
+        # torch.randn in forward(). Set by the eval harness via set_eval_noise_seeds() to
+        # one seed per batch slot; the generators are built lazily and live for the whole
+        # rollout (cleared by reset()), so each slot's noise stream is independent of
+        # batch composition/width/position.
+        self.eval_noise_seeds: Optional[List[int]] = None
+        self._noise_generators: Optional[List[torch.Generator]] = None
 
         # Fixed modality ablation: which modalities this model observes, always (not just at
         # eval). None (all three on) leaves the standard path untouched; otherwise the
@@ -1188,15 +1229,18 @@ class FLOWERVLA(pl.LightningModule):
         if 'robot_obs' in obs:
             batch['robot_obs'] = obs['robot_obs']
         features = self.encode_observations(batch)
-        
-        # Generate initial noise
-        noise = torch.randn(
-            len(features['features']),
-            self.act_window_size,
-            self.action_dim,
-            device=features['features'].device
+
+        # Generate initial noise (per-episode generators when the eval harness has
+        # seeded them via set_eval_noise_seeds; global RNG otherwise).
+        B = len(features['features'])
+        if self.eval_noise_seeds is not None and self._noise_generators is None:
+            self._noise_generators = [
+                torch.Generator().manual_seed(int(s) % (2 ** 63)) for s in self.eval_noise_seeds
+            ]
+        noise = inference_noise(
+            B, self.act_window_size, self.action_dim, features['features'].device, self._noise_generators,
         )
-        
+
         # Sample actions
         return self.sample_actions(noise, features, inference=True)
 
@@ -1248,10 +1292,18 @@ class FLOWERVLA(pl.LightningModule):
             self.rollout_step_counter = 0
         return current_action
 
+    def set_eval_noise_seeds(self, seeds: Optional[List[int]]) -> None:
+        """Seed the inference noise per batch slot (eval only); None restores the
+        default single batched torch.randn draw. See inference_noise's docstring."""
+        self.eval_noise_seeds = None if seeds is None else [int(s) for s in seeds]
+        self._noise_generators = None
+
     def reset(self):
         """Reset model state for new rollout."""
         self.rollout_step_counter = 0
         self.pred_action_seq = None
+        # New rollout -> restart each slot's noise stream from its seed.
+        self._noise_generators = None
         self.eval()
 
     def on_train_start(self):
