@@ -328,6 +328,17 @@ case "$CMD" in
         python scripts/analyze_wandb.py "$@"
     ;;
 
+  plot)
+    # Paper figures from the same W&B evaluation artifacts analyze reads.
+    #   ./run.sh plot presence --filters '{"config.modality_dropout": true}'
+    #   ./run.sh plot perturbation --filters '...'
+    #   ./run.sh plot severity --filters '...'
+    #   ./run.sh plot all --filters '...'
+    # Needs WANDB_API_KEY set (vars.env or shell env) since this only reads from W&B.
+    podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts \
+        python scripts/plot_eval.py "$@"
+    ;;
+
   smoke)
     podman-compose -f "$COMPOSE" run --rm shell python scripts/smoke_test.py
     ;;
@@ -343,7 +354,7 @@ case "$CMD" in
     ;;
 
   help|*)
-    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|download-plus|train|train-frozen|train-dropout|eval|eval-plus|pipeline|analyze|smoke|devenv>"
+    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|download-plus|train|train-frozen|train-dropout|eval|eval-plus|pipeline|analyze|plot|smoke|devenv>"
     echo ""
     echo "  build              Build the container image (flower-vla-eval:latest)"
     echo "  shell              Interactive bash inside the container"
@@ -399,6 +410,10 @@ case "$CMD" in
     echo "                     analyze filter --filters '<mongo-json>' -- mean/min/max across matches"
     echo "                     Example: ./run.sh analyze run libero_10_dropout_2026-09-09_13-56-20"
     echo "                              ./run.sh analyze filter --filters '{\"config.modality_dropout\": true}'"
+    echo "  plot <presence|perturbation|severity|all> ..."
+    echo "                     Paper figures (PDF) from the same W&B evaluation artifacts, sharing one"
+    echo "                     --filters run pool across every figure. Needs WANDB_API_KEY."
+    echo "                     Example: ./run.sh plot all --filters '{\"config.modality_dropout\": true}'"
     echo "  smoke              Quick sanity check: CUDA + imports + model load + 1 env step"
     echo "  devenv             Regenerate .devcontainer/.env from vars.env"
     if [[ "$CMD" != "help" ]]; then

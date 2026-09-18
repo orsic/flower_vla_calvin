@@ -1020,6 +1020,77 @@ Zero matched runs is a hard error; everything else is reported and still aggrega
 a `runs` column on every table so a cell backed by fewer runs than the header claims is
 visible rather than hidden.
 
+### Plotting evaluation results
+
+`scripts/plot_eval.py` (`./run.sh plot`) turns the same W&B evaluation artifacts
+`analyze_wandb.py` reads into paper figures (PDF). It's split into two units:
+
+- **`scripts/plot_data.py`** — gather / filter / prepare. Reuses `analyze_wandb.py`'s
+  fetching and analysis (`default_entity_project`, `run_modalities`,
+  `parse_modality_spec`, `applicable_modality_off`, `analyze`) rather than re-reading
+  W&B, but caches downloaded artifacts under a persistent `--cache-dir` (default
+  `/saves/plot_cache`, skipped when already complete; `--refresh` forces a re-download)
+  instead of `analyze_wandb.py`'s per-invocation temp directory. No matplotlib import.
+- **`scripts/plot_eval.py`** — shared Physical-Intelligence-paper-style rcParams (white
+  background, no top/right/left spines, light horizontal gridlines, frameless legend,
+  font scale 2.5x default), the figures, and a `tyro` subcommand CLI.
+
+One `--filters` (same mongo-style JSON as `analyze_wandb.py`'s) defines the run pool for
+every subcommand:
+
+```bash
+./run.sh plot presence --filters '{"config.modality_dropout": true}'
+./run.sh plot perturbation --filters '{"config.modality_dropout": true}'
+./run.sh plot severity --filters '{"config.modality_dropout": true}'
+./run.sh plot all --filters '{"config.modality_dropout": true}'   # one fetch, all 6 PDFs
+```
+
+| Subcommand | Output | Shows |
+|---|---|---|
+| `presence` | `presence_libero10.pdf` | Clean LIBERO-10, x = `modality_dropout_proprio_keep_p`, one bar per inference-time modality config (all-4, and each of the 4 withheld in turn) |
+| `perturbation` | `perturbation_libero10plus.pdf` | LIBERO-10-Plus, x = the 7 perturbation categories, one filled bar per `keep_p` |
+| `severity` | 4 PDFs (below) | All-modality vs. 1-left-out, each bar paired with its init-state-matched LIBERO original baseline |
+
+`perturbation` and every `severity` figure pair each filled bar with a hollow,
+45-degree-hatched bar (full solid outline) in the same color: the init-state-matched
+LIBERO original baseline for **the exact initial states that filled bar's episodes were
+drawn from** — for a withheld-modality bar, that means clean LIBERO performance with that
+SAME modality also withheld, not full-modality clean LIBERO (severity_sr's per-row
+modality-combo matching makes this automatic; see "Paired original baseline" above).
+
+`severity`'s 4 PDFs cover both axes (physical severity, upstream `difficulty_level`) in
+both a per-category breakdown and a pooled ("totals") view:
+
+| File | x-axis | Bars |
+|---|---|---|
+| `severity_modality_off_percategory.pdf` | faceted per category, each category's own severity bins | modality config, paired with orig |
+| `severity_modality_off_pooled.pdf` | the 7 perturbation categories | modality config, pooled over each category's own severity bins, paired with orig |
+| `difficulty_modality_off_percategory.pdf` | faceted per category, `difficulty_level` (1-5) | modality config, paired with orig |
+| `difficulty_modality_off_pooled.pdf` | `difficulty_level` (1-5) | modality config, pooled across every category, paired with orig |
+
+All bar heights are success rates with 95% Wilson intervals (`severity_sr.wilson_interval`)
+computed over successes/n **pooled across every run in `--filters`** that covers that bar
+— not an average of per-run rates. Whenever a bar pools more than one run, `plot_data.py`
+prints a `WARNING:` line to stderr naming them, so cross-run/cross-`keep_p` pooling (e.g.
+every `severity` figure deliberately pools across every matched `keep_p`) never happens
+silently. Colors are consistent across figures for the same thing: one categorical hue
+per modality config (`presence`/`severity`/`difficulty`), one step of matplotlib's
+`cividis` colormap per `keep_p` (`perturbation`). A modality config with no data anywhere
+in a figure is simply not drawn (no legend entry, no zero-height bar standing in for "no
+data").
+
+Two data caveats worth knowing when reading these figures:
+
+- **The hatched bars carry wide CIs by construction.** `orig_n` (the init-state-matched
+  LIBERO original baseline) is deduplicated by `(modality combo, base task)`, so it's ≤10
+  for LIBERO-10 — noted directly on `perturbation`'s figure.
+- **The Robot Initial States facet is annotated with a known LIBERO-Plus upstream
+  limitation**: that category's perturbed robot `init_qpos` is silently discarded before
+  rollout (see `severity_sr.ROBOT_INITSTATE_NOTE`), so its severity bins don't reflect a
+  real physical gradient.
+
+Requires `WANDB_API_KEY`, same as `./run.sh analyze`.
+
 #### Common Issues
 
 Sometimes this causes problems for the python env so just delete it:
