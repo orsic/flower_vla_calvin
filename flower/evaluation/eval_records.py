@@ -12,8 +12,17 @@ use_proprio was added after use_rgb_static/use_rgb_gripper/use_language; rows in
 pre-existing result.csv have no such column, so _row_key reads it with a "" default
 rather than indexing directly — those legacy rows read as proprio-absent, which is
 factually correct (every eval predating this column ran with use_proprio=false).
+
+task_category_filter (added later, same backward-compat treatment) records the
+cfg.task_category a row's eval was run under, "" when unfiltered (the common case).
+It is NOT part of KEY_COLUMNS -- it exists purely so eval_pipeline.py's already_done()
+can tell a full-suite row from one written by a task_category=-filtered eval merged
+into the same shared result.csv (e.g. `./run.sh eval-plus task_category="..."`), which
+would otherwise look identical to a completed suite to any check keyed only on the
+modality flags.
 """
 import csv
+import os
 import re
 import time
 import zlib
@@ -59,6 +68,7 @@ ALL_COLUMNS = KEY_COLUMNS + [
     "eval_timestamp",
     "steps_taken",
     "success",
+    "task_category_filter",
 ]
 
 
@@ -169,13 +179,23 @@ def read_csv(path: Union[str, Path]) -> List[Dict]:
 
 
 def write_csv(path: Union[str, Path], rows: List[Dict]) -> None:
+    """Write `rows` to `path` atomically.
+
+    Writes to a temp file in the same directory then os.replace()s it into place, so a
+    kill/OOM mid-write leaves the previous complete file (or nothing, if there was none)
+    rather than a truncated one -- both already_done() and artifact_members() treat any
+    existing file as trustworthy, so a torn write would otherwise look like valid,
+    complete data.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as f:
+    tmp_path = path.with_name(f".{path.name}.tmp{os.getpid()}")
+    with open(tmp_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=ALL_COLUMNS)
         writer.writeheader()
         for row in rows:
             writer.writerow({col: row.get(col, "") for col in ALL_COLUMNS})
+    os.replace(tmp_path, path)
 
 
 def merge_result_csv(path: Union[str, Path], rows: List[Dict]) -> List[Dict]:

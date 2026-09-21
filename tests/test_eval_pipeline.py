@@ -27,7 +27,6 @@ from eval_pipeline import (  # noqa: E402
     parse_overrides,
     plan_lines,
     resolve_reeval_variants,
-    rotate_reeval_csvs,
     suite_dir_name,
     token_combos,
     wandb_run_id,
@@ -292,6 +291,65 @@ def test_plan_lines_resume_accounts_for_no_proprio_model(tmp_path):
 
     assert [svc for svc, _ in lines].count("eval") == 6
     assert [svc for svc, _ in lines].count("eval-plus") == 4
+
+
+def _full_plus_lines(lines):
+    """The full-modality eval-plus line specifically (never carries csv_dir=), as
+    opposed to the 4 modality-off eval-plus lines (which always do)."""
+    return [
+        overrides for svc, overrides in lines
+        if svc == "eval-plus" and not any(o.startswith("csv_dir=") for o in overrides)
+    ]
+
+
+def test_plan_lines_resume_ignores_a_category_filtered_row_as_incomplete(tmp_path):
+    """A row merged in by a task_category=-filtered eval (e.g. a manual
+    `./run.sh eval-plus task_category="..."` targeting this same shared result.csv --
+    see run.sh's own eval-plus case) must not look like full-suite completion to
+    --resume, or the other ~2500 tasks never get evaluated. See eval_records.py's
+    task_category_filter column."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    csv_path = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    row = _row(True, True, True, True)
+    row["task_category_filter"] = "Camera Viewpoints"
+    write_csv(csv_path, [row])
+
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
+
+    assert len(_full_plus_lines(lines)) == 1  # still planned, not skipped as "done"
+
+
+def test_plan_lines_resume_treats_empty_task_category_filter_as_complete(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    csv_path = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    row = _row(True, True, True, True)
+    row["task_category_filter"] = ""
+    write_csv(csv_path, [row])
+
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
+
+    assert _full_plus_lines(lines) == []  # correctly skipped: this row came from a full run
+
+
+def test_plan_lines_resume_treats_legacy_row_without_the_column_as_complete(tmp_path):
+    """Backward compat: a result.csv written before task_category_filter existed has
+    no such column in its header at all -- must still resume normally (not force a
+    mass re-run of every pre-existing suite on upgrade). Written as raw CSV text
+    (rather than via write_csv, which always emits every current ALL_COLUMNS) so the
+    header genuinely lacks the column, matching a real old file."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    csv_path = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    csv_path.parent.mkdir(parents=True)
+    csv_path.write_text(
+        "use_rgb_static,use_rgb_gripper,use_language,use_proprio\n1,1,1,1\n"
+    )
+
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
+
+    assert _full_plus_lines(lines) == []
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +630,13 @@ def test_resolve_reeval_variants_error_message_lists_the_new_suites():
 
 
 # ---------------------------------------------------------------------------
-# rotate_reeval_csvs
+# plan_lines(reeval_variants=...) -- selection, and the lazy `reeval=true` marker
+#
+# Rotation itself no longer happens here (see the module docstring): plan_lines only
+# marks which eval line(s) should rotate their target result.csv immediately before
+# writing. flower_eval_libero.py performs the actual rotate-then-write, tested in
+# tests/test_eval_records.py (rotate_result_csv) and covered end-to-end informally by
+# the reeval=true marker tests below -- the marker is exactly what tells it to do so.
 # ---------------------------------------------------------------------------
 
 
@@ -582,61 +646,9 @@ def _seed_result_csv(train_folder, variant, benchmark="libero_10", checkpoint_na
     return path
 
 
-def test_rotate_reeval_csvs_only_rotates_selected_variant(tmp_path):
-    train_folder = tmp_path / "run"
-    orig_csv = _seed_result_csv(train_folder, "orig")
-    plus_csv = _seed_result_csv(train_folder, "plus")
-    checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
-
-    rotate_reeval_csvs({"plus"}, {}, str(train_folder), checkpoint, "libero_10")
-
-    assert orig_csv.exists()
-    assert not plus_csv.exists()
-    assert len(list(plus_csv.parent.glob("results_*.csv"))) == 1
-
-
-def test_rotate_reeval_csvs_csv_dir_override_every_variant_selected_rotates_once(tmp_path):
-    train_folder = tmp_path / "run"
-    csv_dir = tmp_path / "shared"
-    shared_csv = csv_dir / "result.csv"
-    write_csv(shared_csv, [_row(True, True, True, True)])
-    checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
-
-    backups = rotate_reeval_csvs(
-        set(eval_pipeline.all_variants(True)),
-        {"csv_dir": str(csv_dir)},
-        str(train_folder),
-        checkpoint,
-        "libero_10",
-    )
-
-    assert len(backups) == 1
-    assert not shared_csv.exists()
-    assert len(list(csv_dir.glob("results_*.csv"))) == 1
-
-
-def test_rotate_reeval_csvs_csv_dir_override_one_variant_raises(tmp_path):
-    train_folder = tmp_path / "run"
-    csv_dir = tmp_path / "shared"
-    write_csv(csv_dir / "result.csv", [_row(True, True, True, True)])
-    checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
-
-    with pytest.raises(ValueError):
-        rotate_reeval_csvs({"plus"}, {"csv_dir": str(csv_dir)}, str(train_folder), checkpoint, "libero_10")
-
-
-def test_rotate_reeval_csvs_missing_file_returns_none(tmp_path):
-    train_folder = tmp_path / "run"
-    checkpoint = str(train_folder / "seed_42" / "saved_models" / "last.ckpt")
-
-    backups = rotate_reeval_csvs({"plus"}, {}, str(train_folder), checkpoint, "libero_10")
-
-    assert backups == [None]
-
-
-# ---------------------------------------------------------------------------
-# plan_lines(reeval_variants=...) -- pure filtering, no rotation
-# ---------------------------------------------------------------------------
+def _reeval_flagged(lines):
+    """The subset of (service, overrides) lines carrying reeval=true."""
+    return [(svc, overrides) for svc, overrides in lines if "reeval=true" in overrides]
 
 
 def test_plan_lines_reeval_variants_restricts_to_plus_only(tmp_path):
@@ -668,6 +680,66 @@ def test_plan_lines_reeval_variants_none_is_unrestricted(tmp_path):
     assert [svc for svc, _ in lines] == ["eval"] + ["eval-plus"] * 4
 
 
+def test_plan_lines_reeval_marks_only_the_first_of_several_lines_sharing_one_path(tmp_path):
+    """A dropout run's 14 'orig' combo lines all merge into the same shared
+    orig_<bench>/result.csv -- rotating on every one of them would each wipe out the
+    previous combo's freshly-written rows (see the module docstring). Only the first
+    line touching that path may carry reeval=true."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=True, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], reeval_variants={"orig"})
+
+    assert len(lines) == 14
+    assert len(_reeval_flagged(lines)) == 1
+
+
+def test_plan_lines_reeval_single_suite_lines_all_get_the_marker(tmp_path):
+    """plus (and each modality-off variant) is always exactly one line per target
+    path, so it always gets reeval=true when selected -- no dedup needed."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(
+        str(train_folder), resume=False, extra_overrides=[],
+        reeval_variants={"plus", "plus_no_lang"},
+    )
+
+    assert len(lines) == 2
+    assert len(_reeval_flagged(lines)) == 2
+
+
+def test_plan_lines_reeval_variant_replans_even_when_already_marked_done(tmp_path):
+    """Explicitly selecting a suite for --reeval must replan it regardless of what's
+    on disk -- the user asked to redo it, so an already "done" combo must not be
+    silently skipped the way a plain --resume would skip it."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    _seed_result_csv(train_folder, "plus")
+
+    lines = plan_lines(
+        str(train_folder), resume=True, extra_overrides=[], reeval_variants={"plus"},
+    )
+
+    assert [svc for svc, _ in lines] == ["eval-plus"]
+    assert _reeval_flagged(lines) == lines
+
+
+def test_plan_lines_non_reeval_suite_still_governed_by_resume(tmp_path):
+    """A suite not named in --reeval-suites must fall back to the ordinary --resume
+    already_done() check, not be unconditionally replanned."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    _seed_result_csv(train_folder, "orig")  # full-modality combo already done
+
+    lines = plan_lines(
+        str(train_folder), resume=True, extra_overrides=[], reeval_variants={"plus"},
+    )
+
+    assert [svc for svc, _ in lines] == ["eval-plus"]  # "orig" correctly skipped, not replanned
+    assert _reeval_flagged(lines) == lines  # the one remaining line is the reeval'd "plus"
+
+
 # ---------------------------------------------------------------------------
 # main() "plan" -- --reeval / --reeval-suites CLI wiring, including the
 # rotate-before-plan ordering invariant that keeps --resume from producing an
@@ -684,8 +756,11 @@ def test_main_reeval_with_resume_replans_rotated_suite_in_full(tmp_path, monkeyp
     train_folder = tmp_path / "run"
     _write_train_cfg(train_folder, dropout=False, use_proprio=False)
     csv_path = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
-    # If rotation ran after (or never), --resume would see this "done" combo and the
-    # plan would come back empty -- the exact data-loss failure mode this guards.
+    # If --resume's already_done() weren't bypassed for a reeval'd suite, it would see
+    # this "done" combo and the plan would come back empty -- the exact data-loss
+    # failure mode this guards. Rotation no longer happens at plan time (see the module
+    # docstring), so the file is untouched here -- flower_eval_libero.py rotates it
+    # itself, immediately before writing, once the reeval=true-flagged line actually runs.
     write_csv(csv_path, [_row(True, True, True, True)])
 
     _run_plan_cli(
@@ -696,10 +771,12 @@ def test_main_reeval_with_resume_replans_rotated_suite_in_full(tmp_path, monkeyp
     captured = capsys.readouterr()
     lines = [line for line in captured.out.splitlines() if line]
     assert len(lines) == 1
-    assert lines[0].split("\t")[0] == "eval-plus"
-    assert not csv_path.exists()
-    assert len(list(csv_path.parent.glob("results_*.csv"))) == 1
-    assert "reeval: rotated" in captured.err
+    fields = lines[0].split("\t")
+    assert fields[0] == "eval-plus"
+    assert "reeval=true" in fields
+    assert csv_path.exists()  # untouched at plan time
+    assert len(read_csv(csv_path)) == 1  # still just the original row, nothing rotated away
+    assert list(csv_path.parent.glob("results_*.csv")) == []  # nothing rotated yet
 
 
 def test_main_reeval_stdout_has_only_plan_lines(tmp_path, monkeypatch, capsys):
@@ -712,7 +789,6 @@ def test_main_reeval_stdout_has_only_plan_lines(tmp_path, monkeypatch, capsys):
     for line in captured.out.splitlines():
         if line:
             assert "\t" in line  # every stdout line is a <service>\t<overrides...> plan line
-    assert "reeval:" in captured.err
 
 
 def test_main_reeval_suites_without_reeval_flag_errors(tmp_path, monkeypatch):
@@ -735,6 +811,37 @@ def test_main_reeval_invalid_suite_token_exits_with_message(tmp_path, monkeypatc
     assert "libero_spatial" in str(exc_info.value)
 
 
+def test_main_reeval_csv_dir_override_with_partial_suite_selection_exits_with_message(tmp_path, monkeypatch):
+    """csv_dir= makes every suite share one result.csv (see _variant_csv_path); reeval-ing
+    only some of the suites sharing that path would rotate away -- and never replace --
+    the ones left out. Must be rejected before anything is planned or rotated."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _run_plan_cli(
+            monkeypatch,
+            [
+                "--train-folder", str(train_folder), "--reeval", "--reeval-suites", "plus_libero_10",
+                "--", "csv_dir=/x",
+            ],
+        )
+    assert "csv_dir=" in str(exc_info.value)
+
+
+def test_main_reeval_csv_dir_override_with_every_suite_selected_succeeds(tmp_path, monkeypatch, capsys):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    _run_plan_cli(
+        monkeypatch,
+        ["--train-folder", str(train_folder), "--reeval", "--", "csv_dir=/x"],
+    )
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line]
+    assert len(lines) == 6  # orig + full-plus + 4 modality-off, all selected
+
+
 def test_main_reeval_modality_off_suite_replans_only_that_line(tmp_path, monkeypatch, capsys):
     train_folder = tmp_path / "run"
     _write_train_cfg(train_folder, dropout=False, use_proprio=True)
@@ -752,8 +859,9 @@ def test_main_reeval_modality_off_suite_replans_only_that_line(tmp_path, monkeyp
     fields = lines[0].split("\t")
     assert fields[0] == "eval-plus"
     assert "eval_modalities.language=False" in fields
-    assert not csv_path.exists()
-    assert len(list(csv_path.parent.glob("results_*.csv"))) == 1
+    assert "reeval=true" in fields
+    assert csv_path.exists()  # untouched at plan time -- rotation happens lazily, at eval time
+    assert list(csv_path.parent.glob("results_*.csv")) == []
 
 
 def test_main_skip_modality_off_flag_suppresses_the_four_lines(tmp_path, monkeypatch, capsys):
@@ -802,6 +910,37 @@ def test_write_severity_csv_returns_none_and_warns_on_failure(tmp_path, monkeypa
 
     assert result is None
     assert not (plus_csv.parent / "severity_sr.csv").exists()
+    assert "boom" in capsys.readouterr().err
+
+
+def test_write_severity_csv_corrupt_orig_csv_degrades_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    """A malformed/corrupt orig_csv (e.g. a torn write from a killed eval) must degrade
+    to 'no baseline' -- the same documented fallback as orig_csv simply being absent --
+    not raise out of write_severity_csv and cost the whole upload (severity_sr.load_rows
+    used to be called on orig_csv outside the try/except that's supposed to isolate
+    exactly this kind of per-suite failure)."""
+    plus_csv = tmp_path / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True)])
+    orig_csv = tmp_path / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    write_csv(orig_csv, [_row(True, True, True, True)])  # present, but load_rows will blow up on it
+
+    real_load_rows = severity_sr.load_rows
+
+    def _raise_for_orig(path, *args, **kwargs):
+        if str(path) == str(orig_csv):
+            raise RuntimeError("boom -- corrupt orig_csv")
+        return real_load_rows(path, *args, **kwargs)
+
+    monkeypatch.setattr(severity_sr, "load_rows", _raise_for_orig)
+
+    result = write_severity_csv(plus_csv, orig_csv)
+
+    assert result is not None  # did not crash -- severity_sr.csv still produced
+    assert result.exists()
+    with open(result, newline="") as f:
+        rows = list(csv.DictReader(f))
+    total = next(r for r in rows if r["axis"] == "total")
+    assert total["orig_n"] == ""  # degraded to "no baseline", same as orig_csv absent
     assert "boom" in capsys.readouterr().err
 
 
@@ -995,3 +1134,62 @@ def test_artifact_members_modality_off_severity_uses_the_orig_baseline(tmp_path)
         rows = list(csv.DictReader(f))
     total = next(r for r in rows if r["axis"] == "total")
     assert total["orig_n"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# upload() -- a broken derived-file computation must not cost the whole artifact
+# ---------------------------------------------------------------------------
+
+
+class _FakeWandbArtifact:
+    def __init__(self, name, type):
+        self.name = name
+        self.type = type
+        self.added = []
+
+    def add_file(self, path, name):
+        self.added.append((path, name))
+
+
+class _FakeWandbRun:
+    def __init__(self):
+        self.logged = []
+        self.finished = False
+
+    def log_artifact(self, artifact):
+        self.logged.append(artifact)
+
+    def finish(self):
+        self.finished = True
+
+
+def test_upload_pid_modality_failure_still_uploads_the_rest(tmp_path, monkeypatch, capsys):
+    """subprocess.run(pid_modality.py, check=True) used to propagate CalledProcessError
+    straight out of upload(), losing every artifact member (orig/plus CSVs included) over
+    one broken derived-file computation -- the same principle write_severity_csv already
+    followed for severity_sr.py failures."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    orig_csv = train_folder / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    write_csv(orig_csv, [_row(True, True, True, True)])
+    plus_csv = train_folder / "eval_logs" / "last" / "plus_libero_10" / "result.csv"
+    write_csv(plus_csv, [_row(True, True, True, True)])
+
+    def _raise(*args, **kwargs):
+        raise eval_pipeline.subprocess.CalledProcessError(1, args[0], stderr="boom")
+
+    monkeypatch.setattr(eval_pipeline.subprocess, "run", _raise)
+
+    fake_run = _FakeWandbRun()
+    monkeypatch.setattr(eval_pipeline.wandb, "init", lambda **kwargs: fake_run)
+    monkeypatch.setattr(eval_pipeline.wandb, "Artifact", _FakeWandbArtifact)
+
+    eval_pipeline.upload(str(train_folder), [])
+
+    assert fake_run.finished
+    assert len(fake_run.logged) == 1
+    member_names = {name for _path, name in fake_run.logged[0].added}
+    assert "libero_orig.csv" in member_names
+    assert "libero_plus.csv" in member_names
+    assert "pid_modality.txt" not in member_names  # the one broken member, correctly dropped
+    assert "boom" in capsys.readouterr().err

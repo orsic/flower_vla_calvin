@@ -863,9 +863,12 @@ resize the eval batch or shrink `n_eval` for a quick check:
 ./run.sh pipeline /saves/train_logs/libero_10/2026-09-08_10-00-00 eval_batch_size=32 n_eval=5
 ```
 
-`PIPELINE_RESUME=1` skips any combo whose modality flags already have rows in the target
-`result.csv`, so a sweep interrupted partway through restarts cheaply instead of
-re-evaluating everything:
+`PIPELINE_RESUME=1` skips any combo whose modality flags already have a *complete* row in
+the target `result.csv` (one from a full, unfiltered run — a row merged in by, say, a
+manual `./run.sh eval-plus task_category="..."` targeting the same suite doesn't count,
+so a partial suite like that still gets finished rather than permanently mistaken for
+done), so a sweep interrupted partway through restarts cheaply instead of re-evaluating
+everything:
 
 ```bash
 PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
@@ -879,8 +882,12 @@ script) with no GPU work at all.
 
 `PIPELINE_REEVAL=1` does the opposite: instead of merging into the existing `result.csv`
 (which keeps every row the new run doesn't overwrite — stale rows from a category or
-modality combo no longer evaluated), it backs the old file up to `results_<mtime>.csv`
-(named for the old file's own modification time) and re-plans that suite from empty.
+modality combo no longer evaluated), each selected suite's own eval invocation backs its
+old file up to `results_<mtime>.csv` (named for the old file's own modification time)
+immediately before writing its fresh results, and starts that suite from empty. This
+happens lazily, suite by suite as the pipeline actually gets to it — not all at once
+before anything runs — so an interruption partway through a multi-suite re-evaluation
+never leaves a suite the run hasn't reached yet without any `result.csv` at all.
 `PIPELINE_REEVAL_SUITES` narrows *which* suites — a comma-separated list of result
 directory names, one of `orig_<bench>`, `plus_<bench>`, or `plus_<bench>_no_<modality>`
 (`no_wrist`/`no_static`/`no_proprio`/`no_lang`) — leaving the rest untouched and
@@ -908,8 +915,9 @@ Set these on the `pipeline` invocation itself, not in `vars.env` — `train`/`tr
 `train-dropout-resume`'s auto-chained pipeline call explicitly clears both first, since
 re-evaluating a run with no prior results is meaningless and a stale suite name for a
 different benchmark would otherwise abort a freshly finished training run. `PIPELINE_RESUME`
-has no effect on a suite selected for re-evaluation (its `result.csv` is already gone by the
-time resume would check it) but still applies normally to any suite *not* selected. The
+has no effect on a suite selected for re-evaluation — it's replanned unconditionally,
+regardless of what's currently in its `result.csv` — but still applies normally to any
+suite *not* selected. The
 `results_<mtime>.csv` backups stay on disk next to the fresh file — they are never uploaded —
 and on W&B, `upload` simply logs a new `evaluation` artifact version; `./run.sh analyze`
 already reads the newest one, and older versions remain as W&B-side history.

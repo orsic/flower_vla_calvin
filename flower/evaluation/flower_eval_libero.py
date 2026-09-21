@@ -45,6 +45,7 @@ from flower.evaluation.eval_records import (
     read_csv,
     result_dir,
     rollout_seed,
+    rotate_result_csv,
     write_csv,
 )
 from flower.evaluation.libero_tasks import base_task, original_task_names
@@ -1051,6 +1052,11 @@ def _eval_worker(
     rows = eval_libero.evaluate_policy(
         model, store_video=cfg_dict.get("num_videos", 0) if rank == 0 else 0
     )
+    # See the single-GPU path's identical tagging in main() -- must happen at shard
+    # write time so the tag survives merge_rank_csvs' read-shards-then-merge.
+    task_category = cfg_dict.get("task_category")
+    for row in rows:
+        row["task_category_filter"] = task_category or ""
     write_csv(os.path.join(csv_dir, f"result_rank{rank}.csv"), rows)
 
 
@@ -1081,6 +1087,13 @@ def main(cfg):
         eval_modalities = OmegaConf.to_container(eval_modalities, resolve=True)
     env_start_method: str = OmegaConf.select(cfg, "env_start_method", default="spawn")
     cross_task_batching: bool = OmegaConf.select(cfg, "cross_task_batching", default=False)
+    # Set by eval_pipeline.py's `plan --reeval` on exactly the first eval line touching
+    # a given result.csv (see scripts/eval_pipeline.py:plan_lines) -- rotates that file
+    # aside immediately before this invocation's own fresh rows replace it, instead of
+    # the old eager "rotate every selected suite up front, before any of them re-run"
+    # design, which left suites not yet reached with no result.csv at all for as long as
+    # the whole (possibly multi-suite, multi-hour) reeval took.
+    reeval: bool = OmegaConf.select(cfg, "reeval", default=False)
 
     eval_libero = EvaluateLibero(
         model=model,
@@ -1127,7 +1140,16 @@ def main(cfg):
         eval_libero.setup()
         successes = eval_libero.start()
 
+        # Marks a row as coming from a full (task_category=None), rather than a
+        # category-filtered, eval -- see eval_records.py's module docstring. A
+        # category-filtered row must never look like suite-completion evidence to
+        # eval_pipeline.py's already_done().
+        for row in eval_libero.last_rows:
+            row["task_category_filter"] = task_category or ""
+
         csv_path = csv_dir / "result.csv"
+        if reeval:
+            rotate_result_csv(csv_path)
         merge_result_csv(csv_path, eval_libero.last_rows)
         print(f"Wrote {len(eval_libero.last_rows)} episode rows to {csv_path}")
 
@@ -1210,6 +1232,11 @@ def main(cfg):
                     wandb.log({f"eval_lh/cat_{cat.replace(' ', '_').lower()}": sr})
 
         # Merge this run's shards into the accumulated result.csv, then delete them.
+        # Workers only ever write their own result_rank<i>.csv shard (see _eval_worker);
+        # result.csv itself is touched only here, in the parent, so a single rotation
+        # call is correct and sufficient for this suite (see the single-GPU path above).
+        if reeval:
+            rotate_result_csv(csv_dir / "result.csv")
         merged_rows = merge_rank_csvs(csv_dir, n_gpus)
         print(f"Wrote {len(current_rows)} episode rows to {csv_dir / 'result.csv'} "
               f"({len(merged_rows)} rows total)")

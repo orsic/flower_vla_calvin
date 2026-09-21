@@ -327,6 +327,49 @@ def test_merge_rank_csvs_unions_shards_and_deletes_them(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# write_csv -- atomic (temp file + os.replace), so a process kill mid-write can't
+# leave a truncated-but-existing file that already_done()/artifact_members() would
+# otherwise trust as complete, valid data.
+# ---------------------------------------------------------------------------
+
+def test_write_csv_replaces_existing_file_in_one_step(tmp_path):
+    path = tmp_path / "result.csv"
+    write_csv(path, [_row(0, 0, success=1)])
+
+    write_csv(path, [_row(1, 0, success=0)])
+
+    assert [row["task_idx"] for row in read_csv(path)] == ["1"]
+    assert list(tmp_path.glob(".*.tmp*")) == []  # no leftover temp file
+
+
+def test_write_csv_failure_midway_leaves_previous_file_intact(tmp_path, monkeypatch):
+    path = tmp_path / "result.csv"
+    write_csv(path, [_row(0, 0, success=1)])
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated kill mid-write")
+
+    monkeypatch.setattr(os, "replace", _boom)
+
+    with pytest.raises(RuntimeError):
+        write_csv(path, [_row(1, 0, success=0)])
+
+    # write_csv only ever swaps `path` via the (here, failing) final os.replace -- the
+    # previous complete file must survive untouched, never truncated or half-overwritten.
+    assert [row["task_idx"] for row in read_csv(path)] == ["0"]
+
+
+def test_write_csv_round_trips_task_category_filter(tmp_path):
+    path = tmp_path / "result.csv"
+    row = _row(0, 0, success=1)
+    row["task_category_filter"] = "Camera Viewpoints"
+
+    write_csv(path, [row])
+
+    assert read_csv(path)[0]["task_category_filter"] == "Camera Viewpoints"
+
+
+# ---------------------------------------------------------------------------
 # rotate_result_csv
 # ---------------------------------------------------------------------------
 

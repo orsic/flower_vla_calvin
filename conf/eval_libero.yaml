@@ -37,3 +37,4 @@ eval_modalities:  # set any to false to physically drop that modality's tokens p
   language: true
   proprio: true  # requires model.use_proprio=True; not a token, gated separately (see FLOWERVLA.eval_proprio_mask)
 csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<suite>/
+reeval: false  # set by eval_pipeline.py's `plan --reeval` -- rotate result.csv aside before writing, instead of merging into it
