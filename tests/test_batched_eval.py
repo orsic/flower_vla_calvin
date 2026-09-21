@@ -11,9 +11,14 @@ These tests exercise the new code paths without loading Florence-2 or MuJoCo:
   7. make_libero_venv start-method dispatch
   8. evaluate_work_list: per-slot (not stacked) init-state application for ragged
      cross-task batches
+  9. _CtxSubprocVectorEnv/_RebuildableDummyVectorEnv.rebuild(): worker-process reuse
+     across batches
+  10. evaluate_task/evaluate_work_list: process_env_obs_batch skipped on cached
+      (non-replan) steps
 """
 
 import json
+import math
 import os
 import tempfile
 import numpy as np
@@ -647,3 +652,141 @@ def test_no_init_states_skips_set_init_state_call():
 
     assert init_slots == []
     assert env.set_init_state_calls == []
+
+
+# ---------------------------------------------------------------------------
+# 9. rebuild(): worker-process reuse across batches
+#
+# evaluate_task/evaluate_work_list used to tear down and recreate the venv
+# every batch (env.close() + make_libero_venv()); measured, that spawn + EGL
+# context creation was ~42% of total eval wall-clock. rebuild() instead swaps
+# each worker's env in place (env.close() + reconstruct, same process), so
+# these tests assert both the swap actually happens (new obs, correct count)
+# and that it does NOT pay for a new process (same PID -- the whole point).
+# _FakeEnv avoids MuJoCo/EGL entirely so this stays a fast unit test; the
+# real-env equivalence is the end-to-end CSV diff in the plan's verification
+# section, not here.
+# ---------------------------------------------------------------------------
+
+class _FakeEnv:
+    """Picklable stand-in for OffScreenRenderEnv -- just enough surface
+    (reset/step/close) for _rebuildable_worker's command loop, with a `label`
+    to prove which env_fn produced it."""
+
+    def __init__(self, label):
+        self.label = label
+        self.closed = False
+
+    def reset(self):
+        return {"label": self.label}
+
+    def step(self, action):
+        return {"label": self.label}, 0.0, False, {}
+
+    def close(self):
+        self.closed = True
+
+
+def test_ctx_subproc_venv_rebuild_swaps_env_in_same_process():
+    """rebuild() must reuse the worker's existing subprocess (same PID), not
+    spawn a new one -- that reuse is the entire point of pooling workers
+    across batches."""
+    from flower.evaluation.libero_venv import make_libero_venv
+
+    env = make_libero_venv([lambda: _FakeEnv("a"), lambda: _FakeEnv("b")], "spawn")
+    try:
+        pids_before = [w.process.pid for w in env.workers]
+
+        obs = env.reset()
+        assert [obs[i]["label"] for i in range(2)] == ["a", "b"]
+
+        env.rebuild([lambda: _FakeEnv("c"), lambda: _FakeEnv("d")])
+        pids_after = [w.process.pid for w in env.workers]
+        assert pids_after == pids_before  # no new process spawned
+
+        obs2 = env.reset()
+        assert [obs2[i]["label"] for i in range(2)] == ["c", "d"]
+    finally:
+        env.close()
+
+
+def test_ctx_subproc_venv_rebuild_ragged_leaves_surplus_workers_untouched():
+    """A rebuild with fewer env_fns than the pool (the ragged last batch of a
+    work list) must only touch workers[:n]; the rest keep their current env
+    and stay steppable via an explicit id=[...]."""
+    from flower.evaluation.libero_venv import make_libero_venv
+
+    env = make_libero_venv(
+        [lambda: _FakeEnv("a"), lambda: _FakeEnv("b"), lambda: _FakeEnv("c")], "spawn"
+    )
+    try:
+        env.rebuild([lambda: _FakeEnv("x")])  # only worker 0 rebuilt
+
+        obs = env.reset(id=[0])
+        assert obs[0]["label"] == "x"
+
+        obs_rest = env.reset(id=[1, 2])
+        assert [obs_rest[0]["label"], obs_rest[1]["label"]] == ["b", "c"]
+    finally:
+        env.close()
+
+
+def test_dummy_venv_rebuild_swaps_env_in_place():
+    """The 'dummy' (sequential, in-process) start method supports the same
+    rebuild() contract as 'spawn' -- evaluate_task/evaluate_work_list call it
+    unconditionally regardless of env_start_method."""
+    from flower.evaluation.libero_venv import make_libero_venv
+
+    env = make_libero_venv([lambda: _FakeEnv("a"), lambda: _FakeEnv("b")], "dummy")
+    try:
+        obs = env.reset()
+        assert [obs[i]["label"] for i in range(2)] == ["a", "b"]
+
+        env.rebuild([lambda: _FakeEnv("c"), lambda: _FakeEnv("d")])
+        obs2 = env.reset()
+        assert [obs2[i]["label"] for i in range(2)] == ["c", "d"]
+    finally:
+        env.close()
+
+
+# ---------------------------------------------------------------------------
+# 10. process_env_obs_batch skipped on cached (non-replan) steps
+#
+# step_batch only reads (data, goal) when rollout_step_counter % multistep ==
+# 0 (see _MinimalFlower.step_batch / flower.py's real step_batch, copied
+# verbatim in this file); on every other step it just indexes the cached
+# pred_action_seq. evaluate_task/evaluate_work_list now guard the
+# process_env_obs_batch call behind that same condition instead of building
+# (and discarding) it every step. This test proves the guard can't change
+# step_batch's output -- (data, goal) genuinely go unread on skip steps -- and
+# that it's called exactly ceil(steps/multistep) times.
+# ---------------------------------------------------------------------------
+
+def test_step_batch_result_unaffected_by_skipping_preprocessing_on_cached_steps():
+    B, multistep, steps = 3, 10, 25
+
+    def build_baseline():
+        return object(), object()  # stand-in (data, goal); _MinimalFlower's
+                                    # __call__ ignores both, same as real step_batch
+                                    # only reads them on a replan step
+
+    baseline_model = _MinimalFlower(B=B)
+    baseline_model.multistep = multistep
+    baseline_actions = [baseline_model.step_batch(*build_baseline()) for _ in range(steps)]
+
+    guarded_model = _MinimalFlower(B=B)
+    guarded_model.multistep = multistep
+    guarded_calls = 0
+    guarded_actions = []
+    for _ in range(steps):
+        if guarded_model.rollout_step_counter % guarded_model.multistep == 0:
+            data, goal = build_baseline()
+            guarded_calls += 1
+        else:
+            data, goal = None, None
+        guarded_actions.append(guarded_model.step_batch(data, goal))
+
+    assert guarded_calls == math.ceil(steps / multistep)
+    assert all(
+        torch.allclose(a, b) for a, b in zip(baseline_actions, guarded_actions)
+    ), "guarding process_env_obs_batch behind the replan condition must not change actions"

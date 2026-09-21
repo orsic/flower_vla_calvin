@@ -502,19 +502,25 @@ below) — set it to each model's own directory so the two models' CSVs don't co
 
 > **Memory note:** always keep `n_eval=1` for LIBERO-Plus. Each Plus task is one
 > deterministic perturbed instance, so higher values add no new perturbations.
-> More importantly, MuJoCo/robosuite offscreen render contexts don't fully free
-> native EGL/GL memory on `env.close()`, so peak RSS grows monotonically with
-> the total env create/destroy cycle count. With `cross_task_batching: true`
-> (the `eval_libero_plus.yaml` default) that count is
-> `ceil(n_tasks × n_eval / eval_batch_size)` — for 419 Camera-Viewpoint tasks at
-> `n_eval=1` that's ~42 instantiations, not one per task, since batches now span
-> tasks instead of collapsing to size 1. (Falling back to `cross_task_batching: false`
-> reintroduces the old `n_tasks × ceil(n_eval / eval_batch_size)` count — ~419
-> instantiations here, and ~20,950 at `n_eval=50` — which can OOM under the
-> container's `MEM_LIMIT` cap in `vars.env`.)
-> If a full 2519-task run still approaches the cap, split it by category (as above)
-> or use multi-GPU (`CUDA_VISIBLE_DEVICES=2,3`) so each spawned worker process
-> releases its address space on exit.
+> The `eval_batch_size` MuJoCo worker processes are now reused across batches
+> (rebuilt in place — `env.close()` + reconstruct in the same process — rather
+> than respawned; see `flower.evaluation.libero_venv._CtxSubprocVectorEnv.rebuild`),
+> which removed most of the per-batch env-creation cost. Measured over 25
+> in-process rebuild cycles, RSS held flat at ~1.6–2.2 GB per worker with no
+> upward trend, so plan for **~2 GB RSS per worker** against the container's
+> `MEM_LIMIT` cap in `vars.env` (independent of run length, since workers are no
+> longer torn down between batches). With `cross_task_batching: true` (the
+> `eval_libero_plus.yaml` default), worker count is `eval_batch_size`
+> regardless of `n_tasks`.
+>
+> `eval_batch_size` sizing: pick it from cores available ÷ concurrently-running
+> evals, not "as large as possible" — MuJoCo workers are single-threaded but the
+> host still context-switches all of them. With several eval containers sharing
+> the box, keep the default (`10`); running one eval alone, raising it toward
+> `~24` amortizes the (now small) per-batch setup over more rollouts. If a full
+> 2519-task run still approaches the memory cap, split it by category (as above)
+> or use multi-GPU (`CUDA_VISIBLE_DEVICES=2,3`) to spread workers across
+> processes.
 
 ### Evaluation results (CSV)
 

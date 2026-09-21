@@ -448,39 +448,47 @@ class EvaluateLibero:
         rows: List[Dict[str, Any]] = []
         episode_idx = 0
 
+        # Reused across this task's batches instead of rebuilt per batch: a
+        # rebuild (env.close() + reconstruct, in place in the same worker
+        # process) is far cheaper than a fresh spawn + EGL context per batch
+        # (see the plan this lands with for the measurement). Created lazily
+        # on the first batch, closed once after the loop below.
+        env = None
+
         with tqdm(total=self.n_eval, desc="Evaluating") as pbar:
             while episode_idx < self.n_eval:
                 current_batch_size = min(self.eval_batch_size, self.n_eval - episode_idx)
+                ids = list(range(current_batch_size))
 
                 # env_start_method="spawn" (default) runs each episode in its own
                 # freshly-spawned subprocess, so MuJoCo stepping and EGL rendering are
                 # real B-way parallel; "dummy" keeps the old sequential in-process
                 # behavior. See flower.evaluation.libero_venv for why spawn (not fork)
                 # is required here.
-                env_creation = False
-                count = 0
-                while not env_creation and count < 5:
-                    try:
-                        env = make_libero_venv(
-                            [lambda: OffScreenRenderEnv(**env_args)
-                             for _ in range(current_batch_size)],
-                            self.env_start_method,
-                        )
-                        env_creation = True
-                    except Exception:
-                        time.sleep(5)
-                        count += 1
-                if not env_creation:
-                    raise Exception("Failed to create environment")
+                env_fns = [lambda: OffScreenRenderEnv(**env_args) for _ in range(current_batch_size)]
+                if env is None:
+                    env_creation = False
+                    count = 0
+                    while not env_creation and count < 5:
+                        try:
+                            env = make_libero_venv(env_fns, self.env_start_method)
+                            env_creation = True
+                        except Exception:
+                            time.sleep(5)
+                            count += 1
+                    if not env_creation:
+                        raise Exception("Failed to create environment")
+                else:
+                    env.rebuild(env_fns)
 
                 # Reset and set initial states for this batch
-                env.reset()
+                env.reset(id=ids)
                 state_idxs = None
                 if initial_states is not None:
                     state_idxs = np.array(
                         [(episode_idx + k) % n_states for k in range(current_batch_size)]
                     )
-                    env.set_init_state(initial_states[state_idxs])
+                    env.set_init_state(initial_states[state_idxs], id=ids)
 
                 # One seed per slot, from that episode's own identity (base task name +
                 # episode index) -- not from its position in the batch. The model draws
@@ -501,7 +509,7 @@ class EvaluateLibero:
                 # Dummy warmup steps — obs from last warmup step is the starting obs
                 dummy = np.zeros((current_batch_size, 7))
                 for _ in range(5):
-                    obs, _, _, _ = env.step(dummy)
+                    obs, _, _, _ = env.step(dummy, id=ids)
 
                 # Open video writers for episodes that should be recorded
                 video_writers: Dict[int, cv2.VideoWriter] = {}
@@ -525,7 +533,15 @@ class EvaluateLibero:
                 active_ids = list(range(current_batch_size))
                 while steps < self.max_steps:
                     steps += 1
-                    data, goal = self.process_env_obs_batch(obs, task_emb, language)
+                    # step_batch only actually consumes (data, goal) on a replan
+                    # step (rollout_step_counter % multistep == 0); every other
+                    # step it just indexes the cached pred_action_seq and never
+                    # touches them. Building the batch anyway wasted a CPU
+                    # resize+normalize pass over both cameras every step.
+                    if model.rollout_step_counter % model.multistep == 0:
+                        data, goal = self.process_env_obs_batch(obs, task_emb, language)
+                    else:
+                        data, goal = None, None
                     # Inference always runs at full width B (even once some episodes
                     # have finished): step_batch draws one shared noise tensor for the
                     # whole batch, so shrinking it would change what gets sampled for
@@ -588,10 +604,12 @@ class EvaluateLibero:
                         "success": int(dones[k]),
                     })
 
-                env.close()
-                gc.collect()
                 episode_idx += current_batch_size
                 pbar.update(current_batch_size)
+
+        if env is not None:
+            env.close()
+            gc.collect()
 
         return rows
 
@@ -642,35 +660,43 @@ class EvaluateLibero:
 
         rows: List[Dict[str, Any]] = []
 
+        # Reused across batches instead of rebuilt per batch (see the plan
+        # this lands with for the measurement): a rebuild swaps each worker's
+        # env in place, far cheaper than a fresh spawn + EGL context every 10
+        # rollouts. Created lazily on the first batch, closed once at the end.
+        env = None
+
         with tqdm(total=len(work_items), desc="Evaluating (cross-task batches)") as pbar:
             for batch_start in range(0, len(work_items), self.eval_batch_size):
                 batch_items = work_items[batch_start:batch_start + self.eval_batch_size]
                 B = len(batch_items)
+                ids = list(range(B))
                 metas = [task_cache[idx] for idx, _ in batch_items]
 
-                env_creation = False
-                count = 0
-                while not env_creation and count < 5:
-                    try:
-                        env = make_libero_venv(
-                            [
-                                (lambda args={
-                                    "bddl_file_name": m["bddl_path"],
-                                    "camera_heights": self.img_h,
-                                    "camera_widths": self.img_w,
-                                }: OffScreenRenderEnv(**args))
-                                for m in metas
-                            ],
-                            self.env_start_method,
-                        )
-                        env_creation = True
-                    except Exception:
-                        time.sleep(5)
-                        count += 1
-                if not env_creation:
-                    raise Exception("Failed to create environment")
+                env_fns = [
+                    (lambda args={
+                        "bddl_file_name": m["bddl_path"],
+                        "camera_heights": self.img_h,
+                        "camera_widths": self.img_w,
+                    }: OffScreenRenderEnv(**args))
+                    for m in metas
+                ]
+                if env is None:
+                    env_creation = False
+                    count = 0
+                    while not env_creation and count < 5:
+                        try:
+                            env = make_libero_venv(env_fns, self.env_start_method)
+                            env_creation = True
+                        except Exception:
+                            time.sleep(5)
+                            count += 1
+                    if not env_creation:
+                        raise Exception("Failed to create environment")
+                else:
+                    env.rebuild(env_fns)
 
-                env.reset()
+                env.reset(id=ids)
                 # For LIBERO-Plus (n_eval=1 -> ep is always 0), this is always index 0 --
                 # correctly so, not a bug: a Plus task's own perturbation parameter (view
                 # angle sample, robot qpos-offset sample, noise instance, texture/light id
@@ -712,7 +738,7 @@ class EvaluateLibero:
 
                 dummy = np.zeros((B, 7))
                 for _ in range(5):
-                    obs, _, _, _ = env.step(dummy)
+                    obs, _, _, _ = env.step(dummy, id=ids)
 
                 video_writers: Dict[int, cv2.VideoWriter] = {}
                 video_frames: Dict[int, list] = {}
@@ -736,7 +762,12 @@ class EvaluateLibero:
                 active_ids = list(range(B))
                 while steps < self.max_steps:
                     steps += 1
-                    data, goal = self.process_env_obs_batch(obs, None, lang_texts)
+                    # See evaluate_task's identical guard: step_batch only reads
+                    # (data, goal) on a replan step.
+                    if model.rollout_step_counter % model.multistep == 0:
+                        data, goal = self.process_env_obs_batch(obs, None, lang_texts)
+                    else:
+                        data, goal = None, None
                     actions = model.step_batch(data, goal).cpu().numpy()  # [B, 7]
                     step_obs, _, step_done, _ = env.step(actions[active_ids], id=active_ids)
 
@@ -796,9 +827,11 @@ class EvaluateLibero:
                         "success": int(dones[k]),
                     })
 
-                env.close()
-                gc.collect()
                 pbar.update(B)
+
+        if env is not None:
+            env.close()
+            gc.collect()
 
         return rows
 
