@@ -5,6 +5,10 @@ would have returned and asserts a non-empty PDF comes out.
 import sys
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
@@ -12,9 +16,13 @@ import plot_data  # noqa: E402
 import plot_eval  # noqa: E402
 
 
-def _bar(successes, n, runs=("r1",)):
+def _bar(successes, n, runs=("r1",), mcnemar=None):
     rate = successes / n if n else float("nan")
-    return plot_data.Bar(label="x", successes=successes, n=n, rate=rate, ci_low=0.1, ci_high=0.9, runs=list(runs))
+    mcnemar_b, mcnemar_c, mcnemar_n = mcnemar if mcnemar else (None, None, None)
+    return plot_data.Bar(
+        label="x", successes=successes, n=n, rate=rate, ci_low=0.1, ci_high=0.9, runs=list(runs),
+        mcnemar_b=mcnemar_b, mcnemar_c=mcnemar_c, mcnemar_n=mcnemar_n,
+    )
 
 
 def _pair(successes, n, orig=None):
@@ -46,6 +54,18 @@ def test_plot_perturbation_writes_a_pdf_with_and_without_orig_bar(tmp_path):
     }
     path = plot_eval.plot_perturbation(pool_data, tmp_path)
     assert path.name == "perturbation_libero10plus.pdf"
+    _assert_pdf(path)
+
+
+def test_plot_perturbation_with_baseline_series_and_mcnemar_writes_a_pdf(tmp_path):
+    pool_data = {
+        "Camera Viewpoints": {
+            1.0: (_bar(8, 10, mcnemar=(2, 1, 8)), _bar(6, 8)),
+            plot_data.BASELINE_PROPRIO: (_bar(7, 10), _bar(6, 8)),
+            plot_data.BASELINE_NO_PROPRIO: (_bar(4, 10), None),
+        },
+    }
+    path = plot_eval.plot_perturbation(pool_data, tmp_path)
     _assert_pdf(path)
 
 
@@ -102,26 +122,47 @@ def test_plot_difficulty_pooled_writes_a_pdf(tmp_path):
     _assert_pdf(path)
 
 
-def test_keep_p_color_known_values_are_distinct():
-    # 0.0 is a use_proprio=False run's effective keep_p (plot_data._effective_keep_p),
-    # not a literal dropout setting -- it still needs its own color in this figure.
-    colors = {plot_eval.keep_p_color(kp) for kp in (1.0, 0.75, 0.5, 0.25, 0.0)}
-    assert len(colors) == 5
+def test_series_color_known_values_are_distinct():
+    # 0.0 is a use_proprio=False dropout run's series key (plot_data._series_key), not
+    # a literal dropout setting -- it still needs its own color in this figure.
+    colors = {
+        plot_eval.series_color(kp)
+        for kp in (1.0, 0.75, 0.5, 0.25, 0.0, plot_data.BASELINE_PROPRIO, plot_data.BASELINE_NO_PROPRIO)
+    }
+    assert len(colors) == 7
 
 
-def test_keep_p_color_raises_on_an_unexpected_value():
+def test_series_color_raises_on_an_unexpected_value():
     with pytest.raises(ValueError):
-        plot_eval.keep_p_color(0.9)
+        plot_eval.series_color(0.9)
 
 
-def test_keep_p_color_of_1_is_the_yellow_end_of_cividis():
+def test_series_color_of_keep_p_1_is_the_yellow_end_of_cividis():
     # cividis(1.0) is yellow, cividis(0.0) is navy -- keep_p=1.0 must map to the
     # lighter/yellower end, keep_p=0.0 (use_proprio=False) to the darkest/navy end.
     import matplotlib.colors as mcolors
 
-    lightest = mcolors.to_rgb(plot_eval.keep_p_color(1.0))
-    darkest = mcolors.to_rgb(plot_eval.keep_p_color(0.0))
+    lightest = mcolors.to_rgb(plot_eval.series_color(1.0))
+    darkest = mcolors.to_rgb(plot_eval.series_color(0.0))
     assert sum(lightest) > sum(darkest)
+
+
+def test_series_color_baselines_are_outside_the_keep_p_ramp():
+    ramp_colors = {plot_eval.series_color(kp) for kp in (1.0, 0.75, 0.5, 0.25, 0.0)}
+    assert plot_eval.series_color(plot_data.BASELINE_PROPRIO) not in ramp_colors
+    assert plot_eval.series_color(plot_data.BASELINE_NO_PROPRIO) not in ramp_colors
+
+
+def test_series_label_formats_keep_p_and_baselines_distinctly():
+    assert plot_eval.series_label(0.5) == "keep_p=0.5"
+    assert "proprio" in plot_eval.series_label(plot_data.BASELINE_PROPRIO)
+    assert plot_eval.series_label(plot_data.BASELINE_PROPRIO) != plot_eval.series_label(plot_data.BASELINE_NO_PROPRIO)
+
+
+def test_series_sort_key_orders_keep_p_descending_then_baselines():
+    keys = [plot_data.BASELINE_NO_PROPRIO, 0.25, plot_data.BASELINE_PROPRIO, 1.0, 0.5]
+    ordered = sorted(keys, key=plot_eval.series_sort_key)
+    assert ordered == [1.0, 0.5, 0.25, plot_data.BASELINE_PROPRIO, plot_data.BASELINE_NO_PROPRIO]
 
 
 def test_bar_errors_clamps_a_tiny_negative_float_overshoot():
@@ -141,3 +182,33 @@ def test_plot_perturbation_survives_a_tiny_negative_float_overshoot(tmp_path):
     pool_data = {"Camera Viewpoints": {1.0: (pathological, pathological)}}
     path = plot_eval.plot_perturbation(pool_data, tmp_path)
     _assert_pdf(path)
+
+
+# ---------------------------------------------------------------------------
+# bar value labels / McNemar annotations
+# ---------------------------------------------------------------------------
+
+
+def test_annotate_bar_values_adds_one_text_per_bar():
+    fig, ax = plt.subplots()
+    ax.bar([0, 1], [50.0, 80.0])
+    plot_eval._annotate_bar_values(ax, [0, 1], [50.0, 80.0], "white")
+    assert len(ax.texts) == 2
+    plt.close(fig)
+
+
+def test_annotate_mcnemar_skips_a_bar_with_no_mcnemar_n():
+    fig, ax = plt.subplots()
+    ax.bar([0], [50.0])
+    plot_eval._annotate_mcnemar(ax, [0], [_bar(5, 10)])
+    assert len(ax.texts) == 0
+    plt.close(fig)
+
+
+def test_annotate_mcnemar_adds_one_label_per_bar_carrying_a_table():
+    fig, ax = plt.subplots()
+    ax.bar([0], [50.0])
+    plot_eval._annotate_mcnemar(ax, [0], [_bar(5, 10, mcnemar=(3, 1, 9))])
+    assert len(ax.texts) == 1
+    assert "n=9" in ax.texts[0].get_text()
+    plt.close(fig)

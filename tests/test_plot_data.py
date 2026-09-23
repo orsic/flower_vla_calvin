@@ -37,7 +37,10 @@ def _combo_row(static, wrist, lang, proprio, success):
     }
 
 
-def _severity_record(category, bin_label, successes, n, axis="severity", orig_successes="", orig_n=""):
+def _severity_record(
+    category, bin_label, successes, n, axis="severity", orig_successes="", orig_n="",
+    mcnemar_b="", mcnemar_c="", mcnemar_n="",
+):
     return {
         "category": category,
         "axis": axis,
@@ -46,6 +49,9 @@ def _severity_record(category, bin_label, successes, n, axis="severity", orig_su
         "n": n,
         "orig_successes": orig_successes,
         "orig_n": orig_n,
+        "mcnemar_b": mcnemar_b,
+        "mcnemar_c": mcnemar_c,
+        "mcnemar_n": mcnemar_n,
     }
 
 
@@ -74,6 +80,16 @@ def test_pool_bars_no_parts_gives_nan_rate_and_no_runs():
     assert bar.n == 0
     assert math.isnan(bar.rate)
     assert bar.runs == []
+
+
+def test_pool_bars_sums_mcnemar_parts():
+    bar = plot_data.pool_bars([("r1", 3, 10)], "label", mcnemar_parts=[(2, 1, 5), (0, 1, 3)])
+    assert (bar.mcnemar_b, bar.mcnemar_c, bar.mcnemar_n) == (2, 2, 8)
+
+
+def test_pool_bars_mcnemar_fields_are_none_without_mcnemar_parts():
+    bar = plot_data.pool_bars([("r1", 3, 10)], "label")
+    assert (bar.mcnemar_b, bar.mcnemar_c, bar.mcnemar_n) == (None, None, None)
 
 
 def test_warn_multi_run_names_every_contributing_run(capsys):
@@ -141,35 +157,53 @@ def test_cached_or_download_refresh_forces_the_network_even_if_cache_is_complete
 
 
 # ---------------------------------------------------------------------------
-# _effective_keep_p
+# _series_key
 # ---------------------------------------------------------------------------
 
 
-def test_effective_keep_p_is_zero_when_use_proprio_is_false():
-    run = _FakeRun("r1", {"use_proprio": False, "modality_dropout_proprio_keep_p": 0.5})
-    assert plot_data._effective_keep_p(run) == 0.0
+def test_series_key_is_zero_when_use_proprio_is_false_for_a_dropout_run():
+    run = _FakeRun("r1", {"modality_dropout": True, "use_proprio": False, "modality_dropout_proprio_keep_p": 0.5})
+    assert plot_data._series_key(run) == 0.0
 
 
-def test_effective_keep_p_ignores_a_stray_config_value_when_use_proprio_is_false():
+def test_series_key_ignores_a_stray_config_value_when_use_proprio_is_false():
     # modality_dropout_proprio_keep_p is present but inert (there's no proprio to keep
     # or drop) -- the run is still 0.0, not that stray value.
-    run = _FakeRun("r1", {"use_proprio": False, "modality_dropout_proprio_keep_p": 0.75})
-    assert plot_data._effective_keep_p(run) == 0.0
+    run = _FakeRun("r1", {"modality_dropout": True, "use_proprio": False, "modality_dropout_proprio_keep_p": 0.75})
+    assert plot_data._series_key(run) == 0.0
 
 
-def test_effective_keep_p_is_zero_when_use_proprio_is_false_and_config_key_is_absent():
-    run = _FakeRun("r1", {"use_proprio": False})
-    assert plot_data._effective_keep_p(run) == 0.0
+def test_series_key_is_zero_when_use_proprio_is_false_and_config_key_is_absent():
+    run = _FakeRun("r1", {"modality_dropout": True, "use_proprio": False})
+    assert plot_data._series_key(run) == 0.0
 
 
-def test_effective_keep_p_reads_config_when_use_proprio_is_true():
-    run = _FakeRun("r1", {"use_proprio": True, "modality_dropout_proprio_keep_p": 0.75})
-    assert plot_data._effective_keep_p(run) == 0.75
+def test_series_key_reads_keep_p_for_a_dropout_run_with_use_proprio_true():
+    run = _FakeRun("r1", {"modality_dropout": True, "use_proprio": True, "modality_dropout_proprio_keep_p": 0.75})
+    assert plot_data._series_key(run) == 0.75
 
 
-def test_effective_keep_p_is_none_when_use_proprio_true_and_config_missing():
+def test_series_key_is_none_when_dropout_run_use_proprio_true_and_keep_p_missing():
+    run = _FakeRun("r1", {"modality_dropout": True, "use_proprio": True})
+    assert plot_data._series_key(run) is None
+
+
+def test_series_key_is_baseline_proprio_for_a_non_dropout_run_with_proprio():
+    run = _FakeRun("r1", {"modality_dropout": False, "use_proprio": True})
+    assert plot_data._series_key(run) == plot_data.BASELINE_PROPRIO
+
+
+def test_series_key_is_baseline_no_proprio_for_a_non_dropout_run_without_proprio():
+    run = _FakeRun("r1", {"modality_dropout": False, "use_proprio": False})
+    assert plot_data._series_key(run) == plot_data.BASELINE_NO_PROPRIO
+
+
+def test_series_key_defaults_to_a_baseline_when_modality_dropout_is_absent():
+    # FLOWERVLA.__init__'s own default is modality_dropout=False (flower/models/flower.py)
+    # -- a run whose config never mentions it is a non-dropout run, not a dropout run
+    # with an unset keep_p.
     run = _FakeRun("r1", {"use_proprio": True})
-    assert plot_data._effective_keep_p(run) is None
+    assert plot_data._series_key(run) == plot_data.BASELINE_PROPRIO
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +274,30 @@ def test_prepare_perturbation_pairs_plus_with_orig_when_a_baseline_exists():
     plus_bar2, orig_bar2 = result["Language Instructions"][0.5]
     assert (plus_bar2.successes, plus_bar2.n) == (5, 10)
     assert orig_bar2 is None
+
+
+def test_prepare_perturbation_propagates_mcnemar_onto_the_plus_bar_only():
+    records = [
+        _severity_record(
+            "Camera Viewpoints", "ALL", 8, 10, axis="total",
+            orig_successes=6, orig_n=8, mcnemar_b=2, mcnemar_c=1, mcnemar_n=8,
+        ),
+    ]
+    analysis = {"severity": records}
+
+    plus_bar, orig_bar = plot_data.prepare_perturbation([("r1", 0.5, analysis)])["Camera Viewpoints"][0.5]
+
+    assert (plus_bar.mcnemar_b, plus_bar.mcnemar_c, plus_bar.mcnemar_n) == (2, 1, 8)
+    assert (orig_bar.mcnemar_b, orig_bar.mcnemar_c, orig_bar.mcnemar_n) == (None, None, None)
+
+
+def test_prepare_perturbation_mcnemar_is_none_without_a_baseline():
+    records = [_severity_record("Language Instructions", "ALL", 5, 10, axis="total")]  # orig_n == ""
+    analysis = {"severity": records}
+
+    plus_bar, _orig_bar = plot_data.prepare_perturbation([("r1", 0.5, analysis)])["Language Instructions"][0.5]
+
+    assert (plus_bar.mcnemar_b, plus_bar.mcnemar_c, plus_bar.mcnemar_n) == (None, None, None)
 
 
 def test_prepare_perturbation_skips_runs_with_no_severity_data():
@@ -326,6 +384,27 @@ def test_merge_bars_sums_successes_and_unions_runs():
     assert (merged.successes, merged.n) == (5, 10)
     assert (merged.ci_low, merged.ci_high) == severity_sr.wilson_interval(5, 10)
     assert merged.runs == ["r1", "r2"]  # r1 not duplicated
+
+
+def test_merge_bars_sums_mcnemar_treating_missing_bars_as_absent():
+    bar_a = plot_data.Bar(
+        label="a", successes=3, n=5, rate=0.6, ci_low=0.0, ci_high=1.0, runs=["r1"],
+        mcnemar_b=2, mcnemar_c=1, mcnemar_n=8,
+    )
+    bar_b = plot_data.Bar(label="b", successes=2, n=5, rate=0.4, ci_low=0.0, ci_high=1.0, runs=["r2"])  # no mcnemar data
+
+    merged = plot_data.merge_bars([bar_a, bar_b], "all")
+
+    assert (merged.mcnemar_b, merged.mcnemar_c, merged.mcnemar_n) == (2, 1, 8)
+
+
+def test_merge_bars_mcnemar_stays_none_when_no_bar_carries_it():
+    bar_a = plot_data.Bar(label="a", successes=3, n=5, rate=0.6, ci_low=0.0, ci_high=1.0, runs=["r1"])
+    bar_b = plot_data.Bar(label="b", successes=2, n=5, rate=0.4, ci_low=0.0, ci_high=1.0, runs=["r2"])
+
+    merged = plot_data.merge_bars([bar_a, bar_b], "all")
+
+    assert (merged.mcnemar_b, merged.mcnemar_c, merged.mcnemar_n) == (None, None, None)
 
 
 def test_prepare_difficulty_pooled_sums_across_categories():

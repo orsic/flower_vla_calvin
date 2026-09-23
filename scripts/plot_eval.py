@@ -72,9 +72,9 @@ MODALITY_LABELS = {
 # magnitude, not an identity -- sampled from matplotlib's cividis (perceptually
 # uniform, colorblind-safe by design) at t=[0.75, 0.5625, 0.375, 0.1875, 0], per
 # explicit request instead of single-hue blue intensities, inverted so keep_p=1.0
-# (least dropout) is the yellow end. keep_p=0.0 is a use_proprio=False run (never
-# receives proprioception at all, regardless of its config's own
-# modality_dropout_proprio_keep_p value -- see plot_data._effective_keep_p), not a
+# (least dropout) is the yellow end. keep_p=0.0 is a use_proprio=False dropout run
+# (never receives proprioception at all, regardless of its config's own
+# modality_dropout_proprio_keep_p value -- see plot_data._series_key), not a
 # literal keep_p=0.0 dropout setting. Validated with --ordinal against a white
 # surface: lightness-monotone, adjacent-ΔL and light-end-contrast all PASS; "single
 # hue" FAILs by design -- cividis deliberately spans two hues (navy -> olive/yellow),
@@ -83,15 +83,60 @@ MODALITY_LABELS = {
 #   node validate_palette.js "#bcae6c,#8c8878,#61656f,#32436d,#00224e" --ordinal --mode light
 _KEEP_P_RAMP = {1.0: "#bcae6c", 0.75: "#8c8878", 0.5: "#61656f", 0.25: "#32436d", 0.0: "#00224e"}
 
+# Fixed identity colors for the two modality_dropout=False series (plot_data.
+# BASELINE_PROPRIO/BASELINE_NO_PROPRIO) -- deliberately outside the keep_p ramp above,
+# same "own hue, not a ramp step" rationale as MODALITY_COLORS. Validated
+# 2026-09-23 via the dataviz skill's validate_palette.py (no node available in this
+# environment; it's an exact Python port of validate_palette.js), categorical mode,
+# against a white #fcfcfb surface AND against the ramp's own adjacent endpoint
+# (keep_p=0.0, #00224e -- these two baselines sort to its right, see
+# series_sort_key): CVD separation, normal-vision floor and contrast all PASS; only
+# #00224e's own lightness-band/chroma-floor checks fail, which is the ramp's
+# pre-existing, already-accepted ordinal-ramp tradeoff (see above), not something
+# these two colors introduce.
+#   python3 validate_palette.py "#00224e,#c1121f,#0e9594" --mode light
+_BASELINE_COLORS = {
+    plot_data.BASELINE_PROPRIO: "#c1121f",
+    plot_data.BASELINE_NO_PROPRIO: "#0e9594",
+}
+_BASELINE_LABELS = {
+    plot_data.BASELINE_PROPRIO: "no dropout (+proprio)",
+    plot_data.BASELINE_NO_PROPRIO: "no dropout (no proprio)",
+}
+# Fixed legend/x-axis order for the two baseline series, placed after the (descending)
+# keep_p ramp -- see series_sort_key.
+_BASELINE_ORDER = [plot_data.BASELINE_PROPRIO, plot_data.BASELINE_NO_PROPRIO]
 
-def keep_p_color(keep_p: float) -> str:
+
+def series_color(key) -> str:
+    """The color for one presence/perturbation series key -- a float
+    modality_dropout_proprio_keep_p on the cividis ramp, or one of the two BASELINE_*
+    strings on their own fixed hues (see _BASELINE_COLORS)."""
+    if isinstance(key, str):
+        try:
+            return _BASELINE_COLORS[key]
+        except KeyError:
+            raise ValueError(f"No color assigned for series key {key!r} -- expected one of {sorted(_BASELINE_COLORS)}")
     try:
-        return _KEEP_P_RAMP[round(keep_p, 2)]
+        return _KEEP_P_RAMP[round(key, 2)]
     except KeyError:
-        raise ValueError(
-            f"No color assigned for modality_dropout_proprio_keep_p={keep_p!r} -- "
-            f"expected one of {sorted(_KEEP_P_RAMP)}"
-        )
+        raise ValueError(f"No color assigned for modality_dropout_proprio_keep_p={key!r} -- expected one of {sorted(_KEEP_P_RAMP)}")
+
+
+def series_label(key) -> str:
+    """Legend/tick label for one series key."""
+    if isinstance(key, str):
+        return _BASELINE_LABELS[key]
+    return f"keep_p={key:g}"
+
+
+def series_sort_key(key):
+    """Sort order for a mix of float keep_p and BASELINE_* keys: keep_p descending
+    (least dropout first, matching the pre-existing figures), then the two baselines
+    in _BASELINE_ORDER."""
+    if isinstance(key, str):
+        return (1, _BASELINE_ORDER.index(key))
+    return (0, -key)
 
 
 # Canonical facet order for the severity figure -- Language Instructions and
@@ -162,6 +207,60 @@ def _bar_errors(bars: List[Optional[Bar]]) -> Tuple[List[int], List[float], List
     return present, heights, lo, hi
 
 
+_VALUE_LABEL_FONTSIZE = 6.5 * FONT_SCALE
+# Small negative y-offset (points, not data units) from the bar's own top edge --
+# pulls the label down just inside the bar instead of sitting exactly on the edge.
+_VALUE_LABEL_PADDING = -4
+_MCNEMAR_FONTSIZE = 8 * FONT_SCALE * 0.55  # same reduced scale as the file's other caption/caveat text
+_MCNEMAR_COLOR = "#666666"
+# Below-axis room for the rotated "p=... (n=...)" McNemar label every paired figure
+# now draws under each Plus bar -- clears the category tick labels _plot_category_
+# facets/_plot_pooled_bars rotate into that same space. A rotated ~15-character label
+# ("p<0.001 (n=10)") at _MCNEMAR_FONTSIZE needs on the order of 100pt of vertical
+# room; sized empirically against a rendered figure, not computed from font metrics.
+_XTICK_PAD = 45 * FONT_SCALE
+
+
+def _annotate_bar_values(ax, xs, heights, color: str) -> None:
+    """Print each bar's own value (already in percent, see _bar_errors) just inside
+    its top edge, rotated 90 degrees -- a group can hold as many as 7 series (the
+    perturbation figure's keep_p ramp plus its 2 baselines) x 2 bars, too narrow for a
+    horizontal label. `color` is white for a filled Plus/presence bar, the bar's own
+    series color for a hollow hatched orig-LIBERO bar (nothing to contrast against a
+    fill that isn't there).
+
+    Deliberately NOT ax.bar_label(): that method anchors an 'edge' label to the tip of
+    the bar's own error bar when one is attached to its container (its `endpt`
+    computation reads the errorbar's extent), not to the bar's own height -- every bar
+    here has one, so the label would float above the error whisker instead of sitting
+    on the bar. Anchoring directly at (x, height) and nudging inward with a small
+    offset in points keeps the label attached to the value it's labeling."""
+    for x, h in zip(xs, heights):
+        ax.annotate(
+            f"{h:.0f}", xy=(x, h), xytext=(0, _VALUE_LABEL_PADDING), textcoords="offset points",
+            ha="center", va="top", rotation=90, color=color, fontsize=_VALUE_LABEL_FONTSIZE,
+        )
+
+
+def _annotate_mcnemar(ax, xs, bars: List[Bar]) -> None:
+    """"p=<mcnemar_exact_p> (n=<mcnemar_n>)" beneath each drawn Plus bar whose paired
+    orig baseline carries a task-level McNemar table (see plot_data.prepare_perturbation
+    /prepare_severity, severity_sr.paired_baseline) -- skipped where mcnemar_n is None
+    or 0 (no baseline, or every task-level pair in the group tied and was dropped). n
+    is printed alongside p because LIBERO-10 has at most ~10 base tasks per category/
+    bin, so the test's own power has to stay visible next to its result, not just the
+    p-value on its own."""
+    for x, bar in zip(xs, bars):
+        if not bar.mcnemar_n:
+            continue
+        p = severity_sr.mcnemar_exact_p(bar.mcnemar_b, bar.mcnemar_c)
+        label = f"p<0.001 (n={bar.mcnemar_n})" if p < 0.001 else f"p={p:.2f} (n={bar.mcnemar_n})"
+        ax.annotate(
+            label, xy=(x, 0), xycoords=ax.get_xaxis_transform(), xytext=(0, -4), textcoords="offset points",
+            ha="center", va="top", rotation=90, fontsize=_MCNEMAR_FONTSIZE, color=_MCNEMAR_COLOR,
+        )
+
+
 def _draw_grouped_bars(
     ax, group_labels: List[str], series: Dict[str, List[Optional[Bar]]], colors: Dict[str, str], labels: Dict[str, str]
 ) -> None:
@@ -183,6 +282,7 @@ def _draw_grouped_bars(
             offsets, heights, width=slot_width * 0.9, color=colors[key], label=labels[key],
             yerr=[lo, hi], capsize=3, error_kw={"elinewidth": 1.2, "alpha": 0.7, "ecolor": "#333333"},
         )
+        _annotate_bar_values(ax, offsets, heights, "white")
     ax.set_xticks(x)
     ax.set_xticklabels(group_labels)
     ax.set_ylim(0, 100)
@@ -201,7 +301,13 @@ def _draw_paired_grouped_bars(
     figure that pairs a series (keep_p, or a modality config) against that baseline:
     plot_perturbation, plot_severity_percategory/_pooled, plot_difficulty_percategory/
     _pooled. Legend handles are built by each caller (one shared "orig LIBERO" hatch
-    entry, not one per series key), so no `label=` is set here."""
+    entry, not one per series key), so no `label=` is set here.
+
+    Every drawn bar also gets its own value label (_annotate_bar_values), and every
+    drawn Plus bar with a paired McNemar table gets a "p=... (n=...)" label beneath the
+    axis (_annotate_mcnemar) -- ax.tick_params' pad below reserves the room the rotated
+    p-label and the group's own (often rotated) tick label both need so they don't
+    collide."""
     n_series = len(series)
     group_width = 0.8
     slot_width = group_width / n_series
@@ -214,20 +320,26 @@ def _draw_paired_grouped_bars(
         plus_present, plus_heights, plus_lo, plus_hi = _bar_errors([p[0] for p in pairs])
         orig_present, orig_heights, orig_lo, orig_hi = _bar_errors([p[1] for p in pairs])
         if plus_present:
+            plus_x = slot_center[plus_present] - bar_width / 2 - gap
             ax.bar(
-                slot_center[plus_present] - bar_width / 2 - gap, plus_heights, width=bar_width, color=color,
+                plus_x, plus_heights, width=bar_width, color=color,
                 yerr=[plus_lo, plus_hi], capsize=3, error_kw={"elinewidth": 1.2, "alpha": 0.7, "ecolor": "#333333"},
             )
+            _annotate_bar_values(ax, plus_x, plus_heights, "white")
+            _annotate_mcnemar(ax, plus_x, [pairs[j][0] for j in plus_present])
         if orig_present:
+            orig_x = slot_center[orig_present] + bar_width / 2 + gap
             ax.bar(
-                slot_center[orig_present] + bar_width / 2 + gap, orig_heights, width=bar_width, facecolor="none",
+                orig_x, orig_heights, width=bar_width, facecolor="none",
                 edgecolor=color, linewidth=1.8, hatch="//",
                 yerr=[orig_lo, orig_hi], capsize=3, error_kw={"elinewidth": 1.2, "alpha": 0.7, "ecolor": color},
             )
+            _annotate_bar_values(ax, orig_x, orig_heights, color)
     ax.set_xticks(x)
     ax.set_xticklabels(group_labels)
     ax.set_ylim(0, 100)
     ax.set_ylabel("Success rate (%)")
+    ax.tick_params(axis="x", pad=_XTICK_PAD)
 
 
 def _orig_legend_handle() -> Patch:
@@ -239,15 +351,19 @@ def _orig_legend_handle() -> Patch:
 # ---------------------------------------------------------------------------
 
 
-def plot_presence(pool_data: Dict[float, Dict[str, Bar]], outdir: Path) -> Path:
+def plot_presence(pool_data: Dict[plot_data.SeriesKey, Dict[str, Bar]], outdir: Path) -> Path:
     apply_style()
-    keep_ps = sorted(pool_data, reverse=True)
-    group_labels = [f"{kp:g}" for kp in keep_ps]
-    series = {cfg: [pool_data[kp].get(cfg) for kp in keep_ps] for cfg in plot_data.MODALITY_CONFIGS}
+    keys = sorted(pool_data, key=series_sort_key)
+    group_labels = [series_label(k) for k in keys]
+    series = {cfg: [pool_data[k].get(cfg) for k in keys] for cfg in plot_data.MODALITY_CONFIGS}
 
     fig, ax = plt.subplots(figsize=(6 * FONT_SCALE, 4.5 * FONT_SCALE))
     _draw_grouped_bars(ax, group_labels, series, MODALITY_COLORS, MODALITY_LABELS)
-    ax.set_xlabel("modality_dropout_proprio_keep_p")
+    # Rotated, same as every other figure's category/bin labels -- group_labels can now
+    # include the BASELINE_* series' full "no dropout (...)" text, too wide to sit
+    # horizontally at this figure's width without overlapping its neighbors.
+    ax.set_xticklabels(group_labels, rotation=25, ha="right")
+    ax.set_xlabel("training config")
     # Title folded into the legend's own `title=` (not a separate ax.set_title) --
     # constrained_layout doesn't reliably space an outside legend and an axes title
     # apart when they're two independent top-margin claimants.
@@ -258,7 +374,7 @@ def plot_presence(pool_data: Dict[float, Dict[str, Bar]], outdir: Path) -> Path:
 
     outdir.mkdir(parents=True, exist_ok=True)
     path = outdir / "presence_libero10.pdf"
-    fig.savefig(path)
+    fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
     return path
 
@@ -269,23 +385,26 @@ def plot_presence(pool_data: Dict[float, Dict[str, Bar]], outdir: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def plot_perturbation(pool_data: Dict[str, Dict[float, Tuple[Bar, Optional[Bar]]]], outdir: Path) -> Path:
+def plot_perturbation(pool_data: Dict[str, Dict[plot_data.SeriesKey, Tuple[Bar, Optional[Bar]]]], outdir: Path) -> Path:
     apply_style()
     categories = sorted(pool_data)
-    keep_ps = sorted({kp for by_kp in pool_data.values() for kp in by_kp}, reverse=True)
-    series = {kp: [pool_data[cat].get(kp, (None, None)) for cat in categories] for kp in keep_ps}
-    colors = {kp: keep_p_color(kp) for kp in keep_ps}
+    keys = sorted({k for by_key in pool_data.values() for k in by_key}, key=series_sort_key)
+    series = {k: [pool_data[cat].get(k, (None, None)) for cat in categories] for k in keys}
+    colors = {k: series_color(k) for k in keys}
 
     fig, ax = plt.subplots(figsize=(7 * FONT_SCALE, 5 * FONT_SCALE))
     _draw_paired_grouped_bars(ax, categories, series, colors)
     ax.set_xticklabels(categories, rotation=25, ha="right")
     ax.annotate(
         "orig_n is deduplicated by (modality combo, base task) -- ≤10 for LIBERO-10, so the\n"
-        "hatched bars carry wide CIs by construction, not by chance.",
-        xy=(0.0, -0.55), xycoords="axes fraction", ha="left", va="top", fontsize=8 * FONT_SCALE * 0.55, color="#666666",
+        "hatched bars carry wide CIs by construction, not by chance. The p=.../n=... label\n"
+        "below each bar is a task-level exact McNemar test against that same baseline (see\n"
+        "severity_sr.paired_baseline) -- n is the number of base tasks it's built from, so\n"
+        "the smallest reachable two-sided p is ~0.002 and most bars will show p near 1.",
+        xy=(0.0, -0.7), xycoords="axes fraction", ha="left", va="top", fontsize=8 * FONT_SCALE * 0.55, color="#666666",
     )
 
-    handles = [Patch(facecolor=keep_p_color(kp), label=f"keep_p={kp:g}") for kp in keep_ps]
+    handles = [Patch(facecolor=series_color(k), label=series_label(k)) for k in keys]
     handles.append(_orig_legend_handle())
     fig.legend(
         handles=handles, loc="outside upper center", ncol=min(3, len(handles)),
@@ -422,6 +541,13 @@ def _plot_pooled_bars(
     ax.set_xlabel(xlabel)
     if rotate:
         ax.set_xticklabels(keys, rotation=25, ha="right")
+    ax.annotate(
+        "p=.../n=... below a bar is McNemar's test vs. init-state-matched LIBERO original --\n"
+        "pooled across bins/categories (plot_data.merge_bars), so it reuses the same base\n"
+        "tasks' pairs several times over and is anti-conservative (n overstates independent\n"
+        "evidence); see the un-pooled per-category/per-bin figure for the honest test.",
+        xy=(0.0, -0.55), xycoords="axes fraction", ha="left", va="top", fontsize=8 * FONT_SCALE * 0.55, color="#666666",
+    )
 
     handles = [Patch(facecolor=MODALITY_COLORS[cfg], label=MODALITY_LABELS[cfg]) for cfg in _present_configs(pooled)]
     handles.append(_orig_legend_handle())

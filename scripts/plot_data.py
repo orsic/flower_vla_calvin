@@ -30,7 +30,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, Union
 
 import wandb
 
@@ -50,12 +50,27 @@ _CONFIG_TO_VARIANT = {
     variant.split("plus_", 1)[1]: variant for variant in eval_pipeline.MODALITY_OFF_VARIANTS
 }
 
+# Series keys (see _series_key) for a modality_dropout=False run -- it has no
+# modality_dropout_proprio_keep_p to place it on the presence/perturbation figures'
+# cividis keep_p ramp, so it gets its own fixed slot instead, split on whether it
+# received proprioception at all.
+BASELINE_PROPRIO = "baseline_proprio"
+BASELINE_NO_PROPRIO = "baseline_no_proprio"
+
+SeriesKey = Union[float, str]
+
 
 @dataclass
 class Bar:
     """One bar's worth of pooled evaluation data: `runs` names every run.id that
     contributed at least one episode, in the order they were pooled -- `len(runs) > 1`
-    is exactly the condition warn_multi_run() warns about."""
+    is exactly the condition warn_multi_run() warns about.
+
+    mcnemar_b/mcnemar_c/mcnemar_n (see severity_sr.paired_baseline) are None for a bar
+    with no init-state-matched McNemar table -- either because it has no orig_bar at
+    all, or because it's the orig_bar itself (the test result is attached to the plus
+    bar only, since that's the bar being compared against its baseline, not the other
+    way around)."""
 
     label: str
     successes: int
@@ -64,20 +79,35 @@ class Bar:
     ci_low: float
     ci_high: float
     runs: List[str] = field(default_factory=list)
+    mcnemar_b: Optional[int] = None
+    mcnemar_c: Optional[int] = None
+    mcnemar_n: Optional[int] = None
 
 
-def pool_bars(parts: List[Tuple[str, int, int]], label: str) -> Bar:
+def pool_bars(
+    parts: List[Tuple[str, int, int]], label: str, mcnemar_parts: Optional[List[Tuple[int, int, int]]] = None
+) -> Bar:
     """Bar from (run_id, successes, n) parts, pooling successes/n across parts before
     computing the Wilson interval (not averaging each part's own rate). Degenerates to
     exactly severity_sr's own numbers when one part contributes. `n == 0` (no part
     contributed, e.g. a config no run in the pool was evaluated under) yields a bar
-    with rate/ci_low/ci_high == nan, same as severity_sr._record's empty-group case."""
+    with rate/ci_low/ci_high == nan, same as severity_sr._record's empty-group case.
+
+    mcnemar_parts (b, c, n) triples, one per contributing run's severity_sr record --
+    summed into the bar's own mcnemar_b/c/n, or left None when not given (e.g. this bar
+    has no paired orig baseline to test against)."""
     total_successes = sum(s for _rid, s, _n in parts)
     total_n = sum(n for _rid, _s, n in parts)
     rate = total_successes / total_n if total_n else float("nan")
     ci_low, ci_high = severity_sr.wilson_interval(total_successes, total_n)
     runs = [rid for rid, _s, n in parts if n > 0]
-    return Bar(label=label, successes=total_successes, n=total_n, rate=rate, ci_low=ci_low, ci_high=ci_high, runs=runs)
+    mcnemar_b = sum(b for b, _c, _n in mcnemar_parts) if mcnemar_parts else None
+    mcnemar_c = sum(c for _b, c, _n in mcnemar_parts) if mcnemar_parts else None
+    mcnemar_n = sum(n for _b, _c, n in mcnemar_parts) if mcnemar_parts else None
+    return Bar(
+        label=label, successes=total_successes, n=total_n, rate=rate, ci_low=ci_low, ci_high=ci_high, runs=runs,
+        mcnemar_b=mcnemar_b, mcnemar_c=mcnemar_c, mcnemar_n=mcnemar_n,
+    )
 
 
 def warn_multi_run(bars: Iterable[Bar]) -> None:
@@ -111,15 +141,23 @@ def _cached_or_download(run, cache_dir: Path, applicable: List[str], refresh: bo
     return analyze_wandb.download_run(run, Path(cache_dir))
 
 
-def _effective_keep_p(run) -> Optional[float]:
-    """The modality_dropout_proprio_keep_p this run belongs on the presence/
-    perturbation figures' x-axis under. use_proprio=False means the model never
-    receives proprioception AT ALL -- there is nothing to keep or drop -- so its
-    config's modality_dropout_proprio_keep_p (an inert FLOWERVLA.__init__ argument,
-    typically just sitting at its 0.5 default) does not describe this run; the
-    effective value is 0.0. A use_proprio=True run with no
-    modality_dropout_proprio_keep_p in config at all returns None (can't be placed on
-    the axis)."""
+def _series_key(run) -> Optional[SeriesKey]:
+    """The series this run belongs on the presence/perturbation figures' x-axis/legend
+    under -- a float modality_dropout_proprio_keep_p for a dropout run (cividis-ramp
+    series), or one of the two BASELINE_* string keys for a modality_dropout=False run
+    (its own fixed-color series, since it has no keep_p to place it on that ramp with).
+    FLOWERVLA.__init__'s own default is modality_dropout=False (flower/models/flower.py),
+    so a run whose config never mentions the key is a baseline run, not a dropout run
+    with an unset keep_p.
+
+    For a dropout run: use_proprio=False means the model never receives proprioception
+    AT ALL -- there is nothing to keep or drop -- so its config's
+    modality_dropout_proprio_keep_p (an inert FLOWERVLA.__init__ argument, typically
+    just sitting at its 0.5 default) does not describe this run; the effective value is
+    0.0. A use_proprio=True dropout run with no modality_dropout_proprio_keep_p in
+    config at all returns None (can't be placed on the axis)."""
+    if not bool(run.config.get("modality_dropout", False)):
+        return BASELINE_PROPRIO if bool(run.config.get("use_proprio", False)) else BASELINE_NO_PROPRIO
     if not bool(run.config.get("use_proprio", False)):
         return 0.0
     keep_p = run.config.get("modality_dropout_proprio_keep_p")
@@ -135,15 +173,15 @@ def fetch_pool(
     measure: str,
     libero_plus_root: str,
     refresh: bool = False,
-) -> List[Tuple[str, float, dict]]:
+) -> List[Tuple[str, SeriesKey, dict]]:
     """Every W&B run matching `filters` (a JSON mongo-style dict, same as
     analyze_wandb.py's --filters) and, if given, --modalities (same exact-combo
     semantics as analyze_wandb.parse_modality_spec), analyzed via analyze_wandb.analyze()
-    and paired with its effective modality_dropout_proprio_keep_p (see
-    _effective_keep_p: 0.0 for a use_proprio=False run, regardless of that config
-    value) -- the single pool every plot in this module draws from. A use_proprio=True
-    run whose config has no modality_dropout_proprio_keep_p is skipped (with a stderr
-    warning): it can't be placed on any of this module's x-axes."""
+    and paired with its series key (see _series_key: a float keep_p for a dropout run,
+    one of the two BASELINE_* strings for a modality_dropout=False run) -- the single
+    pool every plot in this module draws from. A dropout run whose config has no
+    modality_dropout_proprio_keep_p is skipped (with a stderr warning): it can't be
+    placed on any of this module's x-axes."""
     default_entity, default_project = analyze_wandb.default_entity_project()
     entity = entity or default_entity
     project = project or default_project
@@ -158,10 +196,10 @@ def fetch_pool(
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    pool: List[Tuple[str, float, dict]] = []
+    pool: List[Tuple[str, SeriesKey, dict]] = []
     for run in runs:
-        keep_p = _effective_keep_p(run)
-        if keep_p is None:
+        series_key = _series_key(run)
+        if series_key is None:
             print(
                 f"WARNING: {run.id} has no modality_dropout_proprio_keep_p in config -- skipped",
                 file=sys.stderr,
@@ -173,7 +211,7 @@ def fetch_pool(
         analysis = analyze_wandb.analyze(
             artifact_dir, missing, measure, libero_plus_root, modality_off_variants=applicable
         )
-        pool.append((run.id, keep_p, analysis))
+        pool.append((run.id, series_key, analysis))
 
     return pool
 
@@ -196,19 +234,20 @@ def _presence_key(combo: Dict[str, bool]) -> Tuple[int, int, int, int]:
     return (int(combo["rgb_static"]), int(combo["rgb_gripper"]), int(combo["language"]), int(combo["proprio"]))
 
 
-def prepare_presence(pool: List[Tuple[str, float, dict]]) -> Dict[float, Dict[str, Bar]]:
-    """keep_p -> modality_config -> Bar, from each run's libero_orig.csv (clean
-    LIBERO_10). A dropout run's orig CSV already holds all 14 modality combos (7 token
-    combos x proprio on/off, see eval_pipeline.py's module docstring), so every one of
-    MODALITY_CONFIGS' 5 bars is read straight off it -- no separate clean-LIBERO
-    modality-off eval is needed. Counts, not analyze_wandb.presence_values' bare rate,
-    come from pid_modality.presence_success (successes = round(rate * n): rate is
-    exactly successes/n, so this recovers the integer count without re-filtering rows)."""
-    by_keep_p: Dict[float, List[Tuple[str, dict]]] = defaultdict(list)
+def prepare_presence(pool: List[Tuple[str, SeriesKey, dict]]) -> Dict[SeriesKey, Dict[str, Bar]]:
+    """series key (keep_p, or a BASELINE_* string) -> modality_config -> Bar, from each
+    run's libero_orig.csv (clean LIBERO_10). A dropout run's orig CSV already holds all
+    14 modality combos (7 token combos x proprio on/off, see eval_pipeline.py's module
+    docstring), so every one of MODALITY_CONFIGS' 5 bars is read straight off it -- no
+    separate clean-LIBERO modality-off eval is needed. Counts, not
+    analyze_wandb.presence_values' bare rate, come from pid_modality.presence_success
+    (successes = round(rate * n): rate is exactly successes/n, so this recovers the
+    integer count without re-filtering rows)."""
+    by_keep_p: Dict[SeriesKey, List[Tuple[str, dict]]] = defaultdict(list)
     for run_id, keep_p, analysis in pool:
         by_keep_p[keep_p].append((run_id, analysis))
 
-    result: Dict[float, Dict[str, Bar]] = {}
+    result: Dict[SeriesKey, Dict[str, Bar]] = {}
     for keep_p, entries in by_keep_p.items():
         bars: Dict[str, Bar] = {}
         for config_name in MODALITY_CONFIGS:
@@ -235,14 +274,17 @@ def prepare_presence(pool: List[Tuple[str, float, dict]]) -> Dict[float, Dict[st
 # ---------------------------------------------------------------------------
 
 
-def prepare_perturbation(pool: List[Tuple[str, float, dict]]) -> Dict[str, Dict[float, Tuple[Bar, Optional[Bar]]]]:
-    """category -> keep_p -> (plus_bar, orig_bar). orig_bar is None where no run's
-    severity breakdown carries an init-state-matched baseline for this category (the
-    axis="total" record's orig_n == "", e.g. no libero_orig.csv was available at all).
-    Reads the axis="total"/bin="ALL" record severity_sr.collect() emits once per
-    category -- the category-level success rate, paired baseline included, without
-    recomputing anything perturbation_sr/severity_sr don't already provide."""
-    by_keep_p: Dict[float, List[Tuple[str, dict]]] = defaultdict(list)
+def prepare_perturbation(pool: List[Tuple[str, SeriesKey, dict]]) -> Dict[str, Dict[SeriesKey, Tuple[Bar, Optional[Bar]]]]:
+    """category -> series key (keep_p, or a BASELINE_* string) -> (plus_bar, orig_bar).
+    orig_bar is None where no run's severity breakdown carries an init-state-matched
+    baseline for this category (the axis="total" record's orig_n == "", e.g. no
+    libero_orig.csv was available at all). Reads the axis="total"/bin="ALL" record
+    severity_sr.collect() emits once per category -- the category-level success rate,
+    paired baseline included, without recomputing anything perturbation_sr/severity_sr
+    don't already provide. The plus_bar also carries that record's mcnemar_b/c/n (see
+    severity_sr.paired_baseline) when a baseline is present; orig_bar never does -- the
+    test result is attached to the bar it's evidence about, not its baseline."""
+    by_keep_p: Dict[SeriesKey, List[Tuple[str, dict]]] = defaultdict(list)
     for run_id, keep_p, analysis in pool:
         by_keep_p[keep_p].append((run_id, analysis))
 
@@ -257,10 +299,10 @@ def prepare_perturbation(pool: List[Tuple[str, float, dict]]) -> Dict[str, Dict[
         }
     )
 
-    result: Dict[str, Dict[float, Tuple[Bar, Optional[Bar]]]] = defaultdict(dict)
+    result: Dict[str, Dict[SeriesKey, Tuple[Bar, Optional[Bar]]]] = defaultdict(dict)
     for category in categories:
         for keep_p, entries in by_keep_p.items():
-            plus_parts, orig_parts = [], []
+            plus_parts, orig_parts, mcnemar_parts = [], [], []
             for run_id, analysis in entries:
                 if not analysis["severity"]:
                     continue
@@ -272,7 +314,9 @@ def prepare_perturbation(pool: List[Tuple[str, float, dict]]) -> Dict[str, Dict[
                 plus_parts.append((run_id, rec["successes"], rec["n"]))
                 if rec["orig_n"] != "":
                     orig_parts.append((run_id, rec["orig_successes"], rec["orig_n"]))
-            plus_bar = pool_bars(plus_parts, category)
+                if rec.get("mcnemar_n", "") != "":
+                    mcnemar_parts.append((rec["mcnemar_b"], rec["mcnemar_c"], rec["mcnemar_n"]))
+            plus_bar = pool_bars(plus_parts, category, mcnemar_parts=mcnemar_parts or None)
             orig_bar = pool_bars(orig_parts, f"{category} (orig)") if orig_parts else None
             result[category][keep_p] = (plus_bar, orig_bar)
 
@@ -299,7 +343,7 @@ def _severity_records_for(analysis: dict, config_name: str) -> Optional[List[Dic
 
 
 def prepare_severity(
-    pool: List[Tuple[str, float, dict]], axis: str
+    pool: List[Tuple[str, SeriesKey, dict]], axis: str
 ) -> Dict[str, Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]]]:
     """category -> bin -> modality_config -> (plus_bar, orig_bar), for `axis` in
     {"severity", "difficulty_level"}. Full-modality bars come from analysis["severity"];
@@ -311,7 +355,9 @@ def prepare_severity(
     modality bar's orig_bar reflects clean LIBERO performance WITH THAT SAME MODALITY
     ALSO WITHHELD, not full-modality clean LIBERO -- the "orig bar reflects the initial
     states the bar next to it entails" pairing, same mechanism as
-    prepare_perturbation's orig_bar. Bins are natural-sorted (analyze_wandb._natural_key)
+    prepare_perturbation's orig_bar. plus_bar also carries that record's mcnemar_b/c/n
+    when a baseline is present, same "attached to the bar it's evidence about" rule as
+    prepare_perturbation. Bins are natural-sorted (analyze_wandb._natural_key)
     within each category, so e.g. fog_2 precedes fog_10.
 
     axis="severity" needs no category filtering here: severity_sr.collect() already
@@ -344,7 +390,7 @@ def prepare_severity(
     for category, bins in by_category.items():
         for bin_label in bins:
             for config_name in MODALITY_CONFIGS:
-                plus_parts, orig_parts = [], []
+                plus_parts, orig_parts, mcnemar_parts = [], [], []
                 for run_id, _keep_p, analysis in pool:
                     records = _severity_records_for(analysis, config_name)
                     if not records:
@@ -358,9 +404,11 @@ def prepare_severity(
                     plus_parts.append((run_id, rec["successes"], rec["n"]))
                     if rec["orig_n"] != "":
                         orig_parts.append((run_id, rec["orig_successes"], rec["orig_n"]))
+                    if rec.get("mcnemar_n", "") != "":
+                        mcnemar_parts.append((rec["mcnemar_b"], rec["mcnemar_c"], rec["mcnemar_n"]))
                 if not plus_parts:
                     continue
-                plus_bar = pool_bars(plus_parts, config_name)
+                plus_bar = pool_bars(plus_parts, config_name, mcnemar_parts=mcnemar_parts or None)
                 orig_bar = pool_bars(orig_parts, f"{config_name} (orig)") if orig_parts else None
                 result[category][bin_label][config_name] = (plus_bar, orig_bar)
 
@@ -380,7 +428,16 @@ def merge_bars(bars: List[Bar], label: str) -> Bar:
     per-category or per-bin bars, further pooled by prepare_severity_pooled()/
     prepare_difficulty_pooled() below. Sums each input Bar's own successes/n directly
     (not its rate) and unions their `runs` lists, so a run that already contributed to
-    two categories is only listed once."""
+    two categories is only listed once.
+
+    mcnemar_b/c/n are likewise summed across the bars that carry them (None treated as
+    0 contribution; stays None if no input bar has one at all) -- but note this makes
+    the POOLED figures' (severity_pooled/difficulty_pooled) McNemar test anti-
+    conservative: each input bar's discordant pairs come from severity_sr.paired_baseline
+    matching on the SAME base tasks a category has, so pooling across a category's own
+    bins (prepare_severity_pooled) or across categories (prepare_difficulty_pooled)
+    reuses those tasks' pairs several times over, inflating mcnemar_n beyond the number
+    of genuinely independent base tasks it's built from."""
     total_successes = sum(b.successes for b in bars)
     total_n = sum(b.n for b in bars)
     rate = total_successes / total_n if total_n else float("nan")
@@ -390,7 +447,14 @@ def merge_bars(bars: List[Bar], label: str) -> Bar:
         for run_id in b.runs:
             if run_id not in runs:
                 runs.append(run_id)
-    return Bar(label=label, successes=total_successes, n=total_n, rate=rate, ci_low=ci_low, ci_high=ci_high, runs=runs)
+    mcnemar_bars = [b for b in bars if b.mcnemar_n is not None]
+    mcnemar_b = sum(b.mcnemar_b for b in mcnemar_bars) if mcnemar_bars else None
+    mcnemar_c = sum(b.mcnemar_c for b in mcnemar_bars) if mcnemar_bars else None
+    mcnemar_n = sum(b.mcnemar_n for b in mcnemar_bars) if mcnemar_bars else None
+    return Bar(
+        label=label, successes=total_successes, n=total_n, rate=rate, ci_low=ci_low, ci_high=ci_high, runs=runs,
+        mcnemar_b=mcnemar_b, mcnemar_c=mcnemar_c, mcnemar_n=mcnemar_n,
+    )
 
 
 def _merge_pairs(pairs: List[Tuple[Bar, Optional[Bar]]], label: str) -> Tuple[Bar, Optional[Bar]]:
