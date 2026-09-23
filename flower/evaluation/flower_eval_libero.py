@@ -40,6 +40,7 @@ from libero.lifelong.utils import create_experiment_dir, get_task_embs, safe_dev
 # Local project imports
 from flower.evaluation.eval_records import (
     checkpoint_name,
+    env_seed,
     merge_rank_csvs,
     merge_result_csv,
     read_csv,
@@ -248,6 +249,27 @@ def get_log_dir(log_dir):
     os.makedirs(log_dir, exist_ok=False)
     print(f"logging to {log_dir}")
     return log_dir
+
+
+def seed_and_reset(env, ids: List[int], seeds: List[int]) -> None:
+    """Seed each slot's env, then reset -- in that order, not the reverse.
+
+    bddl_base_domain.BddlBaseDomain._reset_internal samples fixture and movable-object
+    placement *during* reset() (from the process-global numpy RNG), and
+    env.set_init_state() afterwards restores only qpos/qvel, never that placement -- so
+    seeding after reset() would be a no-op, and never seeding at all (the prior
+    behavior) leaves it silently random every episode. `seeds` are each slot's own
+    rollout_seed, folded to np.random.seed's uint32 range by env_seed -- the same key
+    that already seeds that slot's flow-matching noise, so a LIBERO-Plus episode and the
+    original-LIBERO episode it shares a base task with draw the same placement, not just
+    the same noise.
+
+    `ids` must be `range(len(seeds))`: BaseVectorEnv.seed(seed_list) has no `id`
+    parameter and always zips seed_list against workers from index 0, which is what
+    every call site here already passes.
+    """
+    env.seed([env_seed(s) for s in seeds])
+    env.reset(id=ids)
 
 
 class EvaluateLibero:
@@ -482,26 +504,30 @@ class EvaluateLibero:
                 else:
                     env.rebuild(env_fns)
 
-                # Reset and set initial states for this batch
-                env.reset(id=ids)
+                # One seed per slot, from that episode's own identity (base task name +
+                # episode index) -- not from its position in the batch. The model draws
+                # each row's noise from its own generator (FLOWERVLA.set_eval_noise_seeds),
+                # so an episode's noise no longer depends on eval_batch_size, on which
+                # slot it landed in, or on which other episodes shared its batch. The
+                # same key also seeds the env reset below, so fixture/object placement
+                # (bddl_base_domain._reset_internal, otherwise silently random -- see
+                # seed_and_reset's docstring) is paired with that noise, not independent
+                # of it. Recorded per row as rollout_seed below.
+                seeds = [
+                    rollout_seed(self.base_seed, task_name, episode_idx + k)
+                    for k in range(current_batch_size)
+                ]
+                model.set_eval_noise_seeds(seeds)
+
+                # Seed then reset (in that order -- see seed_and_reset), and set initial
+                # states for this batch.
+                seed_and_reset(env, ids, seeds)
                 state_idxs = None
                 if initial_states is not None:
                     state_idxs = np.array(
                         [(episode_idx + k) % n_states for k in range(current_batch_size)]
                     )
                     env.set_init_state(initial_states[state_idxs], id=ids)
-
-                # One seed per slot, from that episode's own identity (base task name +
-                # episode index) -- not from its position in the batch. The model draws
-                # each row's noise from its own generator (FLOWERVLA.set_eval_noise_seeds),
-                # so an episode's noise no longer depends on eval_batch_size, on which
-                # slot it landed in, or on which other episodes shared its batch.
-                # Recorded per row as rollout_seed below.
-                seeds = [
-                    rollout_seed(self.base_seed, task_name, episode_idx + k)
-                    for k in range(current_batch_size)
-                ]
-                model.set_eval_noise_seeds(seeds)
                 # Nothing else on the eval path reads the global RNGs -- seeded from
                 # base_seed alone (deliberately not from anything batch-dependent).
                 torch.manual_seed(self.base_seed)
@@ -697,7 +723,17 @@ class EvaluateLibero:
                 else:
                     env.rebuild(env_fns)
 
-                env.reset(id=ids)
+                # Seed then reset (in that order -- see seed_and_reset: the env's
+                # fixture/object placement is sampled inside reset(), so seeding
+                # afterwards would be a no-op). Each slot's seed is its own episode
+                # identity (base task name + episode index), the same key that already
+                # seeds its flow-matching noise below -- so placement is paired with
+                # noise, not independent of it.
+                seeds = [
+                    rollout_seed(self.base_seed, task_cache[idx]["task_name"], ep)
+                    for idx, ep in batch_items
+                ]
+                seed_and_reset(env, ids, seeds)
                 # For LIBERO-Plus (n_eval=1 -> ep is always 0), this is always index 0 --
                 # correctly so, not a bug: a Plus task's own perturbation parameter (view
                 # angle sample, robot qpos-offset sample, noise instance, texture/light id
@@ -729,10 +765,6 @@ class EvaluateLibero:
                 # slots without init states (state_idxs[k] is None) keep the default
                 # random reset; their init_state_idx is recorded as -1 below.
 
-                seeds = [
-                    rollout_seed(self.base_seed, task_cache[idx]["task_name"], ep)
-                    for idx, ep in batch_items
-                ]
                 model.set_eval_noise_seeds(seeds)
                 torch.manual_seed(self.base_seed)
                 np.random.seed(self.base_seed % (2**32))

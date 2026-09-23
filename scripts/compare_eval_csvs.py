@@ -9,10 +9,31 @@ comparing two different checkpoints' files.
 Usage:
   python scripts/compare_eval_csvs.py <a.csv> <b.csv> \
       [--modalities-a static,wrist,lang] [--modalities-b static,wrist,lang]
+
+Comparing a LIBERO-Plus file against an original-LIBERO file needs two more flags:
+`--base-task` keys both sides on eval_records.base_task_name(task_name) instead of the
+raw name, so a Plus file's per-variant task names (e.g. every "..._language_N" rewrite
+of one base task) collapse onto the same key as that task's original-LIBERO row, and
+`--init-state-idx 0` restricts the original-LIBERO side to init_state_idx==0, the only
+row LIBERO-Plus's own get_task_init_states() ever draws from. With both flags, the
+AVERAGE line becomes an unweighted mean over the shared base tasks on both sides —
+i.e. task-weighted, not episode-weighted — which is what makes it comparable to a
+LIBERO-Plus category's typically-unequal per-task episode counts (see the plan/README
+this lands with):
+
+  python scripts/compare_eval_csvs.py plus_libero_10_no_lang/result.csv orig_libero_10/result.csv \
+      --base-task --init-state-idx 0 \
+      --modalities-a static,wrist,proprio --modalities-b static,wrist,proprio
 """
 import argparse
 import csv
+import sys
 from collections import defaultdict
+from pathlib import Path
+from typing import Optional
+
+sys.path.insert(0, Path(__file__).absolute().parents[1].as_posix())
+from flower.evaluation.eval_records import base_task_name  # noqa: E402
 
 MODALITY_COLUMNS = {
     "static": "use_rgb_static",
@@ -40,8 +61,19 @@ def parse_modalities(spec: str) -> set:
     return modalities
 
 
-def per_task_sr(path: str, modalities: set) -> dict:
-    """Average success rate per task, restricted to rows matching `modalities` exactly."""
+def per_task_successes(
+    path: str, modalities: set, base_task: bool = False, init_state_idx: Optional[int] = None,
+) -> dict:
+    """{task_key: [success, ...]} for rows matching `modalities` exactly.
+
+    base_task=True keys on eval_records.base_task_name(task_name) instead of the raw
+    name, so a LIBERO-Plus file's per-variant names (e.g. every "..._language_N"
+    rewrite of one base task) collapse onto the same key as an original-LIBERO file's
+    row for that task -- what makes the two files comparable at all.
+    init_state_idx, given, restricts to rows with that exact init_state_idx (LIBERO-
+    Plus rows are always 0 -- see README; this is how an original-LIBERO file, which
+    has one row per init state, is narrowed to the one LIBERO-Plus itself draws from).
+    """
     by_task = defaultdict(list)
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
@@ -49,8 +81,20 @@ def per_task_sr(path: str, modalities: set) -> dict:
                 _flag(row, col) == (name in modalities)
                 for name, col in MODALITY_COLUMNS.items()
             )
-            if matches:
-                by_task[row["task_name"]].append(int(row["success"]))
+            if not matches:
+                continue
+            if init_state_idx is not None and int(row.get("init_state_idx", -1)) != init_state_idx:
+                continue
+            key = base_task_name(row["task_name"]) if base_task else row["task_name"]
+            by_task[key].append(int(row["success"]))
+    return by_task
+
+
+def per_task_sr(
+    path: str, modalities: set, base_task: bool = False, init_state_idx: Optional[int] = None,
+) -> dict:
+    """Average success rate per task, restricted to rows matching `modalities` exactly."""
+    by_task = per_task_successes(path, modalities, base_task, init_state_idx)
     if not by_task:
         raise SystemExit(
             f"No rows in {path} match modalities={sorted(modalities)} "
@@ -65,6 +109,16 @@ def main():
     parser.add_argument("csv_b")
     parser.add_argument("--modalities-a", default="static,wrist,lang")
     parser.add_argument("--modalities-b", default="static,wrist,lang")
+    parser.add_argument(
+        "--base-task", action="store_true",
+        help="Key both sides on the base (perturbation-suffix-stripped) task name, so a "
+             "LIBERO-Plus file's variants align with an original-LIBERO file's tasks.",
+    )
+    parser.add_argument(
+        "--init-state-idx", type=int, default=None,
+        help="Restrict both sides to this init_state_idx (LIBERO-Plus rows are always 0; "
+             "use 0 to make an original-LIBERO file's per-init-state rows comparable).",
+    )
     args = parser.parse_args()
 
     modalities_a = parse_modalities(args.modalities_a)
@@ -72,18 +126,28 @@ def main():
     label_a = "+".join(sorted(modalities_a))
     label_b = "+".join(sorted(modalities_b))
 
-    sr_a = per_task_sr(args.csv_a, modalities_a)
-    sr_b = per_task_sr(args.csv_b, modalities_b)
+    successes_a = per_task_successes(args.csv_a, modalities_a, args.base_task, args.init_state_idx)
+    successes_b = per_task_successes(args.csv_b, modalities_b, args.base_task, args.init_state_idx)
+    if not successes_a:
+        raise SystemExit(f"No rows in {args.csv_a} match modalities={sorted(modalities_a)}")
+    if not successes_b:
+        raise SystemExit(f"No rows in {args.csv_b} match modalities={sorted(modalities_b)}")
+    sr_a = {task: sum(v) / len(v) for task, v in successes_a.items()}
+    sr_b = {task: sum(v) / len(v) for task, v in successes_b.items()}
 
     tasks = sorted(set(sr_a) | set(sr_b))
-    print(f"{'task':<70} {label_a:>15} {label_b:>15} {'delta':>8}")
+    print(f"{'task':<70} {label_a:>15} {'n_a':>5} {label_b:>15} {'n_b':>5} {'delta':>8}")
     for task in tasks:
         a, b = sr_a.get(task, float("nan")), sr_b.get(task, float("nan"))
-        print(f"{task:<70} {a:>15.2%} {b:>15.2%} {b - a:>+8.2%}")
+        n_a, n_b = len(successes_a.get(task, [])), len(successes_b.get(task, []))
+        print(f"{task:<70} {a:>15.2%} {n_a:>5} {b:>15.2%} {n_b:>5} {b - a:>+8.2%}")
 
+    # Unweighted mean over task keys -- with --base-task this is task-weighted, not
+    # episode-weighted, which is what makes it comparable to a LIBERO-Plus category's
+    # typically-unequal per-task episode counts (module docstring).
     avg_a = sum(sr_a.values()) / len(sr_a)
     avg_b = sum(sr_b.values()) / len(sr_b)
-    print(f"\n{'AVERAGE':<70} {avg_a:>15.2%} {avg_b:>15.2%} {avg_b - avg_a:>+8.2%}")
+    print(f"\n{'AVERAGE':<70} {avg_a:>15.2%} {'':>5} {avg_b:>15.2%} {'':>5} {avg_b - avg_a:>+8.2%}")
 
 
 if __name__ == "__main__":

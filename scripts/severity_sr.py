@@ -66,6 +66,7 @@ from perturbation_severity import (  # noqa: E402
 
 sys.path.insert(0, Path(__file__).absolute().parents[1].as_posix())
 from flower.evaluation.libero_tasks import base_task  # noqa: E402,F401 -- re-exported for callers of this module
+from flower.evaluation.eval_records import base_task_name  # noqa: E402
 
 DEFAULT_LIBERO_PLUS_ROOT = str(Path(__file__).parents[1] / "LIBERO-plus")
 
@@ -84,30 +85,48 @@ NEWOBJ_INIT_NOTE = (
     "from LIBERO-Plus's libero_newobj/, not the original task's init file"
 )
 
-# KNOWN LIBERO-PLUS UPSTREAM LIMITATION (verified against a real checkpoint, not just code
-# reading -- see scripts/debug_robot_initstate_qpos*.py and
-# scripts/debug_robot_initstate_severity_rollout.py): Robot Initial States' perturbation is
-# a robot *class* substitution (Panda -> MountedPanda{N}/OnTheGroundPanda{N}, N in 1..500,
+# KNOWN LIBERO-PLUS UPSTREAM QUIRK (verified against a real checkpoint, not just code
+# reading -- see scripts/debug_robot_initstate_qpos.py and
+# scripts/debug_robot_initstate_controller.py): Robot Initial States' perturbation is a
+# robot *class* substitution (Panda -> MountedPanda{N}/OnTheGroundPanda{N}, N in 1..500,
 # see LIBERO-plus/libero/libero/envs/robots/new_init.py) whose only effect is a perturbed
-# init_qpos, applied by robosuite's robot.reset(). flower_eval_libero.py then calls
+# init_qpos, applied by robosuite's Robot.reset(). flower_eval_libero.py then calls
 # env.set_init_state() with the array get_task_init_states() returns for this category --
 # the *unperturbed* base task's own recorded state (get_task_init_states() strips the
 # "_view_..." suffix for this category) -- which overwrites that qpos via a full
-# MuJoCo-state restore. Confirmed empirically: a fresh rollout of the same checkpoint on
-# the same task gives a *different* per-severity-band success pattern than the original
-# eval, with no reproducible trend -- consistent with every episode actually running from
-# the same unperturbed state, not with a real physical effect. Every LIBERO-Plus reference
-# script that calls set_init_state() this way (e.g.
-# LIBERO-plus/benchmark_scripts/render_single_task.py) has the identical gap, so this is a
-# LIBERO-Plus upstream issue, not something introduced by flower_eval_libero.py's usage of
-# it -- and it is left unfixed here deliberately, to keep results comparable with other
-# work evaluating on this benchmark as shipped.
+# MuJoCo-state restore (debug_robot_initstate_qpos.py confirms: identical post-restore
+# qpos across every N). The base/mount pose is not the mechanism either -- Mounted vs.
+# OnTheGround is chosen per scene, not per N, so it cannot explain an N-dependent effect
+# (debug_robot_initstate_controller.py confirms body_pos is identical across N too).
+#
+# The perturbation survives anyway, through a different mechanism: Robot.reset() writes
+# the perturbed init_qpos into sim.data.qpos and THEN calls _load_controller(), which
+# builds a fresh OSC controller whose __init__ captures self.initial_joint from that
+# just-written (perturbed) qpos (robosuite/controllers/base_controller.py). OSC uses
+# initial_joint as its nullspace torque reference on every control step
+# (robosuite/controllers/osc.py) -- and set_init_state()'s regenerate_obs_from_state()
+# restores sim state but never rebuilds the controller, so initial_joint keeps the
+# perturbed value even after qpos itself is restored to nominal. Confirmed empirically:
+# debug_robot_initstate_controller.py shows identical qpos/base_pos across N after
+# set_init_state(), but controller.initial_joint still differs by N's own perturbation
+# magnitude, and a 30-step zero-action rollout from that restored state diverges by an
+# amount that grows with N's severity band (N=1 "0.1rad" -> 0.075 qpos-norm drift,
+# N=141 "0.2rad" -> 0.236, N=341 "0.5rad" -> 0.277, over 30 steps). So this category IS
+# physically perturbing the rollout -- as a persistent controller bias rather than a
+# start-pose offset, which is a different mechanism than its own name and severity-band
+# labeling ("robot joint-space offset in radians") suggest, but a real and reproducible
+# one (see eval_records.env_seed / seed_and_reset -- this category's own reset carries
+# no additional random draw beyond what that already covers). The severity bins below
+# still index the right physical magnitude (init_qpos's perturbation, unchanged since
+# it's what sets the controller's nullspace reference), just not the mechanism their own
+# framing implies.
 ROBOT_INITSTATE_NOTE = (
-    "known LIBERO-Plus upstream limitation -- this category's perturbed robot init_qpos is "
-    "silently discarded by a later env.set_init_state() call (see scripts/severity_sr.py's "
-    "ROBOT_INITSTATE_NOTE comment), so every episode currently runs from the unperturbed "
-    "base task's own state; the severity bins below do not reflect a real physical "
-    "perturbation. Left as-is to stay comparable with other work on this benchmark."
+    "known LIBERO-Plus upstream quirk -- this category's perturbed robot init_qpos is "
+    "restored to nominal by a later env.set_init_state() call, but survives anyway as a "
+    "persistent controller bias (the OSC controller's nullspace reference, captured at "
+    "Robot.reset() time and never rebuilt by set_init_state() -- see scripts/severity_sr.py's "
+    "ROBOT_INITSTATE_NOTE comment), so the severity bins below reflect a real, reproducible "
+    "physical effect through a different mechanism than a start-pose offset."
 )
 
 # WHAT STILL SEPARATES A PLUS GROUP FROM ITS PAIRED ORIG BASELINE (verified against a
@@ -139,14 +158,54 @@ ROBOT_INITSTATE_NOTE = (
 #      kernels and reduction order (matmul is non-associative), so a shared noise draw
 #      does not imply a bit-identical trajectory over ~500 steps. Only eval_batch_size=1
 #      removes this; see README.md's Reproducibility paragraph.
+#   4. A small constant env mismatch: LIBERO-Plus rewrote _setup_camera in
+#      LIBERO-plus/libero/libero/envs/problems/*.py to unconditionally run
+#      rotate_around_z(..., degrees=0) then round(x, 4), shifting the agentview camera
+#      by ~1.3e-5 m / ~5e-5 in a quaternion component relative to original LIBERO's
+#      hard-coded pose -- measured via scripts/debug_fixture_reset_randomization.py.
+#      Sub-pixel, but present on every Plus task including unperturbed ones, so it
+#      cancels within Plus and only shows up against orig.
+#   5. Fixture placement, pre-fix: bddl_base_domain._reset_internal samples fixture
+#      placement into the MuJoCo *model* (sim.model.body_pos/body_quat) on every
+#      reset(), which env.set_init_state()'s state-only restore never touches, and the
+#      worker process's RNG was never seeded for it. A result.csv written before
+#      eval_records.env_seed/flower_eval_libero.seed_and_reset existed drew a silently
+#      random fixture layout on libero_10's 5 fixture-bearing tasks (a stove, a
+#      cabinet+rack, a microwave, a caddy); after the fix, a Plus episode and its orig
+#      counterpart draw the same layout, same as they already share one noise stream.
 PLUS_VS_ORIG_RESIDUAL_NOTE = (
     "orig-vs-plus divergence beyond this point is expected from (1) orig_n being tiny by "
     "construction (paired_baseline dedups by base task), (2) an unweighted-per-task vs. "
-    "episode-weighted-per-Plus-episode estimator mismatch, and (3) residual batch-shape "
-    "numerics -- not from the perturbation, which shares a noise stream with its orig "
-    "baseline as of eval_records.rollout_seed's base-task-name keying. See this module's "
-    "PLUS_VS_ORIG_RESIDUAL_NOTE comment."
+    "episode-weighted-per-Plus-episode estimator mismatch, (3) residual batch-shape "
+    "numerics, (4) a small constant camera-pose mismatch LIBERO-Plus introduces on every "
+    "task, and, on result.csv rows predating eval_records.env_seed, (5) an unseeded "
+    "fixture placement on libero_10's 5 fixture-bearing tasks -- not from the "
+    "perturbation, which shares a noise stream and (post-fix) an env seed with its orig "
+    "baseline. See this module's PLUS_VS_ORIG_RESIDUAL_NOTE comment."
 )
+
+# Language Instructions evaluated with use_language=0 (the model input is then
+# identical to its orig counterpart) is the benchmark's natural zero-perturbation
+# control for this comparison: a nonzero orig-vs-plus delta there measures residual
+# harness noise plus the camera-pose mismatch above, not the perturbation -- there is
+# none, by construction, once language is withheld.
+LANGUAGE_CONTROL_NOTE = (
+    "Language Instructions evaluated with the instruction withheld is a zero-"
+    "perturbation control (the model input is then identical to its orig counterpart) "
+    "-- any orig-vs-plus delta here measures residual harness noise and the camera-pose "
+    "mismatch (PLUS_VS_ORIG_RESIDUAL_NOTE items 3-4), not a real perturbation effect."
+)
+
+# mcnemar_b/mcnemar_c/mcnemar_n (paired_baseline()): a McNemar significance test for
+# "is a group's Plus success rate different from its paired orig baseline", built at the
+# same task-level granularity as orig_n above -- one pair per (modality_combo, base_task),
+# a Plus-episode majority vote against the single orig outcome, exact ties dropped. This
+# is the honest choice, not the highest-powered one: LIBERO-10 has at most 10 base tasks
+# per category, so mcnemar_n rarely exceeds ~10 and the smallest reachable two-sided
+# p-value (mcnemar_exact_p) is 2 * 0.5**10 ~= 0.002 -- most groups will show p near 1
+# regardless of the true effect size. The alternative (one pair per Plus episode, reusing
+# one orig outcome across a task's ~20 variants) would reach significance far more easily,
+# but its discordant-pair counts would be inflated by pseudo-replication, not by evidence.
 
 # Severity-axis bin label for a row _severity_bin() couldn't parse -- reported as its
 # own bin (successes/n included) rather than silently dropped, so a category's n
@@ -154,8 +213,9 @@ PLUS_VS_ORIG_RESIDUAL_NOTE = (
 UNPARSED = "<unparsed>"
 
 CSV_COLUMNS = [
-    "category", "axis", "bin", "successes", "n", "success_rate", "ci_low", "ci_high",
+    "category", "axis", "bin", "successes", "n", "plus_tasks", "success_rate", "ci_low", "ci_high",
     "orig_successes", "orig_n", "orig_success_rate", "orig_ci_low", "orig_ci_high",
+    "mcnemar_b", "mcnemar_c", "mcnemar_n",
     "note",
 ]
 
@@ -174,6 +234,21 @@ def wilson_interval(successes: int, n: int, z: float = 1.96) -> Tuple[float, flo
     # Wilson bounds are mathematically in [0, 1]; clamp away the tiny negative/>1
     # floating-point overshoot (e.g. an all-failure n=10 bin prints -0.00 otherwise).
     return max(0.0, lo), min(1.0, hi)
+
+
+def mcnemar_exact_p(b: int, c: int) -> float:
+    """Two-sided exact McNemar p-value over discordant pair counts b (group 1 succeeds,
+    group 2 fails) and c (group 1 fails, group 2 succeeds) -- b/c are symmetric in the
+    result, and concordant pairs (both succeed or both fail) don't enter at all. 1.0
+    when there are no discordant pairs (nothing to distinguish the two groups by).
+    Exact binomial rather than the chi-squared approximation, since paired_baseline's
+    task-level pairing rarely has more than ~10 discordant pairs to work with."""
+    n = b + c
+    if n == 0:
+        return 1.0
+    k = min(b, c)
+    tail = sum(math.comb(n, i) for i in range(k + 1))
+    return min(1.0, 2 * tail / 2**n)
 
 
 def _severity_bin(row: Dict[str, str], libero_plus_root: str) -> Optional[Tuple[str, tuple]]:
@@ -263,32 +338,61 @@ def paired_baseline(
     (modality_combo, base_task) orig episodes the group's rows were generated from,
     looked up in orig_index. Deduplicated by task, so orig_n is the number of distinct
     base tasks the group covers, not the number of plus_rows in it. Empty strings for
-    all five when orig_index is None (no libero_orig.csv available)."""
+    all when orig_index is None (no libero_orig.csv available).
+
+    Also derives mcnemar_b/mcnemar_c/mcnemar_n: a McNemar 2x2 table built at the SAME
+    task level as orig_n above -- one pair per (modality_combo, base_task), not one pair
+    per Plus episode, since reusing a single orig outcome across a task's ~20 Plus
+    variants would make the test anti-conservative. Each pair's group of Plus episodes
+    collapses to one binary outcome by strict majority vote; an exact tie is dropped
+    from the table rather than broken in either direction. mcnemar_b counts pairs where
+    the Plus majority succeeded and the orig episode failed, mcnemar_c the reverse;
+    mcnemar_n is every pair that contributed (ties excluded), concordant and discordant
+    alike -- only b/c feed mcnemar_exact_p(), but n is needed to read a test built from
+    at most ~10 LIBERO-10 base tasks honestly."""
     if orig_index is None:
         return {
             "orig_successes": "", "orig_n": "", "orig_success_rate": "",
             "orig_ci_low": "", "orig_ci_high": "",
+            "mcnemar_b": "", "mcnemar_c": "", "mcnemar_n": "",
         }
 
-    pairs = set()
+    by_key: Dict[Tuple[Tuple[int, int, int, int], str], List[int]] = defaultdict(list)
     for row in plus_rows:
         task = base_task(row["task_name"], orig_task_names)
         if task is None:
             continue
         key = (_combo(row), task)
         if key in orig_index:
-            pairs.add(key)
+            by_key[key].append(int(row["success"]))
 
-    n = len(pairs)
-    total = sum(orig_index[key] for key in pairs)
+    n = len(by_key)
+    total = sum(orig_index[key] for key in by_key)
     sr = total / n if n else float("nan")
     lo, hi = wilson_interval(total, n)
+
+    mcnemar_b = mcnemar_c = mcnemar_n = 0
+    for key, successes in by_key.items():
+        votes = sum(successes)
+        if 2 * votes == len(successes):
+            continue  # exact tie -- dropped, not broken in either direction
+        plus_success = 2 * votes > len(successes)
+        orig_success = bool(orig_index[key])
+        mcnemar_n += 1
+        if plus_success and not orig_success:
+            mcnemar_b += 1
+        elif not plus_success and orig_success:
+            mcnemar_c += 1
+
     return {
         "orig_successes": total,
         "orig_n": n,
         "orig_success_rate": sr,
         "orig_ci_low": lo,
         "orig_ci_high": hi,
+        "mcnemar_b": mcnemar_b,
+        "mcnemar_c": mcnemar_c,
+        "mcnemar_n": mcnemar_n,
     }
 
 
@@ -305,12 +409,20 @@ def _record(
     total = sum(successes)
     sr = total / n if n else float("nan")
     lo, hi = wilson_interval(total, n)
+    # Distinct base tasks this group's Plus rows cover -- alongside n and orig_n, makes
+    # the task-weighting mismatch PLUS_VS_ORIG_RESIDUAL_NOTE describes (episode-weighted
+    # success_rate vs. task-weighted orig_success_rate) visible in the artifact itself,
+    # not just in a comment. Keyed with eval_records.base_task_name (the same regex
+    # rollout_seed pairing uses), not libero_tasks.base_task's prefix match against
+    # orig_task_names -- this needs no orig CSV to be available.
+    plus_tasks = len({base_task_name(r["task_name"]) for r in rows})
     record = {
         "category": category,
         "axis": axis,
         "bin": str(bin_label),
         "successes": total,
         "n": n,
+        "plus_tasks": plus_tasks,
         "success_rate": sr,
         "ci_low": lo,
         "ci_high": hi,
@@ -450,6 +562,13 @@ def report_category(category: str, cat_rows: List[Dict[str, str]], records: List
     note = UNORDERED_NOTE.get(category)
     if note is not None:
         print(f"  -- by physical severity: {note} --")
+        # Withheld language collapses this category to a zero-perturbation control
+        # (see LANGUAGE_CONTROL_NOTE) -- only meaningful with rows to check, and only
+        # print it once for the whole category (its rows are all one modality combo in
+        # practice: a plus_<bench>_no_lang result.csv from the pipeline's modality-off
+        # sweep, or a task_category="Language Instructions" spot-check).
+        if category == "Language Instructions" and cat_rows and not int(cat_rows[0].get("use_language") or 0):
+            print(f"  ** NOTE: {LANGUAGE_CONTROL_NOTE} **")
         if category == "Background Textures":
             subtype_records = [r for r in records if r["axis"] == "subtype"]
             _print_table("sub-type instead", subtype_records)

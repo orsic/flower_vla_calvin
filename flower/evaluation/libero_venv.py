@@ -93,7 +93,11 @@ def _rebuildable_worker(
                 # interpreter); reseed the same way so a slot with no explicit
                 # init state (flower_eval_libero.py's initial_states is None
                 # case) keeps drawing from a fresh stream instead of
-                # continuing the outgoing env's stream.
+                # continuing the outgoing env's stream. This is only the
+                # steady state until flower_eval_libero.seed_and_reset() reseeds
+                # the worker per episode (right before its next reset()) --
+                # it exists so a rebuild without an explicit seed still starts
+                # from a non-degenerate stream rather than the outgoing env's.
                 np.random.seed(None)
                 p.send(True)
             elif cmd == "close":

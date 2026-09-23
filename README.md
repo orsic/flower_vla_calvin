@@ -608,7 +608,10 @@ Pass `--csv OUT.csv` to also write the full breakdown as a machine-readable CSV,
 per `(category, axis, bin)`: `axis` is `difficulty_level`, `severity`, `subtype`
 (Background Textures only), or `total` (one `bin=ALL` row per category, the category-level
 counterpart of the paired baseline below); `successes`/`n`/`success_rate`/`ci_low`/`ci_high`
-are the same numbers the printed table shows; `note` carries the "no severity axis" caveat
+are the same numbers the printed table shows; `plus_tasks` is the number of distinct base
+tasks the row's Plus episodes cover (via `eval_records.base_task_name`) — alongside `n`
+and `orig_n`, this is what makes the task-weighting mismatch below legible without
+reading a comment; `note` carries the "no severity axis" caveat
 on every row of a category that has one (Language Instructions, Background Textures,
 unclassified rows); and a category's rows that didn't match the expected `task_name`
 pattern get their own explicit `<unparsed>` bin (under `axis=severity`) instead of being
@@ -617,24 +620,40 @@ writes this next to every LIBERO-Plus `result.csv` as `severity_sr.csv` and uplo
 alongside `result.csv`/`pid_modality.txt` (see
 [Pipeline](#pipeline-automated-post-training-evaluation) below).
 
-**Known limitation: Robot Initial States currently has no physical effect.** LIBERO-Plus
+**Robot Initial States perturbs the controller, not the start pose.** LIBERO-Plus
 implements this one category's perturbation by substituting the robot's Python class
 (`Panda` → `MountedPanda{N}`/`OnTheGroundPanda{N}`, `N` in 1–500 — see
 `LIBERO-plus/libero/libero/envs/robots/new_init.py`), which only changes `init_qpos`,
-applied by `robosuite`'s `robot.reset()`. `flower_eval_libero.py` then calls
+applied by `robosuite`'s `Robot.reset()`. `flower_eval_libero.py` then calls
 `env.set_init_state()` with the array `get_task_init_states()` returns for this
 category — the *unperturbed* base task's own recorded state — which overwrites that
-qpos with a full MuJoCo-state restore. Verified against a real checkpoint (not just by
-reading code): re-running the exact same checkpoint on the exact same task gives a
-*different* per-severity-band success pattern than the original eval, with no
-reproducible trend, consistent with every episode running from the same unperturbed
-state rather than a real physical perturbation. This is a LIBERO-Plus upstream gap, not
-something specific to this repo's usage — LIBERO-Plus's own reference script
-(`LIBERO-plus/benchmark_scripts/render_single_task.py`) calls `set_init_state()` the
-same unconditional way. It is left unfixed here deliberately, to keep results
-comparable with other work evaluating on this benchmark as shipped;
-`scripts/severity_sr.py`'s `ROBOT_INITSTATE_NOTE` documents it in code, and its printed
-report and `--csv` output both carry the same warning on every Robot Initial States row.
+qpos with a full MuJoCo-state restore (`scripts/debug_robot_initstate_qpos.py` confirms:
+identical post-restore qpos across every `N`). The robot's base/mount pose isn't the
+mechanism either — LIBERO-Plus picks `Mounted`/`OnTheGround` per *scene*, not per `N`
+(`scripts/debug_robot_initstate_controller.py` confirms `base_pos` is identical across
+`N` too).
+
+The perturbation survives anyway, through a different path: `Robot.reset()` writes the
+perturbed `init_qpos` into `sim.data.qpos` and *then* calls `_load_controller()`, which
+builds a fresh OSC controller whose `__init__` captures `self.initial_joint` from that
+just-written (perturbed) qpos (`robosuite/controllers/base_controller.py`). OSC uses
+`initial_joint` as its nullspace torque reference on every control step
+(`robosuite/controllers/osc.py`) — and `set_init_state()`'s state restore never rebuilds
+the controller, so `initial_joint` keeps the perturbed value even after qpos itself is
+back to nominal. Verified against a real checkpoint (not just by reading code):
+`scripts/debug_robot_initstate_controller.py` shows identical qpos/base_pos across `N`
+after `set_init_state()`, but `controller.initial_joint` still differs by `N`'s own
+perturbation magnitude, and a 30-step zero-action rollout from that restored state
+diverges by an amount that grows with `N`'s severity band (0.1 rad → 0.2 rad → 0.5 rad
+gave qpos-norm drifts of 0.075 → 0.236 → 0.277 over 30 steps). So this category *is*
+physically perturbing the rollout, as a persistent controller bias rather than a
+start-pose offset — a different mechanism than its own severity labeling ("robot
+joint-space offset in radians") suggests, but a real, reproducible one once the
+episode's env reset is itself seeded (see Reproducibility above).
+`scripts/severity_sr.py`'s `ROBOT_INITSTATE_NOTE` documents this in code, and its
+printed report and `--csv` output both carry the same note on every Robot Initial
+States row — the severity bins still index the right physical magnitude, just not the
+mechanism the category's own name implies.
 
 **Paired original baseline.** Pass `--orig-csv <orig_result.csv>` to add an init-state-
 matched LIBERO original baseline to every row (printed as an `orig_sr`/`orig 95% CI`/
@@ -667,20 +686,79 @@ array, and `n_eval=1` means array index 0 is all that's ever loaded regardless.
 generator, seeded by `rollout_seed(seed, base_task_name, episode_idx)` and recorded per
 row as `rollout_seed` — so an episode's noise is independent of `eval_batch_size`, of
 its slot in the batch, of which other episodes shared that batch, of `batching_mode`,
-of the `task_category` filter, and of GPU shard assignment.
+of the `task_category` filter, and of GPU shard assignment. The same key also seeds the
+episode's environment reset (`flower.evaluation.flower_eval_libero.seed_and_reset`,
+folded to `np.random.seed`'s range by `eval_records.env_seed`) — see the fixture-
+placement paragraph below for why that reset needs its own seed at all.
 `flower.evaluation.eval_records.base_task_name` strips LIBERO-Plus's perturbation
 suffix, so every Plus variant of a task and that task's original-LIBERO episode 0 — the
-row `scripts/severity_sr.py` pairs it against — share one noise stream (common random
-numbers: a paired comparison, which is the point). Generators are CPU-side, so the draw
-is identical across GPU models and counts. This does **not** make the two batching
-modes bit-identical: batch width still selects Florence-2/DiT GEMM kernels and
-reduction order, so only `eval_batch_size=1` reproduces exactly across modes. Results
-collected before this change used a per-batch seed with no task-identity component and
-are not reproducible against the current code.
+row `scripts/severity_sr.py` pairs it against — share one noise stream *and* one env
+seed (common random numbers: a paired comparison, which is the point). Generators are
+CPU-side, so the draw is identical across GPU models and counts. This does **not** make
+the two batching modes bit-identical: batch width still selects Florence-2/DiT GEMM
+kernels and reduction order, so only `eval_batch_size=1` reproduces exactly across
+modes. Results collected before this change used a per-batch seed with no task-identity
+component and are not reproducible against the current code; results collected before
+the env-reset seed was added (below) additionally have a silently-random fixture layout
+on the five `libero_10` tasks that sample one (a stove, a cabinet+rack, a microwave, a
+caddy — see below) and are not reproducible against the current code either.
 **Known exception:** LIBERO-Plus Sensor-Noise tasks using motion_blur, fog, or
 glass_blur corruption (noise ids 1-10, 31-40, 41-50) call unseeded `np.random` on every
 rendered frame inside the vendored env, so those specific episodes are not bit-exact
 reproducible even with a matching seed; gaussian_blur/zoom_blur (ids 11-30) are unaffected.
+
+**Comparing a LIBERO-Plus category against original LIBERO is not a same-episode
+comparison, even at `init_state_idx=0` and even with the perturbed modality withheld.**
+Three things separate them:
+
+1. **Different coverage.** LIBERO-Plus's `Language Instructions` category for
+   `libero_10`, for instance, is 383 rows over the same 10 base tasks, all at init-state
+   index 0, with an unequal 21–47 episodes per task. Original `libero_10` is 10 tasks ×
+   `n_eval` (20 by default) init states. Only the original run's `init_state_idx==0`
+   rows are directly comparable, task-weighted — pooling all 200 original episodes
+   against 383 Plus episodes conflates the modality/perturbation effect with both the
+   init-state-0-vs-all-20 coverage difference and the per-task weighting difference.
+   `scripts/compare_eval_csvs.py --base-task --init-state-idx 0` (see below) does this
+   pairing correctly; a raw diff of two `result.csv` files' overall success rates does
+   not.
+2. **A small constant env mismatch.** LIBERO-Plus rewrote `_setup_camera` in
+   `LIBERO-plus/libero/libero/envs/problems/*.py` to unconditionally route the
+   `agentview` camera pose through `rotate_around_z(..., degrees=0)` then `round(x, 4)`,
+   even for the identity (zero) rotation. This shifts the camera by roughly 1.3e-5 m /
+   5e-5 in a quaternion component relative to original LIBERO's hard-coded pose — far
+   sub-pixel at typical eval resolutions, but renders are not bit-identical to `orig`
+   even for an otherwise-unperturbed task. Constant across every Plus category, so it
+   cancels within LIBERO-Plus comparisons and only shows up against `orig`.
+3. **Fixture placement used to be silently random, independent of any seed.**
+   `bddl_base_domain.BddlBaseDomain._reset_internal` samples every fixture's placement
+   on each `reset()`, writing it into the MuJoCo *model* (`sim.model.body_pos`/
+   `body_quat`) — unlike movable objects, whose placement lands in `qpos`/`qvel`, part
+   of the *state*. `env.set_init_state()` restores only `time`/`qpos`/`qvel`
+   (`sim.set_state_from_flattened`), so a fixture's placement was never restored by it,
+   and the process RNG that placement drew from was never seeded (`libero_venv.py`'s
+   worker explicitly entropy-reseeds `np.random` on every batch rebuild). Concretely,
+   for `libero_10`: `KITCHEN_SCENE3`/`KITCHEN_SCENE8` (`flat_stove_1`), `KITCHEN_SCENE4`
+   (`white_cabinet_1`, `wine_rack_1`), `KITCHEN_SCENE6` (`microwave_1`), and
+   `STUDY_SCENE1` (`desk_caddy_1`) each land their fixture at a random point in a
+   roughly 2 cm × 2 cm box on every episode — the other five `libero_10` tasks have no
+   sampled fixture and were never affected. Verified against a real checkpoint: with
+   the fixture's own instruction physically withheld (so every one of a base task's
+   Language Instructions variants sees an identical model input), the five
+   fixture-bearing tasks showed up to 21 distinct `steps_taken` values across
+   nominally-identical episodes, and two of them (`KITCHEN_SCENE8`, `STUDY_SCENE1`)
+   showed `success` itself flip between episodes — while the five fixture-free tasks
+   were perfectly reproducible. **Fixed**: `seed_and_reset` now seeds the env from the
+   same per-episode key that already seeds the noise, immediately before `reset()` (the
+   sampling this needs to affect happens *inside* `reset()`, so seeding afterward would
+   be a no-op) — a LIBERO-Plus episode and its original-LIBERO counterpart therefore
+   draw the same fixture layout, the same way they already draw the same noise. No
+   seeding choice recovers the layout the original demonstrations were collected under
+   — that was never recorded — so this buys reproducibility and orig/Plus pairing, not
+   a return to some ground truth. **Any `result.csv` written before this fix is not
+   reproducible and should be re-evaluated** (`PIPELINE_REEVAL=1`, see
+   [Pipeline](#pipeline-automated-post-training-evaluation) below) before drawing
+   conclusions about these five tasks specifically; the other five `libero_10` tasks'
+   pre-fix rows are unaffected by this particular issue.
 
 **Modality-ablation eval.** `eval_modalities` in `conf/eval_libero.yaml` /
 `conf/eval_libero_plus.yaml` is functional: setting any of `rgb_static`,
@@ -717,6 +795,19 @@ two different checkpoints' files — with `scripts/compare_eval_csvs.py`, which 
 python scripts/compare_eval_csvs.py $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv \
                                      $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv \
   --modalities-a static,wrist,lang --modalities-b lang
+```
+Comparing a LIBERO-Plus file against an original-LIBERO file (see the comparison
+caveats under Reproducibility above) needs `--base-task` (keys both sides on
+`eval_records.base_task_name`, so a Plus file's
+per-variant task names collapse onto their shared base task) and `--init-state-idx 0`
+(restricts the original-LIBERO side to the one init state LIBERO-Plus itself draws
+from); the printed table also gains `n_a`/`n_b` columns so the unequal per-task episode
+counts a LIBERO-Plus category can have are visible instead of silently averaged away:
+```bash
+python scripts/compare_eval_csvs.py $CKPT_DROP/eval_logs/last/plus_libero_10_no_lang/result.csv \
+                                     $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv \
+  --base-task --init-state-idx 0 \
+  --modalities-a static,wrist,proprio --modalities-b static,wrist,proprio
 ```
 
 **Partial information decomposition (PID).** Success rates say how much each
@@ -1061,9 +1152,22 @@ every subcommand:
 
 | Subcommand | Output | Shows |
 |---|---|---|
-| `presence` | `presence_libero10.pdf` | Clean LIBERO-10, x = `modality_dropout_proprio_keep_p`, one bar per inference-time modality config (all-4, and each of the 4 withheld in turn) |
-| `perturbation` | `perturbation_libero10plus.pdf` | LIBERO-10-Plus, x = the 7 perturbation categories, one filled bar per `keep_p` |
+| `presence` | `presence_libero10.pdf` | Clean LIBERO-10, x = training config (`modality_dropout_proprio_keep_p`, plus the two `modality_dropout=False` baselines below), one bar per inference-time modality config (all-4, and each of the 4 withheld in turn) |
+| `perturbation` | `perturbation_libero10plus.pdf` | LIBERO-10-Plus, x = the 7 perturbation categories, one filled bar per training config |
 | `severity` | 4 PDFs (below) | All-modality vs. 1-left-out, each bar paired with its init-state-matched LIBERO original baseline |
+
+A run's *training config* series is its `keep_p` when `modality_dropout=True` (the
+cividis ramp below), or one of two fixed-color baselines when `modality_dropout=False`
+(`plot_data._series_key`) — a non-dropout run has no `keep_p` to place it on that ramp
+with, so it gets its own slot instead, split on whether it was trained with
+`use_proprio`:
+
+| Series | Color |
+|---|---|
+| `no dropout (+proprio)` | crimson `#c1121f` |
+| `no dropout (no proprio)` | teal `#0e9594` |
+
+Both sort after the (descending) `keep_p` ramp in every legend/x-axis.
 
 `perturbation` and every `severity` figure pair each filled bar with a hollow,
 45-degree-hatched bar (full solid outline) in the same color: the init-state-matched
@@ -1089,19 +1193,39 @@ prints a `WARNING:` line to stderr naming them, so cross-run/cross-`keep_p` pool
 every `severity` figure deliberately pools across every matched `keep_p`) never happens
 silently. Colors are consistent across figures for the same thing: one categorical hue
 per modality config (`presence`/`severity`/`difficulty`), one step of matplotlib's
-`cividis` colormap per `keep_p` (`perturbation`). A modality config with no data anywhere
-in a figure is simply not drawn (no legend entry, no zero-height bar standing in for "no
-data").
+`cividis` colormap per `keep_p` plus the two fixed baseline colors above
+(`presence`/`perturbation`). A modality config with no data anywhere in a figure is
+simply not drawn (no legend entry, no zero-height bar standing in for "no data").
 
-Two data caveats worth knowing when reading these figures:
+Every bar prints its own success-rate value just inside its top edge (white on a filled
+bar, the bar's own series color on a hollow hatched orig-LIBERO bar). Every filled bar
+with a paired orig-LIBERO baseline also prints `p=.../n=...` below the axis: a **task-level
+exact McNemar test** (`severity_sr.mcnemar_exact_p`) against that baseline — each
+`(modality combo, base task)` group's LIBERO-Plus episodes collapse to one binary outcome
+by strict majority vote (an exact tie is dropped, not broken either way), paired 1:1 against
+that base task's own orig-LIBERO outcome. `n` is the number of base tasks the test is built
+from, printed alongside `p` because it's the test's own power, not just its result.
+
+Four data caveats worth knowing when reading these figures:
 
 - **The hatched bars carry wide CIs by construction.** `orig_n` (the init-state-matched
   LIBERO original baseline) is deduplicated by `(modality combo, base task)`, so it's ≤10
   for LIBERO-10 — noted directly on `perturbation`'s figure.
+- **The McNemar test's own power is capped the same way.** `mcnemar_n` is also ≤10 base
+  tasks, so the smallest reachable two-sided p-value is `2 * 0.5**10 ≈ 0.002` — most bars
+  will show p near 1 regardless of the true effect size, not because there's no effect.
+- **The two pooled figures' (`severity_modality_off_pooled.pdf`,
+  `difficulty_modality_off_pooled.pdf`) McNemar test is anti-conservative.** They sum
+  `mcnemar_b`/`mcnemar_c`/`mcnemar_n` across a category's own bins or across categories
+  (`plot_data.merge_bars`), which reuses the same base tasks' pairs several times over —
+  `n` there overstates independent evidence. Read the un-pooled per-category/per-bin figure
+  for the honest test; the pooled figures carry a footnote saying so.
 - **The Robot Initial States facet is annotated with a known LIBERO-Plus upstream
-  limitation**: that category's perturbed robot `init_qpos` is silently discarded before
-  rollout (see `severity_sr.ROBOT_INITSTATE_NOTE`), so its severity bins don't reflect a
-  real physical gradient.
+  quirk**: that category's perturbed robot `init_qpos` is restored to nominal before
+  rollout, but survives as a persistent controller bias instead (see
+  `severity_sr.ROBOT_INITSTATE_NOTE`) — its severity bins reflect the right physical
+  magnitude through a different mechanism than a start-pose offset, not a spurious
+  gradient.
 
 Requires `WANDB_API_KEY`, same as `./run.sh analyze`.
 

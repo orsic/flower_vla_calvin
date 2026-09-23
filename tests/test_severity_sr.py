@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from severity_sr import (  # noqa: E402
     CSV_COLUMNS,
+    LANGUAGE_CONTROL_NOTE,
     NEWOBJ_INIT_NOTE,
     ROBOT_INITSTATE_NOTE,
     UNCLASSIFIED,
@@ -21,6 +22,7 @@ from severity_sr import (  # noqa: E402
     UNPARSED,
     base_task,
     collect,
+    mcnemar_exact_p,
     report,
     wilson_interval,
     write_csv,
@@ -95,6 +97,26 @@ def test_base_task_longest_prefix_match():
     assert base_task("foo_bar_1", names) == "foo_bar"
     assert base_task("foo_1", names) == "foo"
     assert base_task("unrelated_1", names) is None
+
+
+def test_record_plus_tasks_counts_distinct_base_tasks_not_rows(tmp_path):
+    """The estimator-mismatch PLUS_VS_ORIG_RESIDUAL_NOTE describes (episode-weighted
+    success_rate vs. task-weighted orig_success_rate) needs to be visible in the
+    artifact: plus_tasks is the number of distinct base tasks a group's Plus rows
+    cover, not the row count n -- e.g. Language Instructions' unequal per-task variant
+    counts (21-47 for libero_10) must not look like one uniform task distribution."""
+    rows = _read_rows(
+        tmp_path,
+        [
+            _row("Language Instructions", "foo_language_1", "", 1),
+            _row("Language Instructions", "foo_language_2", "", 1),
+            _row("Language Instructions", "foo_language_3", "", 0),
+            _row("Language Instructions", "bar_language_1", "", 1),
+        ],
+    )
+    total = _records_by(collect(rows, LIBERO_PLUS_ROOT), axis="total", category="Language Instructions")[0]
+    assert total["n"] == 4
+    assert total["plus_tasks"] == 2
 
 
 def test_paired_baseline_dedups_by_base_task(tmp_path):
@@ -194,6 +216,70 @@ def test_unclassified_category_gets_no_baseline(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# mcnemar_exact_p -- two-sided exact McNemar test over discordant pair counts
+# ---------------------------------------------------------------------------
+
+
+def test_mcnemar_exact_p_matches_hand_computed_value():
+    # b=5, c=0: p = 2 * C(5,0) / 2**5 = 2/32 = 0.0625
+    assert mcnemar_exact_p(5, 0) == 0.0625
+
+
+def test_mcnemar_exact_p_no_discordant_pairs_is_one():
+    assert mcnemar_exact_p(0, 0) == 1.0
+
+
+def test_mcnemar_exact_p_symmetric_in_b_and_c():
+    assert mcnemar_exact_p(3, 5) == mcnemar_exact_p(5, 3)
+
+
+def test_mcnemar_exact_p_stays_within_unit_interval():
+    assert 0.0 <= mcnemar_exact_p(1, 0) <= 1.0
+    assert 0.0 <= mcnemar_exact_p(50, 50) <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# paired_baseline's mcnemar_b/c/n -- task-level majority-vote pairing
+# ---------------------------------------------------------------------------
+
+
+def test_paired_baseline_mcnemar_counts_majority_vote_per_task(tmp_path):
+    plus_rows = _read_rows(
+        tmp_path,
+        [
+            # foo: majority success (2/2), orig fails -> discordant, b
+            _row("Sensor Noise", "foo_noise_1", "1", 1),
+            _row("Sensor Noise", "foo_noise_2", "1", 1),
+            # bar: majority failure (2/2), orig succeeds -> discordant, c
+            _row("Sensor Noise", "bar_noise_1", "1", 0),
+            _row("Sensor Noise", "bar_noise_2", "1", 0),
+            # baz: exact tie (1/2) -> excluded from mcnemar_n entirely
+            _row("Sensor Noise", "baz_noise_1", "1", 1),
+            _row("Sensor Noise", "baz_noise_2", "1", 0),
+            # qux: majority success, orig also succeeds -> concordant, counts in n only
+            _row("Sensor Noise", "qux_noise_1", "1", 1),
+        ],
+        name="plus.csv",
+    )
+    orig_rows = _read_rows(
+        tmp_path,
+        [_orig_row("foo", 0), _orig_row("bar", 1), _orig_row("baz", 1), _orig_row("qux", 1)],
+        name="orig.csv",
+    )
+    total = _records_by(collect(plus_rows, LIBERO_PLUS_ROOT, orig_rows=orig_rows), axis="total", category="Sensor Noise")[0]
+    assert total["mcnemar_b"] == 1
+    assert total["mcnemar_c"] == 1
+    assert total["mcnemar_n"] == 3  # foo, bar, qux -- baz's tie is excluded
+
+
+def test_paired_baseline_mcnemar_empty_without_orig_rows(tmp_path):
+    rows = _read_rows(tmp_path, [_row("Sensor Noise", "foo_noise_1", "1", 1)])
+    total = _records_by(collect(rows, LIBERO_PLUS_ROOT), axis="total", category="Sensor Noise")[0]
+    for key in ("mcnemar_b", "mcnemar_c", "mcnemar_n"):
+        assert total[key] == ""
+
+
+# ---------------------------------------------------------------------------
 # difficulty_level axis -- every category, ordered or not
 # ---------------------------------------------------------------------------
 
@@ -216,6 +302,18 @@ def test_collect_emits_one_difficulty_record_per_level(tmp_path):
     # Robot Initial States carries the known-limitation caveat on every record (see
     # ROBOT_INITSTATE_NOTE); a genuinely uncaveated ordered category is covered below.
     assert level1["note"] == ROBOT_INITSTATE_NOTE
+
+
+def test_robot_initstate_note_describes_controller_bias_not_inertness():
+    """The category was previously (wrongly) documented as physically inert -- see the
+    plan/README this lands with: debug_robot_initstate_controller.py showed the
+    perturbed init_qpos survives set_init_state()'s restore as the OSC controller's
+    nullspace reference (captured at Robot.reset() time, never rebuilt), not as a
+    start-pose offset. The note must describe that mechanism, not claim no physical
+    effect."""
+    assert "no physical effect" not in ROBOT_INITSTATE_NOTE
+    assert "controller" in ROBOT_INITSTATE_NOTE
+    assert "reproducible" in ROBOT_INITSTATE_NOTE
 
 
 def test_collect_uncaveated_ordered_category_has_no_note(tmp_path):
@@ -394,6 +492,22 @@ def test_report_unordered_category_prints_note_and_no_severity_table(tmp_path, c
     out = capsys.readouterr().out
     assert UNORDERED_NOTE["Language Instructions"] in out
     assert "sub-type instead" not in out
+    # lang=1 (the default _row() combo) -- not the zero-perturbation control case.
+    assert LANGUAGE_CONTROL_NOTE not in out
+
+
+def test_report_language_instructions_with_lang_withheld_prints_control_note(tmp_path, capsys):
+    """Language Instructions evaluated with use_language=0 is the benchmark's natural
+    zero-perturbation control (the model input is then identical to its orig
+    counterpart) -- the report must flag any orig-vs-plus delta there as harness
+    residual, not a real perturbation effect."""
+    rows = _read_rows(
+        tmp_path,
+        [_row("Language Instructions", "foo_rewrite_3", "5", 1, lang=0)],
+    )
+    report(rows, LIBERO_PLUS_ROOT)
+    out = capsys.readouterr().out
+    assert LANGUAGE_CONTROL_NOTE in out
 
 
 def test_report_all_unparsed_prints_none_matched_message(tmp_path, capsys):

@@ -145,6 +145,20 @@ def rollout_seed(base_seed: int, task_name: str, episode_idx: int) -> int:
     return base_seed * 1_000_003 + zlib.crc32(base_task_name(task_name).encode()) * 1_009 + episode_idx
 
 
+def env_seed(seed: int) -> int:
+    """Fold a rollout_seed down to np.random.seed's uint32 range.
+
+    rollout_seed routinely exceeds 2**32 (crc32 * 1_009 alone reaches ~4.3e12), which
+    np.random.seed rejects. Deriving from rollout_seed rather than a fresh key means an
+    episode's environment reset (fixture/object placement sampling -- see
+    libero.libero.envs.bddl_base_domain.BddlBaseDomain._reset_internal) draws from the
+    same stream as its noise, so a LIBERO-Plus episode and the original-LIBERO episode
+    it shares a base task with (rollout_seed's own pairing guarantee) also get the same
+    fixture layout, not just the same noise.
+    """
+    return seed % (2**32)
+
+
 def _row_key(row: Dict) -> tuple:
     # Stringify: rows freshly built in memory hold ints (e.g. task_idx=0) while rows
     # read back from CSV hold strings (task_idx="0") — without normalizing, the same

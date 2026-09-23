@@ -12,6 +12,7 @@ from flower.evaluation.eval_records import (
     ALL_COLUMNS,
     base_task_name,
     checkpoint_name,
+    env_seed,
     merge_rank_csvs,
     merge_result_csv,
     merge_rows,
@@ -183,6 +184,39 @@ def test_rollout_seed_independent_of_pythonhashseed():
         )
         outs.append(result.stdout.strip())
     assert outs[0] == outs[1]
+
+
+# ---------------------------------------------------------------------------
+# env_seed
+# ---------------------------------------------------------------------------
+
+def test_env_seed_fits_uint32():
+    """np.random.seed requires a value in [0, 2**32); rollout_seed routinely exceeds
+    that (crc32 * 1_009 alone reaches ~4.3e12), so env_seed must fold it down."""
+    raw = rollout_seed(0, "some_task_name_with_enough_entropy_to_exceed_uint32", 3)
+    assert raw >= 2**32
+    assert 0 <= env_seed(raw) < 2**32
+
+
+def test_env_seed_shared_across_orig_and_plus_variant():
+    """The pairing guarantee: an orig episode and a LIBERO-Plus variant of the same
+    base task, at the same episode index, must derive the SAME env seed -- so their
+    environment reset (fixture/object placement sampling) draws the same layout,
+    exactly as rollout_seed already guarantees for the noise draw."""
+    orig_seed = rollout_seed(0, "KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it", 0)
+    plus_seed = rollout_seed(
+        0,
+        "KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it_language_7_view_0_0_100_0_0_initstate_0",
+        0,
+    )
+    assert env_seed(orig_seed) == env_seed(plus_seed)
+
+
+def test_env_seed_differs_across_episode_idx():
+    """Otherwise every one of orig's 20 init states would draw the same fixture
+    layout instead of each getting its own."""
+    seeds = {env_seed(rollout_seed(0, "task_a", ep)) for ep in range(5)}
+    assert len(seeds) == 5
 
 
 # ---------------------------------------------------------------------------

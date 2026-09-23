@@ -15,6 +15,8 @@ These tests exercise the new code paths without loading Florence-2 or MuJoCo:
      across batches
   10. evaluate_task/evaluate_work_list: process_env_obs_batch skipped on cached
       (non-replan) steps
+  11. seed_and_reset: env reset is seeded (fixture/object placement) before
+      it runs, from the same per-episode key as the noise seed
 """
 
 import json
@@ -671,17 +673,22 @@ def test_no_init_states_skips_set_init_state_call():
 class _FakeEnv:
     """Picklable stand-in for OffScreenRenderEnv -- just enough surface
     (reset/step/close) for _rebuildable_worker's command loop, with a `label`
-    to prove which env_fn produced it."""
+    to prove which env_fn produced it. `seed`/`last_seed` let a test observe
+    whether BaseVectorEnv.seed() actually reached this env (see section 11)."""
 
     def __init__(self, label):
         self.label = label
         self.closed = False
+        self.last_seed = None
 
     def reset(self):
-        return {"label": self.label}
+        return {"label": self.label, "seed": self.last_seed}
 
     def step(self, action):
         return {"label": self.label}, 0.0, False, {}
+
+    def seed(self, seed):
+        self.last_seed = seed
 
     def close(self):
         self.closed = True
@@ -790,3 +797,90 @@ def test_step_batch_result_unaffected_by_skipping_preprocessing_on_cached_steps(
     assert all(
         torch.allclose(a, b) for a, b in zip(baseline_actions, guarded_actions)
     ), "guarding process_env_obs_batch behind the replan condition must not change actions"
+
+
+# ---------------------------------------------------------------------------
+# 11. seed_and_reset: env reset is seeded before it runs
+#
+# bddl_base_domain.BddlBaseDomain._reset_internal samples fixture/object
+# placement *during* reset() -- env.set_init_state() afterwards restores only
+# qpos/qvel, never the fixture body_pos/body_quat that sampling wrote. The
+# worker's numpy RNG was otherwise never seeded (libero_venv.py reseeds it to
+# entropy on every rebuild), so that placement was silently random on every
+# episode. seed_and_reset() seeds the env from the episode's own rollout_seed
+# (folded into np.random.seed's uint32 range by eval_records.env_seed) right
+# before reset() -- so the placement becomes reproducible, and a LIBERO-Plus
+# episode shares its orig counterpart's layout the same way it already shares
+# its noise (rollout_seed's base-task-name keying).
+# ---------------------------------------------------------------------------
+
+class _FakeSeedResetEnv:
+    """Records call order/arguments -- proves seed_and_reset seeds before it
+    resets, not after (a post-reset seed would be a no-op: the sampling that
+    needs seeding already happened inside reset())."""
+
+    def __init__(self):
+        self.calls = []
+
+    def seed(self, seeds):
+        self.calls.append(("seed", list(seeds)))
+
+    def reset(self, id=None):
+        self.calls.append(("reset", id))
+
+
+def test_seed_and_reset_seeds_before_resetting():
+    from flower.evaluation.eval_records import env_seed
+    from flower.evaluation.flower_eval_libero import seed_and_reset
+
+    env = _FakeSeedResetEnv()
+    seed_and_reset(env, ids=[0, 1], seeds=[10, 20])
+
+    assert [call[0] for call in env.calls] == ["seed", "reset"]
+    assert env.calls[0][1] == [env_seed(10), env_seed(20)]
+    assert env.calls[1][1] == [0, 1]
+
+
+def test_ctx_subproc_venv_seed_reaches_worker_env():
+    """End-to-end through _rebuildable_worker's existing (until now dead) "seed"
+    command: BaseVectorEnv.seed([...]) must actually reach each worker's env."""
+    from flower.evaluation.libero_venv import make_libero_venv
+
+    env = make_libero_venv([lambda: _FakeEnv("a"), lambda: _FakeEnv("b")], "spawn")
+    try:
+        env.seed([11, 22])
+        obs = env.reset()
+        assert [obs[i]["seed"] for i in range(2)] == [11, 22]
+    finally:
+        env.close()
+
+
+def test_dummy_venv_seed_reaches_worker_env():
+    from flower.evaluation.libero_venv import make_libero_venv
+
+    env = make_libero_venv([lambda: _FakeEnv("a"), lambda: _FakeEnv("b")], "dummy")
+    try:
+        env.seed([11, 22])
+        obs = env.reset()
+        assert [obs[i]["seed"] for i in range(2)] == [11, 22]
+    finally:
+        env.close()
+
+
+def test_seed_list_shorter_than_pool_seeds_only_first_workers():
+    """A ragged final batch's seed list is shorter than the worker pool;
+    BaseVectorEnv.seed's `zip(self.workers, seed_list)` must seed only the
+    workers with a corresponding entry, leaving the rest untouched."""
+    from flower.evaluation.libero_venv import make_libero_venv
+
+    env = make_libero_venv(
+        [lambda: _FakeEnv("a"), lambda: _FakeEnv("b"), lambda: _FakeEnv("c")], "spawn"
+    )
+    try:
+        env.seed([11])
+        obs = env.reset()
+        assert obs[0]["seed"] == 11
+        assert obs[1]["seed"] is None
+        assert obs[2]["seed"] is None
+    finally:
+        env.close()
