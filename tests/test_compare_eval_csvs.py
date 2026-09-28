@@ -168,6 +168,47 @@ def test_per_task_successes_reports_n_per_task(tmp_path):
     assert len(result["t2"]) == 1
 
 
+# ---------------------------------------------------------------------------
+# per_task_successes: --task-category (restricting to one LIBERO-Plus category)
+# ---------------------------------------------------------------------------
+
+def test_task_category_filters_to_matching_category(tmp_path):
+    path = tmp_path / "plus_result.csv"
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS + ["task_category"])
+        writer.writeheader()
+        writer.writerow({"task_name": "t1_view_0_0_100_0_0_initstate_0", "use_rgb_static": 1,
+                          "use_rgb_gripper": 1, "use_language": 1, "success": 1,
+                          "task_category": "Camera Viewpoints"})
+        writer.writerow({"task_name": "t1_noise_1", "use_rgb_static": 1, "use_rgb_gripper": 1,
+                          "use_language": 1, "success": 0, "task_category": "Sensor Noise"})
+    filtered = per_task_successes(str(path), {"static", "wrist", "lang"}, task_category="Camera Viewpoints")
+    assert filtered == {"t1_view_0_0_100_0_0_initstate_0": [1]}
+
+
+def test_task_category_unset_is_passthrough(tmp_path):
+    """No --task-category-a/-b given (the default) must keep every row -- existing
+    callers with no task_category column at all must be unaffected."""
+    path = tmp_path / "result.csv"
+    _write_csv(path, [
+        {"task_name": "t1", "use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1, "success": 1},
+    ])
+    result = per_task_successes(str(path), {"static", "wrist", "lang"})
+    assert result == {"t1": [1]}
+
+
+def test_task_category_on_original_libero_rows_matches_nothing(tmp_path):
+    """An original-LIBERO file's rows all carry an empty task_category (see module
+    docstring) -- filtering that side to a real category name must find no rows,
+    not silently match on some default."""
+    path = tmp_path / "orig_result.csv"
+    _write_csv(path, [
+        {"task_name": "t1", "use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1, "success": 1},
+    ])
+    result = per_task_successes(str(path), {"static", "wrist", "lang"}, task_category="Camera Viewpoints")
+    assert result == {}
+
+
 def test_average_over_tasks_is_unweighted_regardless_of_per_task_n():
     """AVERAGE (computed the same way main() does) must be a plain mean of per-task
     rates, not weighted by each task's episode count -- otherwise a base task with

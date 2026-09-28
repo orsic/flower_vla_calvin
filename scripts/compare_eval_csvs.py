@@ -24,6 +24,17 @@ this lands with):
   python scripts/compare_eval_csvs.py plus_libero_10_no_lang/result.csv orig_libero_10/result.csv \
       --base-task --init-state-idx 0 \
       --modalities-a static,wrist,proprio --modalities-b static,wrist,proprio
+
+Restricting to one LIBERO-Plus perturbation category (e.g. to check a category that's
+physically inert once its modality is withheld against the original-LIBERO baseline)
+needs a per-side flag rather than a shared one: an original-LIBERO file's rows all carry
+an empty task_category, so a single flag applied to both sides would filter that side to
+nothing. `--task-category-a` (the LIBERO-Plus side, typically) leaves `--task-category-b`
+unset:
+
+  python scripts/compare_eval_csvs.py plus_libero_10_no_static/result.csv orig_libero_10/result.csv \
+      --base-task --init-state-idx 0 --task-category-a "Camera Viewpoints" \
+      --modalities-a wrist,lang,proprio --modalities-b wrist,lang,proprio
 """
 import argparse
 import csv
@@ -62,7 +73,11 @@ def parse_modalities(spec: str) -> set:
 
 
 def per_task_successes(
-    path: str, modalities: set, base_task: bool = False, init_state_idx: Optional[int] = None,
+    path: str,
+    modalities: set,
+    base_task: bool = False,
+    init_state_idx: Optional[int] = None,
+    task_category: Optional[str] = None,
 ) -> dict:
     """{task_key: [success, ...]} for rows matching `modalities` exactly.
 
@@ -73,6 +88,9 @@ def per_task_successes(
     init_state_idx, given, restricts to rows with that exact init_state_idx (LIBERO-
     Plus rows are always 0 -- see README; this is how an original-LIBERO file, which
     has one row per init state, is narrowed to the one LIBERO-Plus itself draws from).
+    task_category, given, restricts to rows with that exact task_category -- an
+    original-LIBERO file's rows all have an empty task_category, so this is meant for
+    the LIBERO-Plus side only (see module docstring).
     """
     by_task = defaultdict(list)
     with open(path, newline="") as f:
@@ -85,16 +103,22 @@ def per_task_successes(
                 continue
             if init_state_idx is not None and int(row.get("init_state_idx", -1)) != init_state_idx:
                 continue
+            if task_category is not None and row.get("task_category") != task_category:
+                continue
             key = base_task_name(row["task_name"]) if base_task else row["task_name"]
             by_task[key].append(int(row["success"]))
     return by_task
 
 
 def per_task_sr(
-    path: str, modalities: set, base_task: bool = False, init_state_idx: Optional[int] = None,
+    path: str,
+    modalities: set,
+    base_task: bool = False,
+    init_state_idx: Optional[int] = None,
+    task_category: Optional[str] = None,
 ) -> dict:
     """Average success rate per task, restricted to rows matching `modalities` exactly."""
-    by_task = per_task_successes(path, modalities, base_task, init_state_idx)
+    by_task = per_task_successes(path, modalities, base_task, init_state_idx, task_category)
     if not by_task:
         raise SystemExit(
             f"No rows in {path} match modalities={sorted(modalities)} "
@@ -119,6 +143,16 @@ def main():
         help="Restrict both sides to this init_state_idx (LIBERO-Plus rows are always 0; "
              "use 0 to make an original-LIBERO file's per-init-state rows comparable).",
     )
+    parser.add_argument(
+        "--task-category-a", default=None,
+        help="Restrict csv_a to this LIBERO-Plus task_category (e.g. 'Camera Viewpoints'). "
+             "Per-side, not shared with --task-category-b, since an original-LIBERO file's "
+             "rows all carry an empty task_category.",
+    )
+    parser.add_argument(
+        "--task-category-b", default=None,
+        help="Restrict csv_b to this LIBERO-Plus task_category. See --task-category-a.",
+    )
     args = parser.parse_args()
 
     modalities_a = parse_modalities(args.modalities_a)
@@ -126,8 +160,12 @@ def main():
     label_a = "+".join(sorted(modalities_a))
     label_b = "+".join(sorted(modalities_b))
 
-    successes_a = per_task_successes(args.csv_a, modalities_a, args.base_task, args.init_state_idx)
-    successes_b = per_task_successes(args.csv_b, modalities_b, args.base_task, args.init_state_idx)
+    successes_a = per_task_successes(
+        args.csv_a, modalities_a, args.base_task, args.init_state_idx, args.task_category_a
+    )
+    successes_b = per_task_successes(
+        args.csv_b, modalities_b, args.base_task, args.init_state_idx, args.task_category_b
+    )
     if not successes_a:
         raise SystemExit(f"No rows in {args.csv_a} match modalities={sorted(modalities_a)}")
     if not successes_b:

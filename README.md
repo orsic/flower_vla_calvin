@@ -760,6 +760,66 @@ Three things separate them:
    conclusions about these five tasks specifically; the other five `libero_10` tasks'
    pre-fix rows are unaffected by this particular issue.
 
+**Inert-perturbation equivalence check (orig vs. Plus).** `Camera Viewpoints` and
+`Sensor Noise` perturb only the static/agentview camera
+(`LIBERO-plus/libero/libero/envs/env_wrapper.py`'s `motion_blur`/.../`glass_blur` calls
+and the `_view_h_v_s_er_ev` pose all target `agentview_image`/the agentview camera only
+— the wrist view and physics are untouched). So on a modality-dropout checkpoint
+evaluated with `rgb_static` withheld (`eval_modalities.rgb_static=False`, e.g.
+`plus_libero_10_no_static`), both categories are physically inert: the model's input is
+identical to the unperturbed base task's, and with `rollout_seed` keyed on base task
+name and `seed_and_reset` seeding the env before `reset()` (both above), every Plus
+variant of a base task is expected to reproduce that task's original-LIBERO
+`init_state_idx=0` episode's `success` *exactly* — the sharpest available end-to-end
+check that the `orig` and `plus` harnesses agree, since a residual delta here can't be
+attributed to the perturbation.
+
+Checked across four `libero_10_dropout` checkpoints
+(`scripts/compare_eval_csvs.py --base-task --init-state-idx 0 --task-category-a
+"Camera Viewpoints"`/`"Sensor Noise"` against `wrist,lang,proprio`, i.e. `rgb_static`
+withheld): 7-9 of 10 base tasks match exactly on every checkpoint, but 1-3 per
+checkpoint don't — always the *same* base task set for both categories within one
+checkpoint, and always a full success/failure flip (e.g. 100%→0%), never a partial
+shift. Every divergent task but one is a fixture-sampling task (`KITCHEN_SCENE3`,
+`KITCHEN_SCENE8`, `STUDY_SCENE1` — see the fixture-placement note above); the exception,
+`LIVING_ROOM_SCENE6`, has no sampled fixture at all.
+
+Root-caused to two distinct, already-documented mechanisms, not a new bug:
+1. **Not fixture-placement desync.** Re-verified directly:
+   `scripts/debug_fixture_reset_randomization.py`, seeded with each task's actual
+   production `rollout_seed`, prints a bit-identical fixture pose (position, quaternion,
+   and a cross-process-stable crc32 fingerprint) in both the `eval` and `eval-plus`
+   containers for `KITCHEN_SCENE3`/`KITCHEN_SCENE8`/`STUDY_SCENE1` — the September fix
+   (above) works correctly; this isn't why they diverge.
+2. **Batch-shape GEMM/kernel numerics.** `conf/eval_libero_plus.yaml` sets
+   `cross_task_batching: true` (Plus batches episodes across many tasks; orig batches
+   within one task), so an otherwise-identical episode's trajectory runs through a
+   different-shaped/composed batch on each side — non-associative matmul reduction
+   order, not a different computation (see the Reproducibility paragraph above, and
+   `scripts/debug_language_variant_determinism.py`'s docstring, which localizes this
+   same residual to policy-side batch-shape numerics for a different task set). A
+   handful of `libero_10` episodes apparently sit close enough to a success/failure
+   decision boundary that this is enough to flip the outcome. This also explains why
+   the flip isn't always the same direction or task across checkpoints/seeds — it's
+   checkpoint-specific proximity to a boundary, not a systematic bias. One checkpoint's
+   `KITCHEN_SCENE3` sits so close to that boundary it's even non-uniform *within* the
+   Plus category itself (its own ~45-47 cross-task-batched variants don't all land on
+   the same batch composition either) — consistent with, not contradicted by, this
+   explanation.
+
+`Sensor Noise` noise ids 48-50 (`glass_blur`, severities 8-10) are the one documented
+exception to a shared seed guaranteeing reproducibility (unseeded `np.random` inside the
+vendored env — see the "Known exception" paragraph above); on the one checkpoint where
+`KITCHEN_SCENE3` was internally non-uniform, its Sensor-Noise minority-outcome episodes
+were exactly noise ids 48-50 — plausibly compounding the batch-numerics effect on that
+task, though its Camera-Viewpoints counterpart (no noise involved) was non-uniform too,
+so batch-shape numerics alone already accounts for the bulk of it.
+
+Bottom line: **the orig and Plus harnesses agree** wherever a checkpoint's true behavior
+isn't already balanced on a knife's edge; the residual few-percent of base tasks that
+disagree do so for a known, order-of-non-associative-floating-point-ops reason common to
+any batched-inference eval, not a LIBERO-vs-LIBERO-Plus harness bug.
+
 **Modality-ablation eval.** `eval_modalities` in `conf/eval_libero.yaml` /
 `conf/eval_libero_plus.yaml` is functional: setting any of `rgb_static`,
 `rgb_gripper`, `language` to `False` skips that modality at the input — its
@@ -808,6 +868,16 @@ python scripts/compare_eval_csvs.py $CKPT_DROP/eval_logs/last/plus_libero_10_no_
                                      $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv \
   --base-task --init-state-idx 0 \
   --modalities-a static,wrist,proprio --modalities-b static,wrist,proprio
+```
+Restricting to one LIBERO-Plus perturbation category — e.g. the inert-perturbation
+equivalence check above — needs `--task-category-a` (per-side, not shared with
+`--task-category-b`, since an original-LIBERO file's rows all carry an empty
+`task_category`):
+```bash
+python scripts/compare_eval_csvs.py $CKPT_DROP/eval_logs/last/plus_libero_10_no_static/result.csv \
+                                     $CKPT_DROP/eval_logs/last/orig_libero_10/result.csv \
+  --base-task --init-state-idx 0 --task-category-a "Camera Viewpoints" \
+  --modalities-a wrist,lang,proprio --modalities-b wrist,lang,proprio
 ```
 
 **Partial information decomposition (PID).** Success rates say how much each

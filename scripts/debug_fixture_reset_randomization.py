@@ -20,6 +20,17 @@ Also dumps the "agentview" camera pose, to quantify LIBERO-Plus's _setup_camera
 rewrite (rotate_around_z(..., degrees=0) then round(x, 4)), which shifts it by a small
 constant amount relative to original LIBERO's hard-coded pose.
 
+The seeded=True pass uses each task's *actual* production rollout seed --
+env_seed(rollout_seed(base_seed=0, task_name, episode_idx=0)), the same key
+seed_and_reset() feeds the real orig/Plus evals at init_state_idx=0 (base_seed=0 is
+both conf/eval_libero.yaml's and conf/eval_libero_plus.yaml's default) -- and prints
+each fixture's pose (plus a crc32 fingerprint of it, deterministic across the
+hash-randomized processes zlib.crc32 is chosen for elsewhere in this repo, e.g.
+eval_records.rollout_seed) so orig and Plus runs' output can be text-diffed for the
+same task to check whether they land on the same fixture layout under a shared seed --
+the root-cause check for the residual Camera-Viewpoints/Sensor-Noise divergences the
+plan this lands with found on the fixture-bearing tasks.
+
 Run inside the eval-plus container (needs LIBERO_VARIANT=plus + the LIBERO-Plus
 assets; set LIBERO_VARIANT=orig / run inside the eval container for the original-
 LIBERO side of the comparison):
@@ -29,6 +40,9 @@ LIBERO side of the comparison):
       python scripts/debug_fixture_reset_randomization.py
 """
 import os
+import sys
+import zlib
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -36,9 +50,11 @@ import torch
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 
+sys.path.insert(0, str(Path(__file__).parents[1]))
+from flower.evaluation.eval_records import env_seed, rollout_seed  # noqa: E402
+
 BENCHMARK_NAME = "libero_10"
 N_RESETS = 20
-SEED = 1234
 
 # A representative task from each group: fixture-bearing (samples a movable fixture
 # on every reset) vs. fixture-free (only movable *objects*, which set_init_state's
@@ -91,6 +107,12 @@ def run_task(task_name: str, seeded: bool) -> None:
     initial_states = torch.load(init_states_path)
     state0 = initial_states[0]
 
+    # The real production seed for this task's init_state_idx=0 episode -- see module
+    # docstring -- used instead of the arbitrary SEED constant when seeded=True, so
+    # this diagnostic's seeded pass matches what a real orig/Plus eval actually feeds
+    # seed_and_reset for this task.
+    production_seed = env_seed(rollout_seed(0, task_name, 0))
+
     fixture_names = None
     per_fixture_poses = {}
     qpos_hashes = set()
@@ -115,7 +137,7 @@ def run_task(task_name: str, seeded: bool) -> None:
             fixture_names = sorted(env.env.fixtures_dict.keys())
             per_fixture_poses = {name: [] for name in fixture_names}
         if seeded:
-            env.seed(SEED)
+            env.seed(production_seed)
         env.reset()
         env.set_init_state(state0)
         for name, (pos, quat) in fixture_poses(env).items():
@@ -124,7 +146,8 @@ def run_task(task_name: str, seeded: bool) -> None:
         cam_pose = camera_pose(env)
         env.close()
 
-    print(f"\n=== {task_name} (seeded={seeded}) ===")
+    seed_note = f", seed={production_seed}" if seeded else ""
+    print(f"\n=== {task_name} (seeded={seeded}{seed_note}) ===")
     print(f"fixtures: {fixture_names or '(none)'}")
     for name, poses in per_fixture_poses.items():
         distinct = set(poses)
@@ -135,6 +158,15 @@ def run_task(task_name: str, seeded: bool) -> None:
             max_span = float(np.max(np.linalg.norm(arr[:, None, :] - arr[None, :, :], axis=-1)))
         print(f"  fixture {name!r}: {len(distinct)} distinct pose(s) over {N_RESETS} resets"
               f", max pairwise pos span={max_span:.6f} m")
+        # crc32 (not hash()) of the actual pose, so the printed line is directly
+        # text-diffable between a separate orig-container run and a separate
+        # plus-container run of this script -- hash() of bytes is
+        # PYTHONHASHSEED-randomized per process and would differ even for identical
+        # poses (same reason eval_records.rollout_seed uses crc32, not hash()).
+        if seeded:
+            pos, quat = sorted(distinct)[0]
+            fingerprint = zlib.crc32(repr((pos, quat)).encode())
+            print(f"    seeded pose: pos={pos} quat={quat} crc32={fingerprint:#010x}")
     print(f"  post-set_init_state qpos hash: {len(qpos_hashes)} distinct value(s) over {N_RESETS} resets"
           " (expected 1 in both regimes -- set_init_state does restore qpos)")
     print(f"  agentview cam_pos={cam_pose[0]}, cam_quat={cam_pose[1]}")
