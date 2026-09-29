@@ -1,0 +1,23 @@
+ema:
+  _target_: flower.callbacks.ema.EMA
+  decay: 0.999
+  start_step: 0
+  save_ema_weights_in_callback_state: True
+  evaluate_ema_weights_instead: True
+
+  power: 0.6666666666666666
+  inv_gamma: 1.0
+  min_value: 0.0
+  max_value: 0.9999
+
+# No rollout_lh here (unlike callbacks/libero.yaml): flower.rollout.libero_rollout.RolloutLibero
+# imports LIBERO, and LIBERO's rollout eval is inert anyway (skip_epochs == max_epochs).
+# Evaluation runs after training via ./run.sh pipeline-mimicgen.
+
+checkpoint:
+  _target_: pytorch_lightning.callbacks.ModelCheckpoint
+  save_top_k: 0  # nothing to rank without rollout eval; last.ckpt is the eval pipeline's input
+  save_last: True
+  verbose: True
+  dirpath: saved_models
+  every_n_epochs: 1

@@ -450,6 +450,106 @@ FLOWER achieves strong performance across all LIBERO benchmarks:
 | LIBERO-GOAL | 96.9% | 
 
 
+## MimicGen
+
+[MimicGen](https://mimicgen.github.io/) generates large demonstration datasets for
+robosuite manipulation tasks from a handful of human demos. We train a single FLOWER
+model across all 26 datasets in MimicGen's `core` release (12 task families, difficulty
+variants `d0`/`d1`/`d2`), then evaluate it with every modality on.
+
+MimicGen's `core` datasets are state-only -- no camera images are recorded, only MuJoCo
+simulator states -- so a render step turns them into the same robomimic hdf5 layout
+LIBERO's own demos use (`agentview_image`/`robot0_eye_in_hand_image`/
+`robot0_joint_pos`/`robot0_gripper_qpos`, `actions`), read by the exact same
+`SequenceDataset` (`flower/datasets/robomimic_dataset.py`). MimicGen's action space is
+already robosuite's `OSC_POSE` delta convention -- `[dx, dy, dz, drx, dry, drz, gripper]`
+in `[-1, 1]`, axis-angle rotation -- identical to LIBERO's, so **no action conversion
+happens anywhere on this path**: `action_dim`, `act_window_size`, and the flow-matching
+head's `clamp(-1, 1)` output are unchanged from the LIBERO recipe, and the pretrained
+`eef_delta` action encoder/decoder load as-is.
+
+### Why a separate container image
+
+MimicGen needs a newer robosuite/robomimic than LIBERO's pinned `robosuite==1.4.0` /
+`robomimic==0.2.0`. Rather than risk LIBERO/LIBERO-Plus reproducibility, MimicGen support
+ships as `flower-vla-mimicgen:latest`
+(`scripts/podman/Containerfile.mimicgen`), built `FROM flower-vla-eval:latest` and
+layering MimicGen's pinned sim stack on top -- every large shared layer (CUDA, torch,
+the flower requirements, pyhash) is reused; only the sim stack differs.
+
+### Setup and training
+
+```bash
+# 1. Build the MimicGen image (one-time)
+./run.sh build-mimicgen
+
+# 2. Download the general pretrained checkpoint (if not already done)
+./run.sh download-pret
+
+# 3. Download all 26 MimicGen `core` datasets (~95 GB) -- or a single dataset by name
+./run.sh download-mimicgen all
+# ./run.sh download-mimicgen square_d0
+
+# 4. Render 100 demos per dataset into image observations. Source hdf5s are deleted
+#    per-dataset after a successful render (keeps peak extra disk ~10 GB, not ~95 GB) --
+#    pass KEEP_MIMICGEN_SOURCE=1 to keep them. -j N renders N datasets concurrently.
+./run.sh prepare-mimicgen all -j 4
+
+# 5. Fine-tune on every dataset -- same training recipe as ./run.sh train (steps, batch
+#    size, precision, all hyperparameters unchanged). On success, auto-runs
+#    ./run.sh pipeline-mimicgen on the same GPUs (SKIP_PIPELINE=1 to skip).
+./run.sh train-mimicgen
+```
+
+### Evaluation
+
+```bash
+# One-off eval against a specific checkpoint, all modalities on:
+./run.sh eval-mimicgen checkpoint=/saves/train_logs/mimicgen/<run>/seed_42/saved_models/last.ckpt \
+                       train_folder=/saves/train_logs/mimicgen/<run>
+
+# Post-training pipeline (what train-mimicgen auto-runs): evaluates every dataset in
+# flower.datasets.mimicgen_tasks.CORE_DATASETS and uploads result.csv to the training
+# run's W&B artifact (same artifact scheme as ./run.sh pipeline, member "mimicgen.csv"):
+./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run>
+PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run>   # discard + redo
+```
+
+Evaluation results land in `<train_folder>/eval_logs/<checkpoint>/mimicgen_core/result.csv`,
+using the same CSV schema as LIBERO's `result.csv` (`flower/evaluation/eval_records.py`,
+unchanged) with `libero_variant=mimicgen`, `suite=core`.
+
+### The 26 `core` datasets
+
+| Task family | Variants | Instruction | Max steps |
+|---|---|---|---|
+| coffee | coffee_d0, coffee_d1, coffee_d2 | make coffee using the coffee machine and a pod | 400 |
+| coffee_preparation | coffee_preparation_d0, coffee_preparation_d1 | make coffee using the coffee machine and a pod | 500 |
+| hammer_cleanup | hammer_cleanup_d0, hammer_cleanup_d1 | put the hammer in the drawer and close it | 500 |
+| kitchen | kitchen_d0, kitchen_d1 | cook the food on the stove and serve it | 800 |
+| mug_cleanup | mug_cleanup_d0, mug_cleanup_d1 | store the mug inside the drawer | 500 |
+| nut_assembly | nut_assembly_d0 | assemble both square and round nuts onto their pegs | 500 |
+| pick_place | pick_place_d0 | collect all objects and place them into the container | 1000 |
+| square | square_d0, square_d1, square_d2 | insert the square nut onto the square peg | 400 |
+| stack | stack_d0, stack_d1 | stack the blocks into a tower | 400 |
+| stack_three | stack_three_d0, stack_three_d1 | stack three blocks into a vertical tower | 400 |
+| threading | threading_d0, threading_d1, threading_d2 | thread the needle through the eye | 400 |
+| three_piece_assembly | three_piece_assembly_d0, three_piece_assembly_d1, three_piece_assembly_d2 | assemble the three toy pieces together | 500 |
+
+Every difficulty variant (`d0`/`d1`/`d2`) of a family shares one instruction -- they are
+the same task with progressively wider initial-state distributions. `nut_assembly_d0`
+and `pick_place_d0` use a Sawyer arm rather than Franka Panda; FLOWER's language prompt
+still declares "Franka Panda" for these (a fixed string, same as LIBERO's own prompt
+construction -- see `flower/models/flower.py`'s `format_instruction`).
+
+### Budget
+
+~50 GB of rendered training data (26 datasets x 100 demos x 2 cameras x 128x128 RGB),
+~1-2 h to render at `-j 4`. Training uses the identical budget as LIBERO (40 epochs x
+1000 steps, batch 32, 4 GPUs). Evaluation is 26 datasets x 20 episodes, up to 400-1000
+steps each -- longer than LIBERO-10's 10 x 20; `n_eval` is the knob to shrink it.
+
+
 ## LIBERO-Plus Robustness Evaluation
 
 [LIBERO-Plus](https://github.com/sylvestf/LIBERO-plus) ([paper](https://huggingface.co/papers/2510.13626))
@@ -1217,7 +1317,8 @@ every subcommand:
 ./run.sh plot presence --filters '{"config.modality_dropout": true}'
 ./run.sh plot perturbation --filters '{"config.modality_dropout": true}'
 ./run.sh plot severity --filters '{"config.modality_dropout": true}'
-./run.sh plot all --filters '{"config.modality_dropout": true}'   # one fetch, all 6 PDFs
+./run.sh plot clear --filters '{"config.modality_dropout": true, "config.modality_dropout_proprio_keep_p": 1}'
+./run.sh plot all --filters '{"config.modality_dropout": true}'   # one fetch, all 6 PDFs + whatever of the clear/ set applies
 ```
 
 | Subcommand | Output | Shows |
@@ -1225,6 +1326,7 @@ every subcommand:
 | `presence` | `presence_libero10.pdf` | Clean LIBERO-10, x = training config (`modality_dropout_proprio_keep_p`, plus the two `modality_dropout=False` baselines below), one bar per inference-time modality config (all-4, and each of the 4 withheld in turn) |
 | `perturbation` | `perturbation_libero10plus.pdf` | LIBERO-10-Plus, x = the 7 perturbation categories, one filled bar per training config |
 | `severity` | 4 PDFs (below) | All-modality vs. 1-left-out, each bar paired with its init-state-matched LIBERO original baseline |
+| `clear` | 7 PDFs under `clear/` (below) | Presentation-grade versions of `perturbation`/`severity`'s figures, with the McNemar apparatus stripped and the series restricted to a single comparison — see below for why 4 of the 7 need a single-training-config `--filters` |
 
 A run's *training config* series is its `keep_p` when `modality_dropout=True` (the
 cividis ramp below), or one of two fixed-color baselines when `modality_dropout=False`
@@ -1296,6 +1398,53 @@ Four data caveats worth knowing when reading these figures:
   `severity_sr.ROBOT_INITSTATE_NOTE`) — its severity bins reflect the right physical
   magnitude through a different mechanism than a start-pose offset, not a spurious
   gradient.
+
+`clear`'s 7 PDFs, written into `outdir/clear/`, are presentation-grade versions of
+`perturbation`/`severity`'s figures: **no `p=.../n=...` McNemar label, no statistical
+caveat footnote** (those stay on the audit-grade figures above), and each restricted to
+a single comparison so the reader sees one story per figure. The per-category severity/
+difficulty breakdowns are one standalone PDF per category instead of one PDF with N
+stacked facets:
+
+| File | x-axis | Bars |
+|---|---|---|
+| `perturbation_libero10plus_dropout_vs_nodropout.pdf` | the 7 perturbation categories | only `keep_p=1` vs. `no dropout (+proprio)`, paired with orig |
+| `severity_all_pooled.pdf` | the 7 perturbation categories | only the all-modality series, pooled over each category's own severity bins, paired with orig |
+| `severity_all_percategory_<category>.pdf` (one per category) | that category's own severity bins | only the all-modality series, paired with orig |
+| `difficulty_all_pooled.pdf` | `difficulty_level` (1-5) | only the all-modality series, pooled across every category, paired with orig |
+| `difficulty_all_percategory_<category>.pdf` (one per category) | `difficulty_level` (1-5) | only the all-modality series, paired with orig |
+
+The two data caveats about wide hatched-bar CIs and the Robot Initial States upstream
+quirk still apply and are still noted on the relevant `clear` figures — only the McNemar
+apparatus is stripped.
+
+**The 4 severity/difficulty files need `--filters` to select exactly one training
+config.** They come from `plot_data.prepare_severity`, which pools every run in the
+filtered pool into one bar regardless of `modality_dropout_proprio_keep_p` — fine for
+the audit-grade `severity` figures (their whole point is comparing configs on the same
+axes), but silently misleading for a `clear` figure meant to show a single trained
+model. `clear` therefore **raises** if `--filters` matches more than one
+`modality_dropout_proprio_keep_p` value, or both `modality_dropout=false` baselines
+(`BASELINE_PROPRIO`/`BASELINE_NO_PROPRIO` count as two configs — pin `use_proprio` too
+to pick one):
+
+```bash
+./run.sh plot clear --filters '{"config.modality_dropout": true, "config.modality_dropout_proprio_keep_p": 1}'
+./run.sh plot clear --filters '{"config.modality_dropout": false, "config.use_proprio": true}'
+```
+
+`all` doesn't fail this way on a broader filter: it still writes every audit-grade PDF
+and the clear perturbation figure (which is always a 2-config comparison — see below —
+and is exempt from this check), and just skips the 4 clear severity/difficulty PDFs with
+a stderr `WARNING`.
+
+Since a `clear` severity/difficulty bar now represents exactly one training config, it's
+colored/labelled by that config instead of the neutral "all modalities" gray — the same
+`keep_p`/baseline color and legend text (`series_color`/`series_label`) `perturbation`'s
+own figure already uses, so the same config reads as the same color everywhere.
+`perturbation_libero10plus_dropout_vs_nodropout.pdf` is the one deliberate exception: it
+always compares exactly `keep_p=1` against `no dropout (+proprio)`, two configs, by
+design — not affected by the single-config requirement above.
 
 Requires `WANDB_API_KEY`, same as `./run.sh analyze`.
 

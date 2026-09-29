@@ -1,0 +1,20 @@
+# Extends flower-vla-eval:latest with MimicGen's sim stack, kept out of the base image
+# so LIBERO/LIBERO-Plus reproducibility is untouched: MimicGen needs a newer robosuite/
+# robomimic than LIBERO's pinned robosuite==1.4.0 / robomimic==0.2.0 (Containerfile's
+# layer 2). Commits from https://mimicgen.github.io/docs/introduction/installation.html.
+FROM flower-vla-eval:latest
+
+# ----- layer m1: MimicGen's pinned sim stack -----
+RUN python -m pip install --no-cache-dir "mujoco==2.3.2" \
+    && python -m pip install --no-cache-dir \
+        "git+https://github.com/ARISE-Initiative/robosuite.git@b9d8d3de5e3dfd1724f4a0e6555246c460407daa" \
+        "git+https://github.com/ARISE-Initiative/robomimic.git@d0b37cf214bd24fb590d182edb6384333f67b661"
+
+# ----- layer m2: mimicgen + task-zoo envs (hammer_cleanup, kitchen) -----
+RUN python -m pip install --no-cache-dir \
+        "git+https://github.com/NVlabs/mimicgen.git@d360d1d10225f3ff3cf7cf74db1cdbf9a2b79ecb" \
+    && python -m pip install --no-cache-dir --no-deps \
+        "git+https://github.com/ARISE-Initiative/robosuite-task-zoo.git@74eab7f88214c21ca1ae8617c2b2f8d19718a9ed"
+
+# ----- layer m3: re-pin numpy last, same reason as the base image's layer 6 -----
+RUN python -m pip install --no-cache-dir "numpy~=1.23"

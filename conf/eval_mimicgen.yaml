@@ -1,0 +1,37 @@
+eval_cfg_overwrite:
+  datamodule:
+    datasets:
+      lang_dataset:
+        # get_default_mode_and_env (flower/evaluation/utils.py) reads this key
+        # unconditionally even with prep_dm_and_deps=False; MimicgenDataModule never
+        # reads it itself (language comes from flower.datasets.mimicgen_tasks), but the
+        # key must exist or that read raises ConfigAttributeError. See conf/eval_libero.yaml
+        # for the same placeholder on the LIBERO path.
+        lang_folder: unused
+  model:
+    num_sampling_steps: 4
+
+log_dir: /saves/eval_logs
+data_dir: /mimicgen_hdf5
+train_folder: ???
+checkpoint: ???
+device: 0
+num_videos: 0
+debug: False
+
+log_wandb: False
+
+n_eval: 20
+eval_batch_size: 10  # episodes per batch; each runs in a separate MuJoCo subprocess
+env_start_method: spawn  # spawn (parallel, real subprocesses) | dummy (sequential, in-process)
+
+datasets: null  # null = all of flower.datasets.mimicgen_tasks.CORE_DATASETS
+
+seed: 0  # base seed for per-episode rollout seeding (recorded in the result CSV)
+eval_modalities:  # first run evaluates with every modality on; see the plan this config lands with
+  rgb_static: true
+  rgb_gripper: true
+  language: true
+  proprio: true  # requires model.use_proprio=True; not a token, gated separately (see FLOWERVLA.eval_proprio_mask)
+csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/mimicgen_core/
+reeval: false  # set by scripts/mimicgen_pipeline.py's `plan --reeval` -- rotate result.csv aside before writing, instead of merging into it

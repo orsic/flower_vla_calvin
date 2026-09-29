@@ -122,6 +122,172 @@ def test_plot_difficulty_pooled_writes_a_pdf(tmp_path):
     _assert_pdf(path)
 
 
+# ---------------------------------------------------------------------------
+# "clear" (presentation-grade, McNemar-free, all-modality) figures
+# ---------------------------------------------------------------------------
+
+
+def test_slug_lowercases_and_replaces_non_alnum():
+    assert plot_eval._slug("Camera Viewpoints") == "camera_viewpoints"
+    assert plot_eval._slug("(unclassified)") == "unclassified"
+
+
+def test_clear_perturbation_keys_are_keep_p_1_and_baseline_proprio_only():
+    assert plot_eval._CLEAR_PERTURBATION_KEYS == [1.0, plot_data.BASELINE_PROPRIO]
+
+
+def test_single_series_key_returns_the_one_key_in_a_single_config_pool():
+    pool = [("r1", 1.0, {}), ("r2", 1.0, {})]
+    assert plot_eval._single_series_key(pool) == 1.0
+
+
+def test_single_series_key_returns_none_for_a_multi_config_pool():
+    pool = [("r1", 1.0, {}), ("r2", 0.5, {})]
+    assert plot_eval._single_series_key(pool) is None
+
+
+def test_single_series_key_returns_none_for_an_empty_pool():
+    assert plot_eval._single_series_key([]) is None
+
+
+def test_require_single_series_key_returns_the_key_when_unique():
+    pool = [("r1", plot_data.BASELINE_PROPRIO, {})]
+    assert plot_eval._require_single_series_key(pool) == plot_data.BASELINE_PROPRIO
+
+
+def test_require_single_series_key_raises_naming_both_configs():
+    pool = [("r1", 1.0, {}), ("r2", plot_data.BASELINE_PROPRIO, {})]
+    with pytest.raises(ValueError) as exc_info:
+        plot_eval._require_single_series_key(pool)
+    message = str(exc_info.value)
+    assert "keep_p=1" in message
+    assert "proprio" in message
+    assert "--filters" in message
+
+
+def test_clear_series_style_colors_by_training_config_not_the_neutral_gray():
+    colors, labels = plot_eval._clear_series_style(plot_data.BASELINE_PROPRIO)
+    assert colors == {"all": plot_eval.series_color(plot_data.BASELINE_PROPRIO)}
+    assert labels == {"all": plot_eval.series_label(plot_data.BASELINE_PROPRIO)}
+    assert colors["all"] != plot_eval.MODALITY_COLORS["all"]
+
+
+def test_clear_plots_skips_severity_difficulty_when_series_key_is_none(tmp_path):
+    perturbation_data = {"Camera Viewpoints": {1.0: (_bar(8, 10), _bar(6, 8))}}
+    severity_by_category = {"Sensor Noise": {"fog_1": {cfg: _pair(4, 10) for cfg in plot_data.MODALITY_CONFIGS}}}
+    difficulty_by_category = {"Camera Viewpoints": {"1": {cfg: _pair(9, 10) for cfg in plot_data.MODALITY_CONFIGS}}}
+    paths = plot_eval._clear_plots(perturbation_data, severity_by_category, difficulty_by_category, tmp_path, None)
+    assert [p.name for p in paths] == ["perturbation_libero10plus_dropout_vs_nodropout.pdf"]
+
+
+def test_clear_plots_writes_the_full_set_when_series_key_is_given(tmp_path):
+    perturbation_data = {"Camera Viewpoints": {1.0: (_bar(8, 10), _bar(6, 8))}}
+    severity_by_category = {"Sensor Noise": {"fog_1": {cfg: _pair(4, 10) for cfg in plot_data.MODALITY_CONFIGS}}}
+    difficulty_by_category = {"Camera Viewpoints": {"1": {cfg: _pair(9, 10) for cfg in plot_data.MODALITY_CONFIGS}}}
+    paths = plot_eval._clear_plots(perturbation_data, severity_by_category, difficulty_by_category, tmp_path, 1.0)
+    names = {p.name for p in paths}
+    assert "perturbation_libero10plus_dropout_vs_nodropout.pdf" in names
+    assert "severity_all_pooled.pdf" in names
+    assert "difficulty_all_pooled.pdf" in names
+    assert "severity_all_percategory_sensor_noise.pdf" in names
+    assert "difficulty_all_percategory_camera_viewpoints.pdf" in names
+    for path in paths:
+        _assert_pdf(path)
+
+
+def test_plot_perturbation_clear_writes_a_pdf_dropping_non_clear_series(tmp_path):
+    # Pool carries 4 training-config series; the clear figure must render fine while
+    # silently restricting itself to just the 2 in _CLEAR_PERTURBATION_KEYS.
+    pool_data = {
+        "Camera Viewpoints": {
+            1.0: (_bar(8, 10), _bar(6, 8)),
+            0.5: (_bar(5, 10), _bar(4, 8)),
+            plot_data.BASELINE_PROPRIO: (_bar(7, 10), _bar(6, 8)),
+            plot_data.BASELINE_NO_PROPRIO: (_bar(4, 10), None),
+        },
+    }
+    path = plot_eval.plot_perturbation_clear(pool_data, tmp_path)
+    assert path.name == "perturbation_libero10plus_dropout_vs_nodropout.pdf"
+    _assert_pdf(path)
+
+
+def test_plot_perturbation_clear_survives_neither_clear_key_present(tmp_path):
+    # A --filters pool that happens to carry neither keep_p=1.0 nor
+    # BASELINE_PROPRIO (e.g. a modality_dropout-only filter with no keep_p=1.0 runs)
+    # must not divide by zero in _draw_paired_grouped_bars -- regression test for that
+    # crash.
+    pool_data = {
+        "Camera Viewpoints": {0.5: (_bar(5, 10), _bar(4, 8))},
+        "Sensor Noise": {0.25: (_bar(3, 10), None)},
+    }
+    path = plot_eval.plot_perturbation_clear(pool_data, tmp_path)
+    _assert_pdf(path)
+
+
+def test_plot_severity_percategory_clear_writes_one_pdf_per_category(tmp_path):
+    by_category = {
+        "Camera Viewpoints": {
+            "rot~0-15deg": {cfg: _pair(8, 10, orig=(6, 8)) for cfg in plot_data.MODALITY_CONFIGS},
+        },
+        "Sensor Noise": {
+            "fog_1": {cfg: _pair(4, 10) for cfg in plot_data.MODALITY_CONFIGS},
+        },
+    }
+    paths = plot_eval.plot_severity_percategory_clear(by_category, tmp_path, 1.0)
+    names = {p.name for p in paths}
+    assert names == {"severity_all_percategory_camera_viewpoints.pdf", "severity_all_percategory_sensor_noise.pdf"}
+    for path in paths:
+        _assert_pdf(path)
+
+
+def test_plot_difficulty_percategory_clear_writes_one_pdf_per_category(tmp_path):
+    by_category = {
+        "Camera Viewpoints": {"1": {cfg: _pair(9, 10, orig=(8, 9)) for cfg in plot_data.MODALITY_CONFIGS}},
+        "Sensor Noise": {"5": {cfg: _pair(2, 10) for cfg in plot_data.MODALITY_CONFIGS}},
+    }
+    paths = plot_eval.plot_difficulty_percategory_clear(by_category, tmp_path, plot_data.BASELINE_PROPRIO)
+    names = {p.name for p in paths}
+    assert names == {"difficulty_all_percategory_camera_viewpoints.pdf", "difficulty_all_percategory_sensor_noise.pdf"}
+    for path in paths:
+        _assert_pdf(path)
+
+
+def test_plot_severity_pooled_clear_writes_a_pdf(tmp_path):
+    pooled = {
+        "Sensor Noise": {cfg: _pair(8, 10, orig=(6, 8)) for cfg in plot_data.MODALITY_CONFIGS},
+        "Camera Viewpoints": {cfg: _pair(5, 10) for cfg in plot_data.MODALITY_CONFIGS},
+    }
+    path = plot_eval.plot_severity_pooled_clear(pooled, tmp_path, 1.0)
+    assert path.name == "severity_all_pooled.pdf"
+    _assert_pdf(path)
+
+
+def test_plot_difficulty_pooled_clear_writes_a_pdf(tmp_path):
+    pooled = {
+        "1": {cfg: _pair(9, 10, orig=(8, 9)) for cfg in plot_data.MODALITY_CONFIGS},
+        "5": {cfg: _pair(2, 10) for cfg in plot_data.MODALITY_CONFIGS},
+    }
+    path = plot_eval.plot_difficulty_pooled_clear(pooled, tmp_path, plot_data.BASELINE_PROPRIO)
+    assert path.name == "difficulty_all_pooled.pdf"
+    _assert_pdf(path)
+
+
+def test_draw_paired_grouped_bars_mcnemar_false_adds_no_p_labels():
+    fig, ax = plt.subplots()
+    series = {"all": [(_bar(8, 10, mcnemar=(2, 1, 8)), _bar(6, 8))]}
+    plot_eval._draw_paired_grouped_bars(ax, ["cat1"], series, {"all": "#000000"}, mcnemar=False)
+    assert not any(t.get_text().startswith("p") for t in ax.texts)
+    plt.close(fig)
+
+
+def test_draw_paired_grouped_bars_mcnemar_true_adds_p_labels():
+    fig, ax = plt.subplots()
+    series = {"all": [(_bar(8, 10, mcnemar=(2, 1, 8)), _bar(6, 8))]}
+    plot_eval._draw_paired_grouped_bars(ax, ["cat1"], series, {"all": "#000000"}, mcnemar=True)
+    assert any(t.get_text().startswith("p") for t in ax.texts)
+    plt.close(fig)
+
+
 def test_series_color_known_values_are_distinct():
     # 0.0 is a use_proprio=False dropout run's series key (plot_data._series_key), not
     # a literal dropout setting -- it still needs its own color in this figure.

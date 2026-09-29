@@ -303,3 +303,145 @@ services:
       - flower/evaluation/flower_eval_libero.py
       - --config-name=eval_libero_plus
       - "hydra.run.dir=/saves/hydra_outputs/$${now:%Y-%m-%d_%H-%M-%S}"
+
+  # --- MimicGen services ---
+  # Run on flower-vla-mimicgen:latest (scripts/podman/Containerfile.mimicgen), a
+  # separate image extending flower-vla-eval:latest with MimicGen's newer robosuite/
+  # robomimic/mimicgen pins -- kept out of the base image so LIBERO/LIBERO-Plus
+  # reproducibility is untouched. See ./run.sh build-mimicgen.
+  x-base-mimicgen: &base-mimicgen
+    image: flower-vla-mimicgen:latest
+    <<: *limits
+    hostname: "${HOST_HOSTNAME:-flower-vla}"
+    working_dir: /workspace
+    volumes:
+      - ${REPO_ROOT}:/workspace:z
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+      - ${SAVES_DIR}:/saves:z
+      - ${MIMICGEN_HDF5_DIR:-./data/mimicgen_hdf5}:/mimicgen_hdf5:ro
+    devices:
+      - "nvidia.com/gpu=all"
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      WANDB_MODE: disabled
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+
+  # Interactive shell on the MimicGen image.
+  shell-mimicgen:
+    <<: *base-mimicgen
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+  # Download MimicGen `core` hdf5 files from HuggingFace (amandlek/mimicgen_datasets)
+  # into /mimicgen_hdf5/source/. Mounts the hdf5 dir writable (base anchor has :ro).
+  # Run via ./run.sh download-mimicgen [dataset|all].
+  download-mimicgen:
+    <<: *base-mimicgen
+    volumes:
+      - ${REPO_ROOT}:/workspace:z
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+      - ${SAVES_DIR}:/saves:z
+      - ${MIMICGEN_HDF5_DIR:-./data/mimicgen_hdf5}:/mimicgen_hdf5:z
+    command:
+      - bash
+      - -c
+      - |
+        huggingface-cli download amandlek/mimicgen_datasets \
+          --repo-type dataset \
+          --include "core/*" \
+          --local-dir /mimicgen_hdf5/source
+
+  # Render MimicGen's state-only demos into robomimic-format hdf5s with image
+  # observations (robomimic's dataset_states_to_obs.py), matching LIBERO's hdf5
+  # layout so the same SequenceDataset reads either. Writable hdf5 mount (source
+  # files are deleted per-dataset after a successful render; see scripts/prepare_mimicgen.py).
+  # Run via ./run.sh prepare-mimicgen [dataset|all] [-j N].
+  prepare-mimicgen:
+    <<: *base-mimicgen
+    volumes:
+      - ${REPO_ROOT}:/workspace:z
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+      - ${SAVES_DIR}:/saves:z
+      - ${MIMICGEN_HDF5_DIR:-./data/mimicgen_hdf5}:/mimicgen_hdf5:z
+    command:
+      - python
+      - scripts/prepare_mimicgen.py
+      - all
+
+  # Shared env block for the MimicGen training service (same shape as x-train-env above).
+  x-train-env-mimicgen: &train-env-mimicgen
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    PYTHONPATH: /workspace
+    HYDRA_FULL_ERROR: "1"
+    WANDB_MODE: ${WANDB_MODE:-online}
+    HF_HOME: /root/.cache/huggingface
+    CUDA_DEVICE_ORDER: PCI_BUS_ID
+    WANDB_API_KEY: ${WANDB_API_KEY:-}
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    TOKENIZERS_PARALLELISM: "true"
+    NCCL_DEBUG: WARN
+    CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+
+  # Fine-tune FlowerVLA on the MimicGen `core` datasets from the general pretrained
+  # checkpoint. Same recipe as ./run.sh train (see conf/config_mimicgen.yaml).
+  # Prerequisites: ./run.sh download-pret && ./run.sh download-mimicgen all && ./run.sh prepare-mimicgen all
+  train-mimicgen:
+    <<: *base-mimicgen
+    shm_size: "16g"
+    environment:
+      <<: *train-env-mimicgen
+    command:
+      - python
+      - flower/training_libero.py
+      - --config-name=config_mimicgen
+      - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
+      - devices=-1
+      - log_dir=/saves/train_logs
+      - num_workers=8
+      - seed=42
+      - "hydra.run.dir=/saves/train_logs/mimicgen/$${now:%Y-%m-%d_%H-%M-%S}"
+
+  # Run the standalone MimicGen evaluation (all modalities on).
+  eval-mimicgen:
+    <<: *base-mimicgen
+    shm_size: "8g"
+    command:
+      - python
+      - flower/evaluation/flower_eval_mimicgen.py
+      - train_folder=/saves/checkpoints/mimicgen
+      - checkpoint=/saves/checkpoints/mimicgen
+      - log_dir=/saves/eval_logs
+      - n_eval=20
+      - num_videos=0
+      - "hydra.run.dir=/saves/hydra_outputs/$${now:%Y-%m-%d_%H-%M-%S}"
+
+  # Uploads a completed MimicGen run's result.csv to its W&B run (same role as
+  # pipeline-artifacts above). Needs WANDB_MODE=online unlike eval-mimicgen's default.
+  pipeline-artifacts-mimicgen:
+    <<: *base-mimicgen
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      WANDB_MODE: ${WANDB_MODE:-online}
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"

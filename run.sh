@@ -18,6 +18,14 @@
 #   ./run.sh smoke                        Run the smoke test (verifies env before full eval)
 #   ./run.sh devenv                       Regenerate .devcontainer/.env from vars.env (run after editing vars.env)
 #
+#   ./run.sh build-mimicgen               Build the MimicGen container image (flower-vla-mimicgen:latest)
+#   ./run.sh download-mimicgen [ds|all]   Download MimicGen `core` demo hdf5 files (default: all)
+#   ./run.sh prepare-mimicgen [ds|all] [-j N]  Render downloaded demos into image observations
+#   ./run.sh train-mimicgen [...]         Fine-tune on all MimicGen `core` datasets (same recipe as train)
+#                                          then auto-runs ./run.sh pipeline-mimicgen (SKIP_PIPELINE=1 to skip)
+#   ./run.sh eval-mimicgen                Run the MimicGen evaluation (all modalities)
+#   ./run.sh pipeline-mimicgen <train_run_dir> [...]  Post-training MimicGen eval + W&B upload
+#
 # Valid benchmarks: libero_10, libero_90, libero_spatial, libero_object, libero_goal
 #
 # Configure host-specific paths in vars.env (copied from vars.env.example).
@@ -41,10 +49,12 @@ fi
 if [[ "${LIBERO_HDF5_DIR:-/path/to/libero_hdf5}" == "/path/to/libero_hdf5" ]]; then
     LIBERO_HDF5_DIR="$REPO_ROOT/data/libero_hdf5"
 fi
+MIMICGEN_HDF5_DIR="${MIMICGEN_HDF5_DIR:-$REPO_ROOT/data/mimicgen_hdf5}"
 
 # Container hostname (compose.yml) so W&B/logs identify the host a run came from.
 export HOST_HOSTNAME="${HOST_HOSTNAME:-${HOSTNAME:-$(uname -n)}}"
 export LIBERO_HDF5_DIR
+export MIMICGEN_HDF5_DIR
 
 CMD="${1:-help}"
 shift || true
@@ -128,6 +138,27 @@ run_dropout_train() {
         model.modality_dropout_keep_fraction=0.5 \
         "model.modality_dropout_alphas=[1.0,1.0,1.0]" \
         model.modality_dropout_proprio_keep_p=0.5 \
+        devices=-1 \
+        log_dir=/saves/train_logs \
+        num_workers=8 \
+        seed=42 \
+        "hydra.run.dir=$TRAIN_RUN_DIR" \
+        "$@"
+}
+
+# Helper for train-mimicgen. All remaining args are appended as Hydra overrides.
+# Unlike run_train there is no benchmark positional arg -- a MimicGen run always trains
+# on every dataset in flower.datasets.mimicgen_tasks.CORE_DATASETS.
+run_train_mimicgen() {
+    local svc="$1"; shift
+    # See run_train's comment: makes the training GPU set explicit for a chained pipeline.
+    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
+    # Not local: read back by the train-mimicgen case to chain ./run.sh pipeline-mimicgen.
+    TRAIN_RUN_DIR="/saves/train_logs/mimicgen/$(date +%Y-%m-%d_%H-%M-%S)"
+    podman-compose -f "$COMPOSE" run --rm "$svc" \
+        python flower/training_libero.py \
+        --config-name=config_mimicgen \
+        "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt" \
         devices=-1 \
         log_dir=/saves/train_logs \
         num_workers=8 \
@@ -318,6 +349,95 @@ case "$CMD" in
         python scripts/eval_pipeline.py upload --train-folder "$train_dir" -- "$@"
     ;;
 
+  build-mimicgen)
+    podman build \
+        --tag flower-vla-mimicgen:latest \
+        --file "$REPO_ROOT/scripts/podman/Containerfile.mimicgen" \
+        "$REPO_ROOT"
+    ;;
+
+  download-mimicgen)
+    # Optional first arg: dataset name (e.g. square_d0) or "all" (default).
+    local_ds="${1:-all}"
+    if [[ "$local_ds" == "all" ]]; then
+        INCLUDE_ARGS=(--include "core/*")
+    else
+        INCLUDE_ARGS=(--include "core/${local_ds}.hdf5")
+    fi
+    podman-compose -f "$COMPOSE" run --rm download-mimicgen \
+        huggingface-cli download amandlek/mimicgen_datasets \
+        --repo-type dataset \
+        "${INCLUDE_ARGS[@]}" \
+        --local-dir /mimicgen_hdf5/source
+    ;;
+
+  prepare-mimicgen)
+    # Renders downloaded demos into image observations. Args pass straight through to
+    # scripts/prepare_mimicgen.py: [dataset|all] [-j N] [--n-demo N].
+    podman-compose -f "$COMPOSE" run --rm prepare-mimicgen \
+        python scripts/prepare_mimicgen.py "$@"
+    ;;
+
+  train-mimicgen)
+    # Fine-tune on every MimicGen `core` dataset, same recipe as ./run.sh train.
+    # On success, chains straight into ./run.sh pipeline-mimicgen on the same GPUs.
+    # Set SKIP_PIPELINE=1 to skip.
+    run_train_mimicgen train-mimicgen "$@"
+    [[ -n "${SKIP_PIPELINE:-}" ]] || PIPELINE_REEVAL= "$0" pipeline-mimicgen "$TRAIN_RUN_DIR"
+    ;;
+
+  eval-mimicgen)
+    podman-compose -f "$COMPOSE" run --rm eval-mimicgen \
+        python flower/evaluation/flower_eval_mimicgen.py \
+        train_folder=/saves/checkpoints/mimicgen \
+        checkpoint=/saves/checkpoints/mimicgen \
+        log_dir=/saves/eval_logs \
+        n_eval=20 \
+        num_videos=0 \
+        "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)" \
+        "$@"
+    ;;
+
+  pipeline-mimicgen)
+    # Post-training evaluation for one completed MimicGen training run: a single
+    # all-modalities eval across every dataset in mimicgen_tasks.CORE_DATASETS, then
+    # uploads result.csv to that run's W&B artifact. Trailing Hydra overrides reach
+    # both the planner and the eval it launches.
+    #   ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/2026-09-08_10-00-00
+    #   PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/.../<run>
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: ./run.sh pipeline-mimicgen <train_run_dir> [hydra_overrides...]" >&2
+        exit 1
+    fi
+    train_dir="$1"; shift
+    reeval_flag=()
+    [[ -n "${PIPELINE_REEVAL:-}" ]] && reeval_flag=(--reeval)
+
+    plan="$(podman-compose -f "$COMPOSE" run --rm -T shell-mimicgen \
+        python scripts/mimicgen_pipeline.py plan --train-folder "$train_dir" \
+        "${reeval_flag[@]}" -- "$@")"
+
+    # See ./run.sh pipeline's identical comment: read the whole plan into memory before
+    # launching anything, so no long-lived eval container can affect later iterations.
+    mapfile -t plan_lines <<< "$plan"
+
+    i=0
+    for line in "${plan_lines[@]}"; do
+        IFS=$'\t' read -r -a fields <<< "$line"
+        [[ ${#fields[@]} -eq 0 ]] && continue
+        svc="${fields[0]}"
+        overrides=("${fields[@]:1}")
+        i=$((i + 1))
+        podman-compose -f "$COMPOSE" run --rm -T "$svc" \
+            python flower/evaluation/flower_eval_mimicgen.py \
+            "${overrides[@]}" \
+            "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)_${i}"
+    done
+
+    podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-mimicgen \
+        python scripts/mimicgen_pipeline.py upload --train-folder "$train_dir" -- "$@"
+    ;;
+
   analyze)
     # Read the "evaluation" W&B artifact scripts/eval_pipeline.py's upload attached to
     # one or more training runs, and report PID + per-perturbation success rates.
@@ -416,6 +536,23 @@ case "$CMD" in
     echo "                     Example: ./run.sh plot all --filters '{\"config.modality_dropout\": true}'"
     echo "  smoke              Quick sanity check: CUDA + imports + model load + 1 env step"
     echo "  devenv             Regenerate .devcontainer/.env from vars.env"
+    echo ""
+    echo "  build-mimicgen     Build the MimicGen container image (flower-vla-mimicgen:latest)"
+    echo "  download-mimicgen [dataset|all]"
+    echo "                     Download MimicGen \`core\` demo hdf5 files (default: all 26 datasets)"
+    echo "                     Example: ./run.sh download-mimicgen square_d0"
+    echo "  prepare-mimicgen [dataset|all] [-j N] [--n-demo N]"
+    echo "                     Render downloaded demos into image observations (default: all, 100 demos)"
+    echo "                     -j N renders N datasets concurrently. KEEP_MIMICGEN_SOURCE=1 keeps sources."
+    echo "  train-mimicgen [hydra_overrides...]"
+    echo "                     Fine-tune on every MimicGen \`core\` dataset, same recipe as ./run.sh train."
+    echo "                     On success, auto-runs ./run.sh pipeline-mimicgen on the same GPUs"
+    echo "                     (SKIP_PIPELINE=1 to skip)."
+    echo "  eval-mimicgen      Run the MimicGen evaluation, all modalities on"
+    echo "  pipeline-mimicgen <train_run_dir> [hydra_overrides...]"
+    echo "                     Post-training MimicGen eval (all modalities, every dataset) + W&B upload."
+    echo "                     Example: ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/2026-.../"
+    echo "                              PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/.../<run>"
     if [[ "$CMD" != "help" ]]; then
         exit 1
     fi

@@ -1,0 +1,24 @@
+defaults:
+  - transforms: libero_transforms
+_target_: flower.datasets.mimicgen_data_module.MimicgenDataModule
+_recursive_: false
+
+
+data_dir: ${data_dir}
+shuffle_val: false
+dataset_names: null  # null = every dataset in flower.datasets.mimicgen_tasks.CORE_DATASETS
+
+observation_space:
+  rgb_obs: ["agentview_image", "robot0_eye_in_hand_image"]
+  depth_obs: []
+  state_obs: ["robot0_gripper_qpos", "robot0_joint_pos"]
+  actions: ['actions']
+  language: ['language']
+
+datasets:
+  lang_dataset:
+    batch_size: ${batch_size}
+    obs_space: ${datamodule.observation_space}
+    action_seq_len: ${act_seq_len}
+    obs_seq_len: ${obs_seq_len}
+    split_ratio: 0.0

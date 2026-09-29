@@ -49,6 +49,7 @@ from flower.evaluation.eval_records import (
     rotate_result_csv,
     write_csv,
 )
+from flower.evaluation import obs_translation
 from flower.evaluation.libero_tasks import base_task, original_task_names
 from flower.evaluation.libero_venv import make_libero_venv
 from flower.evaluation.multistep_sequences import get_sequences
@@ -878,114 +879,15 @@ class EvaluateLibero:
 
 
     def translate_obs_space(self, obs_space):
-
-        translated_dict = {}
-        translated_dict['rgb_obs'] = {}
-        translated_dict['rgb_obs']['rgb_static'] = obs_space['agentview_image']
-        translated_dict["rgb_obs"]['rgb_gripper'] = obs_space['robot0_eye_in_hand_image']
-        translated_dict['robot_obs'] = obs_space['robot0_joint_pos']
-        translated_dict['gripper_states'] = obs_space['robot0_gripper_qpos']
-        translated_dict['depth_obs'] = {}
-
-        return translated_dict
-
-    def translate_obs_space(self, obs_space):
         """Convert LIBERO environment observations to the format expected by the model"""
-        translated_dict = {}
-        translated_dict['rgb_obs'] = {}
-        
-        # Map environment camera observations to expected keys
-        # The environment uses 'agentview_image' but model expects 'rgb_static'
-        if 'agentview_image' in obs_space:
-            translated_dict['rgb_obs']['rgb_static'] = obs_space['agentview_image']
-        # The environment uses 'robot0_eye_in_hand_image' but model expects 'rgb_gripper'
-        if 'robot0_eye_in_hand_image' in obs_space:
-            translated_dict['rgb_obs']['rgb_gripper'] = obs_space['robot0_eye_in_hand_image']
-        
-        # Map robot state observations. Match training's proprio layout
-        # (libero_data_module.py): joint positions + gripper state, concatenated.
-        if 'robot0_joint_pos' in obs_space and 'robot0_gripper_qpos' in obs_space:
-            translated_dict['robot_obs'] = np.concatenate(
-                [obs_space['robot0_joint_pos'], obs_space['robot0_gripper_qpos']], axis=-1
-            )
-
-        # Empty dict for depth since not used
-        translated_dict['depth_obs'] = {}
-        
-        return translated_dict
+        return obs_translation.translate_obs_space(obs_space)
 
     def apply_transforms(self, data, train=False):
         """Apply validation transforms to the observations"""
-        # Determine which transform set to use (use 'val' for evaluation)
-        transform_set = 'train' if train else 'val'
-        
-        # Print available transform keys for debugging
-        if not hasattr(self, '_printed_transforms'):
-            print(f"Transform structure: {type(self.transforms)}")
-            if hasattr(self.transforms, 'keys'):
-                print(f"Top-level transform keys: {list(self.transforms.keys())}")
-                if transform_set in self.transforms:
-                    print(f"{transform_set} transform keys: {list(self.transforms[transform_set].keys())}")
-            self._printed_transforms = True
-        
-        # Ensure we're accessing the right transform subset
-        if transform_set in self.transforms:
-            transforms_to_use = self.transforms[transform_set]
-        else:
-            print(f"Warning: '{transform_set}' not found in transforms. Available keys: {list(self.transforms.keys())}")
-            transforms_to_use = self.transforms  # Fall back to top level
-        
-        # Process each observation
-        for key in data['rgb_obs']:
-            x = data['rgb_obs'][key]
-            if len(x.shape) == 3:
-                x = np.expand_dims(x, axis=0)
-            x = torch.from_numpy(x).byte().permute(0, 3, 1, 2)
-            
-            # Try to find the right transform key
-            transform_found = False
-            
-            # Check direct key match
-            if key in transforms_to_use:
-                for transform in transforms_to_use[key]:
-                    x = transform(x)
-                transform_found = True
-            else:
-                # Try common alternative keys
-                alternative_keys = {
-                    'rgb_static': ['rgb', 'agentview', 'static', 'agentview_rgb'],
-                    'rgb_gripper': ['gripper', 'eye_in_hand', 'hand', 'eye_in_hand_rgb']
-                }
-                
-                if key in alternative_keys:
-                    for alt_key in alternative_keys[key]:
-                        if alt_key in transforms_to_use:
-                            for transform in transforms_to_use[alt_key]:
-                                x = transform(x)
-                            transform_found = True
-                            break
-            
-            if not transform_found:
-                print(f"Warning: No transform found for {key}. Using default normalization.")
-                x = x.float() / 255.0  # Default normalization
-            
-            data['rgb_obs'][key] = x.unsqueeze(0).to(self.device)
-        
-        # Ensure robot_obs is a properly formatted tensor
-        if 'robot_obs' in data and not isinstance(data['robot_obs'], torch.Tensor):
-            data['robot_obs'] = torch.tensor(data['robot_obs'], dtype=torch.float32).unsqueeze(0).to(self.device)
-
-        return data
+        return obs_translation.apply_transforms(data, self.transforms, self.device, train=train)
 
     def process_env_obs(self, env_obs, lang_embed, lang_text=None):
-        return_obs = self.translate_obs_space(env_obs)
-        return_obs = self.apply_transforms(return_obs)
-
-        goal = {}
-        goal['lang_text'] = lang_text
-        goal['lang'] = lang_embed
-
-        return return_obs, goal
+        return obs_translation.process_env_obs(env_obs, lang_embed, lang_text, self.transforms, self.device)
 
     def process_env_obs_batch(self, obs_list, lang_embed, lang_text=None):
         """Process a list of B obs dicts (from a vector env) into a batched model input.
@@ -1003,28 +905,7 @@ class EvaluateLibero:
         Returns data with rgb_obs tensors of shape [B, 1, C, H, W] and goal with
         lang_text as a list of B strings (handled by model.forward).
         """
-        translated = [self.translate_obs_space(obs) for obs in obs_list]
-        transforms_to_use = self.transforms['val'] if 'val' in self.transforms else self.transforms
-
-        rgb_obs = {}
-        for key in translated[0]['rgb_obs']:
-            imgs = np.stack([t['rgb_obs'][key] for t in translated])  # [B, H, W, C]
-            x = torch.from_numpy(imgs).byte().permute(0, 3, 1, 2)  # [B, C, H, W]
-            for transform in transforms_to_use[key]:
-                x = transform(x)
-            rgb_obs[key] = x.unsqueeze(1).to(self.device)  # [B, 1, C, H, W]
-        batch_data = {'rgb_obs': rgb_obs}
-
-        if 'robot_obs' in translated[0]:
-            robot_obs = np.stack([t['robot_obs'] for t in translated])  # [B, D]
-            batch_data['robot_obs'] = torch.from_numpy(robot_obs).float().to(self.device)
-
-        lang_text_list = [lang_text] * len(obs_list) if isinstance(lang_text, str) else list(lang_text)
-        goal = {
-            'lang_text': lang_text_list,
-            'lang': lang_embed,
-        }
-        return batch_data, goal
+        return obs_translation.process_env_obs_batch(obs_list, lang_embed, lang_text, self.transforms, self.device)
 
 def _eval_worker(
     rank: int,

@@ -21,6 +21,7 @@ Every subcommand shares one PoolConfig: --filters is the single mongo-style W&B
 filter (same syntax as analyze_wandb.py's --filters) that defines the run pool for
 every plot, so a --filters change moves consistently across all of them.
 """
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -150,6 +151,12 @@ SEVERITY_CATEGORY_ORDER = [
     "Light Conditions",
 ]
 
+# The one series the "clear" (presentation-grade, no-McNemar) severity/difficulty
+# figures show: all-modality LIBERO-10-Plus vs. its all-modality init-state-matched
+# LIBERO original -- every 1-modality-off comparison is dropped from those figures by
+# design (see plot_severity_pooled_clear etc.).
+_CLEAR_CONFIGS = ["all"]
+
 
 def apply_style() -> None:
     """Physical-Intelligence-paper-style rcParams, font scale 2.5x default: white
@@ -219,6 +226,10 @@ _MCNEMAR_COLOR = "#666666"
 # ("p<0.001 (n=10)") at _MCNEMAR_FONTSIZE needs on the order of 100pt of vertical
 # room; sized empirically against a rendered figure, not computed from font metrics.
 _XTICK_PAD = 45 * FONT_SCALE
+# Matplotlib's own default xtick pad, font-scaled -- used instead of _XTICK_PAD when a
+# figure draws with mcnemar=False: there's no rotated p-label to clear underneath, so
+# reserving _XTICK_PAD's room would just open a large empty gap under the axis.
+_NO_MCNEMAR_XTICK_PAD = 3.5 * FONT_SCALE
 
 
 def _annotate_bar_values(ax, xs, heights, color: str) -> None:
@@ -290,7 +301,8 @@ def _draw_grouped_bars(
 
 
 def _draw_paired_grouped_bars(
-    ax, group_labels: List[str], series: Dict[Any, List[Tuple[Optional[Bar], Optional[Bar]]]], colors: Dict[Any, str]
+    ax, group_labels: List[str], series: Dict[Any, List[Tuple[Optional[Bar], Optional[Bar]]]], colors: Dict[Any, str],
+    mcnemar: bool = True,
 ) -> None:
     """One group of bars per group_labels entry, one filled+hollow-hatched PAIR per
     `series` key within each group: the filled bar is the measurement (LIBERO-Plus, or
@@ -307,7 +319,9 @@ def _draw_paired_grouped_bars(
     drawn Plus bar with a paired McNemar table gets a "p=... (n=...)" label beneath the
     axis (_annotate_mcnemar) -- ax.tick_params' pad below reserves the room the rotated
     p-label and the group's own (often rotated) tick label both need so they don't
-    collide."""
+    collide. mcnemar=False (the presentation-grade "clear" figures) skips that label
+    entirely and falls back to matplotlib's own default tick pad, since there's no
+    p-label to clear room for."""
     n_series = len(series)
     group_width = 0.8
     slot_width = group_width / n_series
@@ -326,7 +340,8 @@ def _draw_paired_grouped_bars(
                 yerr=[plus_lo, plus_hi], capsize=3, error_kw={"elinewidth": 1.2, "alpha": 0.7, "ecolor": "#333333"},
             )
             _annotate_bar_values(ax, plus_x, plus_heights, "white")
-            _annotate_mcnemar(ax, plus_x, [pairs[j][0] for j in plus_present])
+            if mcnemar:
+                _annotate_mcnemar(ax, plus_x, [pairs[j][0] for j in plus_present])
         if orig_present:
             orig_x = slot_center[orig_present] + bar_width / 2 + gap
             ax.bar(
@@ -339,7 +354,7 @@ def _draw_paired_grouped_bars(
     ax.set_xticklabels(group_labels)
     ax.set_ylim(0, 100)
     ax.set_ylabel("Success rate (%)")
-    ax.tick_params(axis="x", pad=_XTICK_PAD)
+    ax.tick_params(axis="x", pad=_XTICK_PAD if mcnemar else _NO_MCNEMAR_XTICK_PAD)
 
 
 def _orig_legend_handle() -> Patch:
@@ -385,37 +400,125 @@ def plot_presence(pool_data: Dict[plot_data.SeriesKey, Dict[str, Bar]], outdir: 
 # ---------------------------------------------------------------------------
 
 
-def plot_perturbation(pool_data: Dict[str, Dict[plot_data.SeriesKey, Tuple[Bar, Optional[Bar]]]], outdir: Path) -> Path:
-    apply_style()
-    categories = sorted(pool_data)
-    keys = sorted({k for by_key in pool_data.values() for k in by_key}, key=series_sort_key)
-    series = {k: [pool_data[cat].get(k, (None, None)) for cat in categories] for k in keys}
-    colors = {k: series_color(k) for k in keys}
+# The only two training-config series the clear perturbation figure shows: dropout
+# with proprioception always kept vs. no dropout at all (plot_data._series_key). Every
+# other series key present in the pool (other keep_p values, the no-proprio baseline)
+# is dropped from this figure by design -- it isolates the one dropout-vs-no-dropout
+# comparison. Exempt from _single_series_key/_require_single_series_key below: this
+# figure is deliberately built from 2 training configs, not 1.
+_CLEAR_PERTURBATION_KEYS = [1.0, plot_data.BASELINE_PROPRIO]
 
-    fig, ax = plt.subplots(figsize=(7 * FONT_SCALE, 5 * FONT_SCALE))
-    _draw_paired_grouped_bars(ax, categories, series, colors)
-    ax.set_xticklabels(categories, rotation=25, ha="right")
-    ax.annotate(
-        "orig_n is deduplicated by (modality combo, base task) -- ≤10 for LIBERO-10, so the\n"
-        "hatched bars carry wide CIs by construction, not by chance. The p=.../n=... label\n"
-        "below each bar is a task-level exact McNemar test against that same baseline (see\n"
-        "severity_sr.paired_baseline) -- n is the number of base tasks it's built from, so\n"
-        "the smallest reachable two-sided p is ~0.002 and most bars will show p near 1.",
-        xy=(0.0, -0.7), xycoords="axes fraction", ha="left", va="top", fontsize=8 * FONT_SCALE * 0.55, color="#666666",
+
+def _single_series_key(pool) -> Optional[plot_data.SeriesKey]:
+    """The one training-config series key the clear severity/difficulty figures can be
+    drawn for, or None when the pool spans more than one (or is empty). Those figures
+    come from plot_data.prepare_severity, which pools every run in `pool` into one bar
+    regardless of its series key (see fetch_pool's (run_id, series_key, analysis)
+    triples) -- so more than one config in the pool would have that bar silently
+    average across trained models, exactly the ambiguity these figures exist to avoid."""
+    keys = {series_key for _run_id, series_key, _analysis in pool}
+    return next(iter(keys)) if len(keys) == 1 else None
+
+
+def _require_single_series_key(pool) -> plot_data.SeriesKey:
+    """_single_series_key, raising instead of returning None -- used by the explicit
+    `clear` subcommand, where silently skipping the figures the user asked for would be
+    worse than failing outright."""
+    key = _single_series_key(pool)
+    if key is not None:
+        return key
+    keys = sorted({series_key for _run_id, series_key, _analysis in pool}, key=series_sort_key)
+    found = ", ".join(series_label(k) for k in keys) if keys else "(empty pool)"
+    raise ValueError(
+        "clear severity/difficulty figures need exactly one training config in the pool "
+        f"(plot_data.prepare_severity pools every run into one bar) -- found {len(keys)}: {found}. "
+        "Narrow --filters to one config.modality_dropout_proprio_keep_p value, or to "
+        "config.modality_dropout=false plus config.use_proprio."
     )
 
-    handles = [Patch(facecolor=series_color(k), label=series_label(k)) for k in keys]
+
+def _clear_series_style(series_key: plot_data.SeriesKey) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """(colors, labels) for a clear severity/difficulty figure's single all-modality
+    bar -- the training config's own fixed color/label (series_color/series_label), so
+    the same config reads the same color across every figure in the clear set instead of
+    the neutral MODALITY_COLORS["all"] gray."""
+    return {"all": series_color(series_key)}, {"all": series_label(series_key)}
+
+
+def _plot_perturbation_bars(
+    pool_data: Dict[str, Dict[plot_data.SeriesKey, Tuple[Bar, Optional[Bar]]]],
+    outdir: Path,
+    filename: str,
+    title: str,
+    keys: Optional[List[plot_data.SeriesKey]] = None,
+    mcnemar: bool = True,
+    note: Optional[str] = None,
+) -> Path:
+    """LIBERO-10-Plus per perturbation category, one filled+hollow-hatched pair per
+    training-config series key -- shared by plot_perturbation (every series key present
+    in the pool, McNemar labels + full caveat) and plot_perturbation_clear (only
+    _CLEAR_PERTURBATION_KEYS, no McNemar).
+
+    `keys`, when given, is used verbatim (not intersected with what's actually present
+    in `pool_data`) -- same "fixed slot list, some may end up empty" contract as
+    `configs` on _plot_pooled_bars/_plot_category_facets, so a `--filters` pool that
+    happens to carry neither of _CLEAR_PERTURBATION_KEYS still renders a (bar-less)
+    figure with both slots reserved, rather than a wanted_keys intersection collapsing
+    to empty and dividing by zero in _draw_paired_grouped_bars. The legend still drops
+    any key with no bar anywhere (see _present_keys)."""
+    apply_style()
+    categories = sorted(pool_data)
+    present_keys = {k for by_key in pool_data.values() for k in by_key}
+    sorted_keys = sorted(present_keys, key=series_sort_key) if keys is None else sorted(keys, key=series_sort_key)
+    series = {k: [pool_data[cat].get(k, (None, None)) for cat in categories] for k in sorted_keys}
+    colors = {k: series_color(k) for k in sorted_keys}
+
+    fig, ax = plt.subplots(figsize=(7 * FONT_SCALE, 5 * FONT_SCALE))
+    _draw_paired_grouped_bars(ax, categories, series, colors, mcnemar=mcnemar)
+    ax.set_xticklabels(categories, rotation=25, ha="right")
+    if note:
+        ax.annotate(
+            note, xy=(0.0, -0.7 if mcnemar else -0.5), xycoords="axes fraction", ha="left", va="top",
+            fontsize=8 * FONT_SCALE * 0.55, color="#666666",
+        )
+
+    handles = [Patch(facecolor=series_color(k), label=series_label(k)) for k in sorted_keys if k in present_keys]
     handles.append(_orig_legend_handle())
     fig.legend(
         handles=handles, loc="outside upper center", ncol=min(3, len(handles)),
-        title="LIBERO-10-Plus vs. init-state-matched LIBERO original", title_fontsize=12 * FONT_SCALE,
+        title=title, title_fontsize=12 * FONT_SCALE,
     )
 
     outdir.mkdir(parents=True, exist_ok=True)
-    path = outdir / "perturbation_libero10plus.pdf"
+    path = outdir / filename
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
     return path
+
+
+def plot_perturbation(pool_data: Dict[str, Dict[plot_data.SeriesKey, Tuple[Bar, Optional[Bar]]]], outdir: Path) -> Path:
+    return _plot_perturbation_bars(
+        pool_data, outdir, "perturbation_libero10plus.pdf",
+        "LIBERO-10-Plus vs. init-state-matched LIBERO original",
+        note=(
+            "orig_n is deduplicated by (modality combo, base task) -- ≤10 for LIBERO-10, so the\n"
+            "hatched bars carry wide CIs by construction, not by chance. The p=.../n=... label\n"
+            "below each bar is a task-level exact McNemar test against that same baseline (see\n"
+            "severity_sr.paired_baseline) -- n is the number of base tasks it's built from, so\n"
+            "the smallest reachable two-sided p is ~0.002 and most bars will show p near 1."
+        ),
+    )
+
+
+def plot_perturbation_clear(pool_data: Dict[str, Dict[plot_data.SeriesKey, Tuple[Bar, Optional[Bar]]]], outdir: Path) -> Path:
+    """The 'clear' (presentation-grade, no McNemar) perturbation figure: only
+    keep_p=1.0 vs. the no-dropout(+proprio) baseline, across perturbation categories."""
+    return _plot_perturbation_bars(
+        pool_data, outdir, "perturbation_libero10plus_dropout_vs_nodropout.pdf",
+        "LIBERO-10-Plus: dropout training (keep_p=1) vs. no dropout, vs. init-state-matched LIBERO original",
+        keys=_CLEAR_PERTURBATION_KEYS, mcnemar=False,
+        note="orig_n is deduplicated by (modality combo, base task) -- ≤10 for LIBERO-10, so the\nhatched bars carry wide CIs by construction, not by chance.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -425,18 +528,72 @@ def plot_perturbation(pool_data: Dict[str, Dict[plot_data.SeriesKey, Tuple[Bar, 
 # ---------------------------------------------------------------------------
 
 
-def _present_configs(pairs_by_key: Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]]) -> List[str]:
-    """Which of MODALITY_CONFIGS have a plus_bar somewhere in a pooled (non-faceted)
-    figure's data -- a config with none is dropped from the legend, same rationale as
-    _draw_grouped_bars/_draw_paired_grouped_bars silently skipping an empty series."""
-    return [cfg for cfg in plot_data.MODALITY_CONFIGS if any(cfg in configs for configs in pairs_by_key.values())]
+def _present_configs(
+    pairs_by_key: Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]], configs: Optional[List[str]] = None
+) -> List[str]:
+    """Which of `configs` (default plot_data.MODALITY_CONFIGS) have a plus_bar
+    somewhere in a pooled (non-faceted) figure's data -- a config with none is dropped
+    from the legend, same rationale as _draw_grouped_bars/_draw_paired_grouped_bars
+    silently skipping an empty series."""
+    configs = configs if configs is not None else plot_data.MODALITY_CONFIGS
+    return [cfg for cfg in configs if any(cfg in present for present in pairs_by_key.values())]
 
 
-def _present_configs_faceted(by_category: Dict[str, Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]]]) -> List[str]:
+def _present_configs_faceted(
+    by_category: Dict[str, Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]]], configs: Optional[List[str]] = None
+) -> List[str]:
+    configs = configs if configs is not None else plot_data.MODALITY_CONFIGS
     return [
-        cfg for cfg in plot_data.MODALITY_CONFIGS
-        if any(cfg in configs for bins in by_category.values() for configs in bins.values())
+        cfg for cfg in configs
+        if any(cfg in present for bins in by_category.values() for present in bins.values())
     ]
+
+
+def _slug(text: str) -> str:
+    """'Camera Viewpoints' -> 'camera_viewpoints', '(unclassified)' -> 'unclassified' --
+    a filesystem-safe filename fragment for a per-category "clear" PDF."""
+    return "".join(c if c.isalnum() else "_" for c in text.lower()).strip("_")
+
+
+def _draw_category_axes(
+    ax, category: str, bins: List[str], by_category: Dict[str, Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]]],
+    configs: List[str], mcnemar: bool, thin_dense_ticks: bool, robot_initstate_note: bool,
+    colors: Optional[Dict[str, str]] = None,
+) -> None:
+    """One category's own bars, drawn onto `ax` -- the single-category body shared by
+    _plot_category_facets (one subplot per category, stacked into one figure) and
+    _plot_category_separate (one standalone figure per category). `colors` defaults to
+    MODALITY_COLORS -- overridden by a clear figure's _clear_series_style, so its single
+    "all" bar takes its training config's own color instead of the neutral gray."""
+    colors = colors if colors is not None else MODALITY_COLORS
+    series = {
+        cfg: [by_category[category][bin_label].get(cfg, (None, None)) for bin_label in bins]
+        for cfg in configs
+    }
+    _draw_paired_grouped_bars(ax, bins, series, colors, mcnemar=mcnemar)
+    ax.set_xlabel("")
+    ax.set_title(category)
+    ax.tick_params(axis="x", rotation=25)
+    # Sensor Noise alone has ~50 bins (5 corruptions x 10 severities) -- every bar
+    # is still drawn, but only every Nth tick label, so labels stay legible instead
+    # of overlapping into an unreadable smear.
+    if thin_dense_ticks and len(bins) > 20:
+        step = max(1, len(bins) // 15)
+        ax.set_xticklabels([b if i % step == 0 else "" for i, b in enumerate(bins)])
+    if robot_initstate_note and category == "Robot Initial States":
+        # Reserved headroom above the tallest possible bar (100%), not a corner of
+        # the plot area -- with every bar now paired against its orig-LIBERO
+        # baseline (consistently high across every bin), there is no bin left with
+        # enough blank space near the bars to tuck this note into without risking
+        # a collision. x is axes-fraction, y is data-space, via get_yaxis_transform,
+        # so it's centered regardless of how many bins this facet has.
+        ax.set_ylim(0, 118)
+        ax.annotate(
+            "known LIBERO-Plus limitation: this axis's perturbation is discarded before rollout\n"
+            "(see severity_sr.ROBOT_INITSTATE_NOTE) -- not a real physical gradient",
+            xy=(0.5, 103), xycoords=ax.get_yaxis_transform(), ha="center", va="bottom",
+            fontsize=8 * FONT_SCALE * 0.55, color="#666666",
+        )
 
 
 def _plot_category_facets(
@@ -461,34 +618,9 @@ def _plot_category_facets(
     )
     for ax, category in zip(axes[:, 0], categories):
         bins = list(by_category[category])
-        series = {
-            cfg: [by_category[category][bin_label].get(cfg, (None, None)) for bin_label in bins]
-            for cfg in plot_data.MODALITY_CONFIGS
-        }
-        _draw_paired_grouped_bars(ax, bins, series, MODALITY_COLORS)
-        ax.set_xlabel("")
-        ax.set_title(category)
-        ax.tick_params(axis="x", rotation=25)
-        # Sensor Noise alone has ~50 bins (5 corruptions x 10 severities) -- every bar
-        # is still drawn, but only every Nth tick label, so labels stay legible instead
-        # of overlapping into an unreadable smear.
-        if thin_dense_ticks and len(bins) > 20:
-            step = max(1, len(bins) // 15)
-            ax.set_xticklabels([b if i % step == 0 else "" for i, b in enumerate(bins)])
-        if robot_initstate_note and category == "Robot Initial States":
-            # Reserved headroom above the tallest possible bar (100%), not a corner of
-            # the plot area -- with every bar now paired against its orig-LIBERO
-            # baseline (consistently high across every bin), there is no bin left with
-            # enough blank space near the bars to tuck this note into without risking
-            # a collision. x is axes-fraction, y is data-space, via get_yaxis_transform,
-            # so it's centered regardless of how many bins this facet has.
-            ax.set_ylim(0, 118)
-            ax.annotate(
-                "known LIBERO-Plus limitation: this axis's perturbation is discarded before rollout\n"
-                "(see severity_sr.ROBOT_INITSTATE_NOTE) -- not a real physical gradient",
-                xy=(0.5, 103), xycoords=ax.get_yaxis_transform(), ha="center", va="bottom",
-                fontsize=8 * FONT_SCALE * 0.55, color="#666666",
-            )
+        _draw_category_axes(
+            ax, category, bins, by_category, plot_data.MODALITY_CONFIGS, True, thin_dense_ticks, robot_initstate_note,
+        )
 
     # A separate fig.suptitle() alongside this outside legend leaves constrained_layout
     # juggling two independent top-margin claimants, which it doesn't reliably space
@@ -504,10 +636,77 @@ def _plot_category_facets(
     return path
 
 
+def _plot_category_separate(
+    by_category: Dict[str, Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]]],
+    outdir: Path,
+    filename_prefix: str,
+    title: str,
+    configs: Optional[List[str]] = None,
+    mcnemar: bool = True,
+    category_order: Optional[List[str]] = None,
+    robot_initstate_note: bool = False,
+    thin_dense_ticks: bool = False,
+    colors: Optional[Dict[str, str]] = None,
+    labels: Optional[Dict[str, str]] = None,
+) -> List[Path]:
+    """One standalone single-axes PDF per category -- the "clear" counterpart to
+    _plot_category_facets's stacked-subplot figure, so each perturbation category can
+    be read/embedded on its own. filename is
+    f"{filename_prefix}_{_slug(category)}.pdf". `colors`/`labels` default to
+    MODALITY_COLORS/MODALITY_LABELS -- overridden by a clear figure's
+    _clear_series_style so its single "all" bar/legend entry names its training config."""
+    configs = configs if configs is not None else plot_data.MODALITY_CONFIGS
+    colors = colors if colors is not None else MODALITY_COLORS
+    labels = labels if labels is not None else MODALITY_LABELS
+    categories = [c for c in category_order if c in by_category] if category_order else sorted(by_category)
+
+    paths = []
+    outdir.mkdir(parents=True, exist_ok=True)
+    for category in categories:
+        apply_style()
+        bins = list(by_category[category])
+        fig, ax = plt.subplots(figsize=(7 * FONT_SCALE, 5 * FONT_SCALE))
+        _draw_category_axes(ax, category, bins, by_category, configs, mcnemar, thin_dense_ticks, robot_initstate_note, colors=colors)
+        ax.set_title("")
+
+        handles = [
+            Patch(facecolor=colors[cfg], label=labels[cfg])
+            for cfg in configs if any(cfg in by_category[category][b] for b in bins)
+        ]
+        handles.append(_orig_legend_handle())
+        fig.legend(
+            handles=handles, loc="outside upper center", ncol=min(3, len(handles)),
+            title=f"{title} — {category}", title_fontsize=12 * FONT_SCALE,
+        )
+
+        path = outdir / f"{filename_prefix}_{_slug(category)}.pdf"
+        fig.savefig(path, bbox_inches="tight")
+        plt.close(fig)
+        paths.append(path)
+    return paths
+
+
 def plot_severity_percategory(by_category: Dict[str, Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]]], outdir: Path) -> Path:
     return _plot_category_facets(
         by_category, outdir, "severity_modality_off_percategory.pdf",
         "LIBERO-10-Plus by physical perturbation severity",
+        category_order=SEVERITY_CATEGORY_ORDER, robot_initstate_note=True, thin_dense_ticks=True,
+    )
+
+
+def plot_severity_percategory_clear(
+    by_category: Dict[str, Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]]], outdir: Path,
+    series_key: plot_data.SeriesKey,
+) -> List[Path]:
+    """The 'clear' (presentation-grade, no McNemar) counterpart to
+    plot_severity_percategory: one standalone PDF per category, all-modality only,
+    colored/labelled by `series_key` (the pool's one training config -- see
+    _require_single_series_key/_single_series_key) instead of the neutral gray."""
+    colors, labels = _clear_series_style(series_key)
+    return _plot_category_separate(
+        by_category, outdir, "severity_all_percategory",
+        "LIBERO-10-Plus vs. LIBERO original (all modalities)",
+        configs=_CLEAR_CONFIGS, mcnemar=False, colors=colors, labels=labels,
         category_order=SEVERITY_CATEGORY_ORDER, robot_initstate_note=True, thin_dense_ticks=True,
     )
 
@@ -519,6 +718,21 @@ def plot_difficulty_percategory(by_category: Dict[str, Dict[str, Dict[str, Tuple
     )
 
 
+def plot_difficulty_percategory_clear(
+    by_category: Dict[str, Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]]], outdir: Path,
+    series_key: plot_data.SeriesKey,
+) -> List[Path]:
+    """The 'clear' (presentation-grade, no McNemar) counterpart to
+    plot_difficulty_percategory: one standalone PDF per category, all-modality only,
+    colored/labelled by `series_key` instead of the neutral gray."""
+    colors, labels = _clear_series_style(series_key)
+    return _plot_category_separate(
+        by_category, outdir, "difficulty_all_percategory",
+        "LIBERO-10-Plus vs. LIBERO original, by upstream difficulty_level (all modalities)",
+        configs=_CLEAR_CONFIGS, mcnemar=False, colors=colors, labels=labels,
+    )
+
+
 def _plot_pooled_bars(
     pooled: Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]],
     outdir: Path,
@@ -527,29 +741,39 @@ def _plot_pooled_bars(
     xlabel: str,
     sort_key=None,
     rotate: bool = False,
+    configs: Optional[List[str]] = None,
+    mcnemar: bool = True,
+    colors: Optional[Dict[str, str]] = None,
+    labels: Optional[Dict[str, str]] = None,
 ) -> Path:
     """One axes, x = pooled's own keys (categories, or difficulty levels), one
     filled+hollow-hatched pair per modality config -- shared by plot_severity_pooled
     (pools each category's own severity bins) and plot_difficulty_pooled (pools across
-    categories on the shared difficulty_level scale)."""
+    categories on the shared difficulty_level scale). `colors`/`labels` default to
+    MODALITY_COLORS/MODALITY_LABELS -- overridden by a clear figure's
+    _clear_series_style so its single "all" bar/legend entry names its training config."""
     apply_style()
+    configs = configs if configs is not None else plot_data.MODALITY_CONFIGS
+    colors = colors if colors is not None else MODALITY_COLORS
+    labels = labels if labels is not None else MODALITY_LABELS
     keys = sorted(pooled, key=sort_key) if sort_key else sorted(pooled)
-    series = {cfg: [pooled[k].get(cfg, (None, None)) for k in keys] for cfg in plot_data.MODALITY_CONFIGS}
+    series = {cfg: [pooled[k].get(cfg, (None, None)) for k in keys] for cfg in configs}
 
     fig, ax = plt.subplots(figsize=(7 * FONT_SCALE, 5 * FONT_SCALE))
-    _draw_paired_grouped_bars(ax, keys, series, MODALITY_COLORS)
+    _draw_paired_grouped_bars(ax, keys, series, colors, mcnemar=mcnemar)
     ax.set_xlabel(xlabel)
     if rotate:
         ax.set_xticklabels(keys, rotation=25, ha="right")
-    ax.annotate(
-        "p=.../n=... below a bar is McNemar's test vs. init-state-matched LIBERO original --\n"
-        "pooled across bins/categories (plot_data.merge_bars), so it reuses the same base\n"
-        "tasks' pairs several times over and is anti-conservative (n overstates independent\n"
-        "evidence); see the un-pooled per-category/per-bin figure for the honest test.",
-        xy=(0.0, -0.55), xycoords="axes fraction", ha="left", va="top", fontsize=8 * FONT_SCALE * 0.55, color="#666666",
-    )
+    if mcnemar:
+        ax.annotate(
+            "p=.../n=... below a bar is McNemar's test vs. init-state-matched LIBERO original --\n"
+            "pooled across bins/categories (plot_data.merge_bars), so it reuses the same base\n"
+            "tasks' pairs several times over and is anti-conservative (n overstates independent\n"
+            "evidence); see the un-pooled per-category/per-bin figure for the honest test.",
+            xy=(0.0, -0.55), xycoords="axes fraction", ha="left", va="top", fontsize=8 * FONT_SCALE * 0.55, color="#666666",
+        )
 
-    handles = [Patch(facecolor=MODALITY_COLORS[cfg], label=MODALITY_LABELS[cfg]) for cfg in _present_configs(pooled)]
+    handles = [Patch(facecolor=colors[cfg], label=labels[cfg]) for cfg in _present_configs(pooled, configs)]
     handles.append(_orig_legend_handle())
     fig.legend(handles=handles, loc="outside upper center", ncol=min(3, len(handles)), title=title, title_fontsize=12 * FONT_SCALE)
 
@@ -568,12 +792,41 @@ def plot_severity_pooled(pooled: Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]]
     )
 
 
+def plot_severity_pooled_clear(
+    pooled: Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]], outdir: Path, series_key: plot_data.SeriesKey,
+) -> Path:
+    """The 'clear' (presentation-grade, no McNemar) counterpart to plot_severity_pooled:
+    only the all-modality series, across perturbation categories, colored/labelled by
+    `series_key` instead of the neutral gray."""
+    colors, labels = _clear_series_style(series_key)
+    return _plot_pooled_bars(
+        pooled, outdir, "severity_all_pooled.pdf",
+        "LIBERO-10-Plus vs. LIBERO original, by perturbation category (all modalities)",
+        "perturbation category", rotate=True, configs=_CLEAR_CONFIGS, mcnemar=False, colors=colors, labels=labels,
+    )
+
+
 def plot_difficulty_pooled(pooled: Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]], outdir: Path) -> Path:
     return _plot_pooled_bars(
         pooled, outdir, "difficulty_modality_off_pooled.pdf",
         "LIBERO-10-Plus by upstream difficulty_level (pooled across categories)",
         "difficulty_level (upstream annotation, pooled across categories)",
         sort_key=analyze_wandb._natural_key,
+    )
+
+
+def plot_difficulty_pooled_clear(
+    pooled: Dict[str, Dict[str, Tuple[Bar, Optional[Bar]]]], outdir: Path, series_key: plot_data.SeriesKey,
+) -> Path:
+    """The 'clear' (presentation-grade, no McNemar) counterpart to plot_difficulty_pooled:
+    only the all-modality series, across difficulty_level, colored/labelled by
+    `series_key` instead of the neutral gray."""
+    colors, labels = _clear_series_style(series_key)
+    return _plot_pooled_bars(
+        pooled, outdir, "difficulty_all_pooled.pdf",
+        "LIBERO-10-Plus vs. LIBERO original, by upstream difficulty_level (all modalities)",
+        "difficulty_level (upstream annotation, pooled across categories)",
+        sort_key=analyze_wandb._natural_key, configs=_CLEAR_CONFIGS, mcnemar=False, colors=colors, labels=labels,
     )
 
 
@@ -621,13 +874,19 @@ def perturbation(cfg: tyro.conf.OmitArgPrefixes[PoolConfig]) -> None:
     print(f"wrote {path}")
 
 
-def _severity_plots(pool, outdir: Path) -> List[Path]:
+def _prepare_severity_axes(pool):
+    """(severity_by_category, difficulty_by_category) -- prepared once and shared by
+    every caller that needs both axes (_severity_plots, _clear_plots, all_plots), so
+    plot_data.prepare_severity (and its warn_multi_run stderr lines) never runs twice
+    for the same axis in one invocation."""
+    return plot_data.prepare_severity(pool, axis="severity"), plot_data.prepare_severity(pool, axis="difficulty_level")
+
+
+def _severity_plots(severity_by_category, difficulty_by_category, outdir: Path) -> List[Path]:
     """The 4 PDFs shared by the `severity` subcommand and `all`: both axes (physical
     severity, upstream difficulty_level) get both a per-category breakdown and a
     pooled ("totals") view, each bar paired with its init-state-matched LIBERO
     original baseline."""
-    severity_by_category = plot_data.prepare_severity(pool, axis="severity")
-    difficulty_by_category = plot_data.prepare_severity(pool, axis="difficulty_level")
     return [
         plot_severity_percategory(severity_by_category, outdir),
         plot_severity_pooled(plot_data.prepare_severity_pooled(severity_by_category), outdir),
@@ -636,25 +895,85 @@ def _severity_plots(pool, outdir: Path) -> List[Path]:
     ]
 
 
+def _clear_plots(
+    perturbation_data, severity_by_category, difficulty_by_category, outdir: Path,
+    series_key: Optional[plot_data.SeriesKey],
+) -> List[Path]:
+    """The presentation-grade, McNemar-free "clear" figures -- perturbation restricted
+    to keep_p=1 vs. no-dropout(+proprio) (always drawn, exempt from the single-config
+    requirement below), severity/difficulty restricted to the all-modality series,
+    per-category figures split one-PDF-per-category. Written into outdir/clear so the
+    audit-grade figures above are untouched.
+
+    severity/difficulty come from plot_data.prepare_severity, which pools every run in
+    the underlying pool into one bar regardless of its training config -- so they only
+    mean something for a single-config pool. `series_key` is that config
+    (_single_series_key/_require_single_series_key); when None (the pool spans more
+    than one config), those figures are skipped with a stderr WARNING instead of
+    silently averaging across trained models."""
+    clear_outdir = outdir / "clear"
+    paths = [plot_perturbation_clear(perturbation_data, clear_outdir)]
+    if series_key is None:
+        print(
+            "WARNING: pool spans more than one training config -- skipping the clear "
+            "severity/difficulty figures (they'd otherwise pool every config into one "
+            "bar); narrow --filters to one config to get them.",
+            file=sys.stderr,
+        )
+        return paths
+    paths.append(plot_severity_pooled_clear(plot_data.prepare_severity_pooled(severity_by_category), clear_outdir, series_key))
+    paths.append(plot_difficulty_pooled_clear(plot_data.prepare_difficulty_pooled(difficulty_by_category), clear_outdir, series_key))
+    paths += plot_severity_percategory_clear(severity_by_category, clear_outdir, series_key)
+    paths += plot_difficulty_percategory_clear(difficulty_by_category, clear_outdir, series_key)
+    return paths
+
+
 def severity(cfg: tyro.conf.OmitArgPrefixes[PoolConfig]) -> None:
     """Plot 3: all-modality vs. 1-left-out, each bar paired with its init-state-matched
     LIBERO original baseline. Both physical severity and upstream difficulty_level get
     a per-category breakdown and a pooled ("totals") view -- 4 PDFs."""
     pool = _fetch(cfg)
-    for path in _severity_plots(pool, cfg.outdir):
+    severity_by_category, difficulty_by_category = _prepare_severity_axes(pool)
+    for path in _severity_plots(severity_by_category, difficulty_by_category, cfg.outdir):
+        print(f"wrote {path}")
+
+
+def clear(cfg: tyro.conf.OmitArgPrefixes[PoolConfig]) -> None:
+    """Presentation-grade figures with no McNemar labels/caveats: perturbation
+    restricted to keep_p=1 vs. no dropout, severity/difficulty restricted to the
+    all-modality series with one PDF per category -- written into outdir/clear.
+
+    The severity/difficulty figures pool every run in --filters into one bar, so
+    --filters must select exactly one training config (one
+    config.modality_dropout_proprio_keep_p value, or config.modality_dropout=false plus
+    config.use_proprio) -- raises otherwise, rather than silently averaging across
+    trained models."""
+    pool = _fetch(cfg)
+    series_key = _require_single_series_key(pool)
+    severity_by_category, difficulty_by_category = _prepare_severity_axes(pool)
+    perturbation_data = plot_data.prepare_perturbation(pool)
+    for path in _clear_plots(perturbation_data, severity_by_category, difficulty_by_category, cfg.outdir, series_key):
         print(f"wrote {path}")
 
 
 def all_plots(cfg: tyro.conf.OmitArgPrefixes[PoolConfig]) -> None:
-    """Every plot, sharing a single fetch of the run pool."""
+    """Every plot, sharing a single fetch of the run pool. Unlike `clear`, a --filters
+    pool spanning more than one training config doesn't fail this subcommand -- it just
+    skips the clear severity/difficulty figures (with a stderr WARNING) while every
+    other figure, including the clear perturbation one, is still written."""
     pool = _fetch(cfg)
     print(f"wrote {plot_presence(plot_data.prepare_presence(pool), cfg.outdir)}")
-    print(f"wrote {plot_perturbation(plot_data.prepare_perturbation(pool), cfg.outdir)}")
-    for path in _severity_plots(pool, cfg.outdir):
+    perturbation_data = plot_data.prepare_perturbation(pool)
+    print(f"wrote {plot_perturbation(perturbation_data, cfg.outdir)}")
+    severity_by_category, difficulty_by_category = _prepare_severity_axes(pool)
+    for path in _severity_plots(severity_by_category, difficulty_by_category, cfg.outdir):
+        print(f"wrote {path}")
+    series_key = _single_series_key(pool)
+    for path in _clear_plots(perturbation_data, severity_by_category, difficulty_by_category, cfg.outdir, series_key):
         print(f"wrote {path}")
 
 
 if __name__ == "__main__":
     tyro.extras.subcommand_cli_from_dict(
-        {"presence": presence, "perturbation": perturbation, "severity": severity, "all": all_plots}
+        {"presence": presence, "perturbation": perturbation, "severity": severity, "clear": clear, "all": all_plots}
     )

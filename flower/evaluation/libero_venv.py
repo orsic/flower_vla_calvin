@@ -46,13 +46,42 @@ from typing import Callable, List, Optional, Union
 
 import numpy as np
 
-from libero.libero.envs.venv import (
-    BaseVectorEnv,
-    CloudpickleWrapper,
-    DummyEnvWorker,
-    DummyVectorEnv,
-    SubprocEnvWorker,
-)
+try:
+    from libero.libero.envs.venv import (
+        BaseVectorEnv,
+        CloudpickleWrapper,
+        DummyEnvWorker,
+        DummyVectorEnv,
+        SubprocEnvWorker,
+    )
+except ImportError:
+    # This module (and make_libero_venv below) is also used by the MimicGen eval,
+    # where `libero` may be uninstalled, or `libero.libero.envs`'s package __init__
+    # may fail to import against MimicGen's newer robosuite pin. venv.py itself only
+    # imports cloudpickle/ctypes/gym/numpy (no robosuite), so load it directly by file
+    # path instead of going through the libero.libero.envs package.
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    _venv_path = (
+        Path(__file__).resolve().parents[2]
+        / "LIBERO" / "libero" / "libero" / "envs" / "venv.py"
+    )
+    _spec = importlib.util.spec_from_file_location("_libero_envs_venv", _venv_path)
+    _libero_envs_venv = importlib.util.module_from_spec(_spec)
+    # Register in sys.modules *before* exec_module, exactly like a real import would:
+    # pickle/cloudpickle resolve a class's module by looking it up in sys.modules by
+    # name (e.g. when a spawned SubprocEnvWorker unpickles a CloudpickleWrapper), and
+    # module_from_spec alone does not register it -- without this, every class defined
+    # in this fallback-loaded module becomes unpicklable.
+    sys.modules["_libero_envs_venv"] = _libero_envs_venv
+    _spec.loader.exec_module(_libero_envs_venv)
+    BaseVectorEnv = _libero_envs_venv.BaseVectorEnv
+    CloudpickleWrapper = _libero_envs_venv.CloudpickleWrapper
+    DummyEnvWorker = _libero_envs_venv.DummyEnvWorker
+    DummyVectorEnv = _libero_envs_venv.DummyVectorEnv
+    SubprocEnvWorker = _libero_envs_venv.SubprocEnvWorker
 
 
 def _rebuildable_worker(
