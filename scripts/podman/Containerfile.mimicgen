@@ -11,10 +11,16 @@ RUN python -m pip install --no-cache-dir "mujoco==2.3.2" \
         "git+https://github.com/ARISE-Initiative/robomimic.git@d0b37cf214bd24fb590d182edb6384333f67b661"
 
 # ----- layer m2: mimicgen + task-zoo envs (hammer_cleanup, kitchen) -----
-RUN python -m pip install --no-cache-dir \
-        "git+https://github.com/NVlabs/mimicgen.git@d360d1d10225f3ff3cf7cf74db1cdbf9a2b79ecb" \
-    && python -m pip install --no-cache-dir --no-deps \
-        "git+https://github.com/ARISE-Initiative/robosuite-task-zoo.git@74eab7f88214c21ca1ae8617c2b2f8d19718a9ed"
+# Editable installs from pinned clones (as both upstream READMEs do): neither package
+# declares package_data, so a plain `pip install git+...` drops their XML/mesh assets and
+# coffee/coffee_preparation/hammer_cleanup/kitchen/mug_cleanup fail at env construction.
+RUN git clone https://github.com/NVlabs/mimicgen.git /opt/mimicgen \
+    && git -C /opt/mimicgen checkout d360d1d10225f3ff3cf7cf74db1cdbf9a2b79ecb \
+    && python -m pip install --no-cache-dir -e /opt/mimicgen \
+    && git clone https://github.com/ARISE-Initiative/robosuite-task-zoo.git /opt/robosuite-task-zoo \
+    && git -C /opt/robosuite-task-zoo checkout 74eab7f88214c21ca1ae8617c2b2f8d19718a9ed \
+    && python -m pip install --no-cache-dir --no-deps -e /opt/robosuite-task-zoo \
+    && rm -rf /opt/mimicgen/.git /opt/robosuite-task-zoo/.git
 
 # ----- layer m3: re-pin numpy last, same reason as the base image's layer 6 -----
 RUN python -m pip install --no-cache-dir "numpy~=1.23"

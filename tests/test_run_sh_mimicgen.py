@@ -117,3 +117,37 @@ def test_pipeline_mimicgen_requires_train_dir_arg():
     )
     assert result.returncode != 0
     assert "Usage" in result.stderr
+
+
+STUB_ECHO_MIMICGEN_DIR = """#!/usr/bin/env bash
+echo "MIMICGEN_HDF5_DIR=$MIMICGEN_HDF5_DIR"
+"""
+
+
+def test_mimicgen_hdf5_dir_defaults_under_data_dir(tmp_path):
+    """Without an explicit MIMICGEN_HDF5_DIR, the data must land under DATA_DIR (like
+    vars.env.example's `${DATA_DIR}/mimicgen_hdf5`), not the repo checkout. run.sh is
+    copied into tmp_path so the real repo's vars.env isn't sourced."""
+    (tmp_path / "run.sh").write_text((REPO_ROOT / "run.sh").read_text())
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "podman-compose"
+    stub.write_text(STUB_ECHO_MIMICGEN_DIR)
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["DATA_DIR"] = "/ssd/data"
+    env.pop("MIMICGEN_HDF5_DIR", None)
+
+    result = subprocess.run(
+        ["bash", str(tmp_path / "run.sh"), "download-mimicgen", "square_d0"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "MIMICGEN_HDF5_DIR=/ssd/data/mimicgen_hdf5" in result.stdout

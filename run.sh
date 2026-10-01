@@ -49,7 +49,7 @@ fi
 if [[ "${LIBERO_HDF5_DIR:-/path/to/libero_hdf5}" == "/path/to/libero_hdf5" ]]; then
     LIBERO_HDF5_DIR="$REPO_ROOT/data/libero_hdf5"
 fi
-MIMICGEN_HDF5_DIR="${MIMICGEN_HDF5_DIR:-$REPO_ROOT/data/mimicgen_hdf5}"
+MIMICGEN_HDF5_DIR="${MIMICGEN_HDF5_DIR:-${DATA_DIR:-$REPO_ROOT/data}/mimicgen_hdf5}"
 
 # Container hostname (compose.yml) so W&B/logs identify the host a run came from.
 export HOST_HOSTNAME="${HOST_HOSTNAME:-${HOSTNAME:-$(uname -n)}}"

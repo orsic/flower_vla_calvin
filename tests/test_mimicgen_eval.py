@@ -267,3 +267,36 @@ def test_rows_round_trip_through_eval_records_csv(tmp_path, monkeypatch):
         assert read_back[0][col] != "" or col == "eval_timestamp"
     assert read_back[0]["libero_variant"] == "mimicgen"
     assert read_back[0]["suite"] == "core"
+
+
+# ---------------------------------------------------------------------------
+# Env factories are cloudpickled into every vector-env subprocess: they must not drag
+# the evaluator (and with it the ~1B-param model) along. A lambda reading self.img_h
+# closes over self, which OOM-killed a real 2-GPU x 10-env eval at the 96G cgroup cap.
+# ---------------------------------------------------------------------------
+
+class _UnpicklableModel(_FakeModel):
+    def __reduce__(self):
+        raise AssertionError("model was pickled into an env factory")
+
+
+def test_env_fns_do_not_capture_the_model(monkeypatch):
+    import cloudpickle
+
+    captured = []
+
+    def capture_venv(env_fns, start_method):
+        captured.extend(env_fns)
+        raise RuntimeError("stop after capturing env_fns")
+
+    monkeypatch.setattr(fem, "make_libero_venv", capture_venv)
+    monkeypatch.setattr(fem.time, "sleep", lambda _: None)
+    model = _UnpicklableModel()
+    evaluator = fem.EvaluateMimicgen(**_minimal_ctor_kwargs(model), n_eval=2, eval_batch_size=2)
+
+    with pytest.raises(Exception, match="Failed to create environment"):
+        evaluator.evaluate_dataset(model, "square_d0", idx=0, store_video=0)
+
+    assert captured
+    for fn in captured:
+        cloudpickle.dumps(fn)

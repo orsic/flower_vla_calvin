@@ -20,6 +20,7 @@ MimicGen datasets use the same robosuite OSC_POSE delta-action convention LIBERO
 this path either -- model output goes to env.step() exactly as in flower_eval_libero.py.
 """
 
+import functools
 import gc
 import json
 import os
@@ -93,6 +94,7 @@ def _create_mimicgen_env(dataset_path: str, img_h: int, img_w: int):
     import h5py
     import robomimic.envs.env_base as EB
     import robomimic.utils.env_utils as EnvUtils
+    import robomimic.utils.obs_utils as ObsUtils
 
     import mimicgen  # noqa: F401 -- registers MimicGen's robosuite env classes
 
@@ -120,6 +122,12 @@ def _create_mimicgen_env(dataset_path: str, img_h: int, img_w: int):
     env_kwargs["camera_names"] = ["agentview", "robot0_eye_in_hand"]
     env_kwargs["camera_heights"] = img_h
     env_kwargs["camera_widths"] = img_w
+    # Same obs setup as EnvRobosuite.create_for_data_processing, which rendered the
+    # training data: get_observation needs this per-process registry to find the image
+    # keys (TypeError on None otherwise).
+    ObsUtils.initialize_obs_utils_with_obs_specs(
+        {"obs": {"low_dim": [], "rgb": [f"{cam}_image" for cam in env_kwargs["camera_names"]]}}
+    )
 
     class _MimicgenEnv(EnvUtils.get_env_class(env_type=env_type)):
         """Two behaviors the base robomimic env class doesn't provide, that the eval
@@ -128,6 +136,8 @@ def _create_mimicgen_env(dataset_path: str, img_h: int, img_w: int):
         - `seed()`: the base class has none, so a fresh vector-env worker's "seed"
           command would try `env.reset(seed=...)`, which the base reset() doesn't
           accept -- see LIBERO/libero/libero/envs/venv.py's _worker dispatch.
+        - `close()`: the base class has none either; the worker calls it on rebuild
+          and shutdown.
         - success-driven `done`: the base class's is_done() is hardcoded False
           ("robosuite envs always rollout to fixed horizon"), so the eval loop's
           early-exit-on-success and the result CSV's `success` column would never
@@ -142,12 +152,17 @@ def _create_mimicgen_env(dataset_path: str, img_h: int, img_w: int):
             obs, reward, _done, info = super().step(action)
             return obs, reward, bool(self.is_success()["task"]), info
 
+        def close(self):
+            self.env.close()
+
     return _MimicgenEnv(
         env_name=env_meta["env_name"],
         render=False,
         render_offscreen=True,
         use_image_obs=True,
-        postprocess_visual_obs=True,
+        # Raw HWC uint8, as in the rendered training data and as
+        # obs_translation.apply_transforms expects (not CHW float in [0, 1]).
+        postprocess_visual_obs=False,
         **env_kwargs,
     )
 
@@ -254,8 +269,10 @@ class EvaluateMimicgen:
                 current_batch_size = min(self.eval_batch_size, self.n_eval - episode_idx)
                 ids = list(range(current_batch_size))
 
+                # partial, not a lambda over self: each factory is cloudpickled into its
+                # env subprocess, and closing over self would copy the model into every one.
                 env_fns = [
-                    (lambda p=dataset_path: _create_mimicgen_env(p, self.img_h, self.img_w))
+                    functools.partial(_create_mimicgen_env, dataset_path, self.img_h, self.img_w)
                     for _ in range(current_batch_size)
                 ]
                 if env is None:

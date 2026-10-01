@@ -4,6 +4,7 @@ No robomimic/mimicgen involved: subprocess.run is monkeypatched out, so these on
 exercise the skip/error/cleanup logic around the (mocked) render call.
 """
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -11,6 +12,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import prepare_mimicgen  # noqa: E402
+
+
+def _output_name(cmd) -> Path:
+    """The --output_name the (mocked) converter was told to write to."""
+    argv_line = next(line for line in cmd[2].splitlines() if line.startswith("sys.argv"))
+    argv = json.loads(argv_line.split("=", 1)[1].strip())
+    return Path(argv[argv.index("--output_name") + 1])
 
 
 def test_render_one_skips_when_output_already_exists(tmp_path, monkeypatch):
@@ -43,7 +51,7 @@ def test_render_one_invokes_converter_and_deletes_source(tmp_path, monkeypatch):
         calls.append(cmd)
         assert check is True
         # Simulate the converter producing the output file.
-        (data_dir / "square_d0.hdf5").write_bytes(b"fake rendered")
+        _output_name(cmd).write_bytes(b"fake rendered")
 
     monkeypatch.setattr(prepare_mimicgen.subprocess, "run", fake_run)
     monkeypatch.delenv("KEEP_MIMICGEN_SOURCE", raising=False)
@@ -65,6 +73,52 @@ def test_render_one_invokes_converter_and_deletes_source(tmp_path, monkeypatch):
     assert "agentview" in argv and "robot0_eye_in_hand" in argv
 
     assert not source_path.exists()  # deleted after a successful render
+    assert (data_dir / "square_d0.hdf5").read_bytes() == b"fake rendered"
+    assert not (data_dir / "square_d0.hdf5.tmp").exists()
+
+
+def _make_source(data_dir: Path) -> Path:
+    source_dir = data_dir / "source" / "core"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "square_d0.hdf5"
+    source_path.write_bytes(b"fake source")
+    return source_path
+
+
+def test_render_one_failed_render_leaves_no_output(tmp_path, monkeypatch):
+    """A render that dies midway (crash, container kill) must not leave a file at the
+    final path -- render_one would otherwise skip it as done on the next run."""
+    source_path = _make_source(tmp_path)
+
+    def dying_run(cmd, check):
+        _output_name(cmd).write_bytes(b"half written")
+        raise subprocess.CalledProcessError(-9, cmd)
+
+    monkeypatch.setattr(prepare_mimicgen.subprocess, "run", dying_run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        prepare_mimicgen.render_one("square_d0", str(tmp_path), n_demo=100)
+
+    assert not (tmp_path / "square_d0.hdf5").exists()
+    assert source_path.exists()
+
+
+def test_render_one_rerenders_over_stale_tmp(tmp_path, monkeypatch):
+    _make_source(tmp_path)
+    (tmp_path / "square_d0.hdf5.tmp").write_bytes(b"stale partial")
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append(cmd)
+        assert not _output_name(cmd).exists()  # stale partial removed before rendering
+        _output_name(cmd).write_bytes(b"fake rendered")
+
+    monkeypatch.setattr(prepare_mimicgen.subprocess, "run", fake_run)
+
+    prepare_mimicgen.render_one("square_d0", str(tmp_path), n_demo=100)
+
+    assert len(calls) == 1
+    assert (tmp_path / "square_d0.hdf5").read_bytes() == b"fake rendered"
 
 
 def test_render_one_keeps_source_when_env_var_set(tmp_path, monkeypatch):
@@ -75,7 +129,7 @@ def test_render_one_keeps_source_when_env_var_set(tmp_path, monkeypatch):
     source_path.write_bytes(b"fake source")
 
     def fake_run(cmd, check):
-        (data_dir / "square_d0.hdf5").write_bytes(b"fake rendered")
+        _output_name(cmd).write_bytes(b"fake rendered")
 
     monkeypatch.setattr(prepare_mimicgen.subprocess, "run", fake_run)
     monkeypatch.setenv("KEEP_MIMICGEN_SOURCE", "1")

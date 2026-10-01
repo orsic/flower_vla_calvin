@@ -50,11 +50,17 @@ def render_one(dataset: str, data_dir: str, n_demo: int) -> None:
             f"{source_path} not found -- run ./run.sh download-mimicgen {dataset} first"
         )
 
+    # Render to a temp name and rename on success: a render killed midway would otherwise
+    # leave a truncated file at output_path, which the exists-check above skips forever.
+    tmp_path = f"{output_path}.tmp"
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+
     print(f"[prepare-mimicgen] {dataset}: rendering {n_demo} demos -> {output_path}")
     argv = [
         "dataset_states_to_obs.py",
         "--dataset", source_path,
-        "--output_name", output_path,
+        "--output_name", tmp_path,
         "--n", str(n_demo),
         "--done_mode", "2",
         "--camera_names", *CAMERA_NAMES,
@@ -68,6 +74,7 @@ def render_one(dataset: str, data_dir: str, n_demo: int) -> None:
         "runpy.run_module('robomimic.scripts.dataset_states_to_obs', run_name='__main__')\n"
     )
     subprocess.run([sys.executable, "-c", script], check=True)
+    os.replace(tmp_path, output_path)
 
     if not os.environ.get("KEEP_MIMICGEN_SOURCE"):
         os.remove(source_path)
