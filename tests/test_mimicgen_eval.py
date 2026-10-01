@@ -14,7 +14,7 @@ import torch
 
 from flower.datasets import mimicgen_tasks
 from flower.evaluation import flower_eval_mimicgen as fem
-from flower.evaluation.eval_records import ALL_COLUMNS, merge_result_csv, read_csv
+from flower.evaluation.eval_records import ALL_COLUMNS, merge_rank_csvs, merge_result_csv, read_csv, write_csv
 
 
 def test_module_imports_without_mimicgen_or_newer_robosuite():
@@ -202,8 +202,46 @@ def test_evaluate_policy_aggregates_across_datasets(monkeypatch):
     assert len(rows) == 4
     task_names = {row["task_name"] for row in rows}
     assert task_names == {"square_d0", "threading_d1"}
+    # task_idx is the dataset's position in CORE_DATASETS, not in this evaluator's subset
     task_idxs = {row["task_idx"] for row in rows}
-    assert task_idxs == {0, 1}
+    assert task_idxs == {
+        mimicgen_tasks.CORE_DATASETS.index("square_d0"),
+        mimicgen_tasks.CORE_DATASETS.index("threading_d1"),
+    }
+
+
+def test_rank_shards_merge_without_task_idx_collisions(tmp_path, monkeypatch):
+    """Each multi-GPU worker evaluates its own round-robin subset; a subset-local
+    task_idx made every rank write task_idx 0..k, so merge_rank_csvs (keyed on task_idx,
+    not task_name) kept only one rank's row per key -- 140 of 520 rows on a 4-GPU eval."""
+    model = _FakeModel()
+
+    def fake_create_env(dataset_path, img_h, img_w):
+        return _FakeMimicgenEnv(dataset_path, success_at_step=1)
+
+    monkeypatch.setattr(fem, "_create_mimicgen_env", fake_create_env)
+
+    datasets = ["square_d0", "threading_d1", "coffee_d0", "stack_d1"]
+    splits = fem.partition_datasets(datasets, 2)
+    for rank, subset in enumerate(splits):
+        evaluator = fem.EvaluateMimicgen(
+            model=model,
+            transforms=_make_fake_transforms(),
+            log_dir="/tmp",
+            data_dir="/fake/mimicgen_hdf5",
+            datasets=subset,
+            n_eval=2,
+            eval_batch_size=2,
+            checkpoint="/fake/last.ckpt",
+            base_seed=0,
+            env_start_method="dummy",
+        )
+        write_csv(tmp_path / f"result_rank{rank}.csv", evaluator.evaluate_policy(model, store_video=0))
+
+    merged = merge_rank_csvs(tmp_path, 2)
+
+    assert len(merged) == 8
+    assert {row["task_name"] for row in merged} == set(datasets)
 
 
 # ---------------------------------------------------------------------------

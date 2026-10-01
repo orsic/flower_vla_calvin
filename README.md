@@ -519,22 +519,35 @@ Evaluation results land in `<train_folder>/eval_logs/<checkpoint>/mimicgen_core/
 using the same CSV schema as LIBERO's `result.csv` (`flower/evaluation/eval_records.py`,
 unchanged) with `libero_variant=mimicgen`, `suite=core`.
 
+To break a run's results down by task family and difficulty variant, read them back from
+W&B (needs `WANDB_API_KEY`):
+
+```bash
+# One table per run: success rate + 95% Wilson CI per family x d0/d1/d2, a pooled
+# per-family ALL row (families with >1 variant), and OVERALL:
+./run.sh analyze-mimicgen run <wandb_run_id> [<wandb_run_id>...]
+
+# Every run matching a W&B config filter: mean/min/max of the per-run success rate per cell
+# (runs without a mimicgen.csv artifact are listed and skipped):
+./run.sh analyze-mimicgen filter --filters '{"config.use_proprio": true}'
+```
+
 ### The 26 `core` datasets
 
 | Task family | Variants | Instruction | Max steps |
 |---|---|---|---|
-| coffee | coffee_d0, coffee_d1, coffee_d2 | make coffee using the coffee machine and a pod | 400 |
-| coffee_preparation | coffee_preparation_d0, coffee_preparation_d1 | make coffee using the coffee machine and a pod | 500 |
-| hammer_cleanup | hammer_cleanup_d0, hammer_cleanup_d1 | put the hammer in the drawer and close it | 500 |
-| kitchen | kitchen_d0, kitchen_d1 | cook the food on the stove and serve it | 800 |
-| mug_cleanup | mug_cleanup_d0, mug_cleanup_d1 | store the mug inside the drawer | 500 |
-| nut_assembly | nut_assembly_d0 | assemble both square and round nuts onto their pegs | 500 |
-| pick_place | pick_place_d0 | collect all objects and place them into the container | 1000 |
-| square | square_d0, square_d1, square_d2 | insert the square nut onto the square peg | 400 |
-| stack | stack_d0, stack_d1 | stack the blocks into a tower | 400 |
-| stack_three | stack_three_d0, stack_three_d1 | stack three blocks into a vertical tower | 400 |
-| threading | threading_d0, threading_d1, threading_d2 | thread the needle through the eye | 400 |
-| three_piece_assembly | three_piece_assembly_d0, three_piece_assembly_d1, three_piece_assembly_d2 | assemble the three toy pieces together | 500 |
+| coffee | coffee_d0, coffee_d1, coffee_d2 | make coffee using the coffee machine and a pod | 500 |
+| coffee_preparation | coffee_preparation_d0, coffee_preparation_d1 | make coffee using the coffee machine and a pod | 800 |
+| hammer_cleanup | hammer_cleanup_d0, hammer_cleanup_d1 | put the hammer in the drawer and close it | 625 |
+| kitchen | kitchen_d0, kitchen_d1 | cook the food on the stove and serve it | 1000 |
+| mug_cleanup | mug_cleanup_d0, mug_cleanup_d1 | store the mug inside the drawer | 625 |
+| nut_assembly | nut_assembly_d0 | assemble both square and round nuts onto their pegs | 625 |
+| pick_place | pick_place_d0 | collect all objects and place them into the container | 1250 |
+| square | square_d0, square_d1, square_d2 | insert the square nut onto the square peg | 500 |
+| stack | stack_d0, stack_d1 | stack the blocks into a tower | 500 |
+| stack_three | stack_three_d0, stack_three_d1 | stack three blocks into a vertical tower | 500 |
+| threading | threading_d0, threading_d1, threading_d2 | thread the needle through the eye | 500 |
+| three_piece_assembly | three_piece_assembly_d0, three_piece_assembly_d1, three_piece_assembly_d2 | assemble the three toy pieces together | 625 |
 
 Every difficulty variant (`d0`/`d1`/`d2`) of a family shares one instruction -- they are
 the same task with progressively wider initial-state distributions. `nut_assembly_d0`
@@ -546,7 +559,7 @@ construction -- see `flower/models/flower.py`'s `format_instruction`).
 
 ~50 GB of rendered training data (26 datasets x 100 demos x 2 cameras x 128x128 RGB),
 ~1-2 h to render at `-j 4`. Training uses the identical budget as LIBERO (40 epochs x
-1000 steps, batch 32, 4 GPUs). Evaluation is 26 datasets x 20 episodes, up to 400-1000
+1000 steps, batch 32, 4 GPUs). Evaluation is 26 datasets x 20 episodes, up to 500-1250
 steps each -- longer than LIBERO-10's 10 x 20; `n_eval` is the knob to shrink it.
 
 

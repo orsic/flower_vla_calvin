@@ -73,6 +73,27 @@ def test_plan_lines_reeval_adds_flag(tmp_path):
     assert "reeval=True" in overrides
 
 
+def test_plan_lines_forwards_extra_overrides_to_the_eval(tmp_path):
+    train_folder = tmp_path / "mimicgen" / "run1"
+    _write_train_cfg(train_folder)
+
+    plan = plan_lines(str(train_folder), ["n_eval=100", "eval_batch_size=20"], reeval=False)
+
+    _, overrides = plan[0]
+    assert "n_eval=100" in overrides
+    assert "eval_batch_size=20" in overrides
+
+
+def test_plan_lines_does_not_duplicate_resolved_keys(tmp_path):
+    train_folder = tmp_path / "mimicgen" / "run1"
+    _write_train_cfg(train_folder)
+
+    plan = plan_lines(str(train_folder), ["checkpoint=/custom/last.ckpt"], reeval=False)
+
+    _, overrides = plan[0]
+    assert [o for o in overrides if o.startswith("checkpoint=")] == ["checkpoint=/custom/last.ckpt"]
+
+
 def test_upload_reports_nothing_when_no_result_csv(tmp_path, capsys):
     train_folder = tmp_path / "mimicgen" / "run1"
     _write_train_cfg(train_folder)

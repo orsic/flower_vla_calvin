@@ -239,7 +239,10 @@ class EvaluateMimicgen:
 
     def evaluate_policy(self, model, store_video=0) -> List[Dict[str, Any]]:
         all_rows: List[Dict[str, Any]] = []
-        for idx, dataset_name in enumerate(self.datasets):
+        for dataset_name in self.datasets:
+            # Global, subset-independent task_idx: it is part of eval_records' merge key, and
+            # each multi-GPU worker only sees its own subset of datasets.
+            idx = mimicgen_tasks.CORE_DATASETS.index(dataset_name)
             print(f"starting to evaluate: {dataset_name}")
             rows = self.evaluate_dataset(model, dataset_name, idx, store_video=store_video)
             success_rate = sum(row["success"] for row in rows) / len(rows)

@@ -63,6 +63,11 @@ def plan_lines(
 ) -> List[Tuple[str, List[str]]]:
     resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
     overrides = _eval_overrides(resolved_train_folder, checkpoint)
+    # Forward the rest (n_eval=..., eval_batch_size=...); train_folder/checkpoint are
+    # already in `overrides`, resolved above.
+    overrides += [
+        o for o in extra_overrides if o.split("=", 1)[0] not in ("train_folder", "checkpoint")
+    ]
     if reeval:
         overrides = overrides + ["reeval=True"]
     return [("eval-mimicgen", overrides)]

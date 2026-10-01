@@ -25,6 +25,7 @@
 #                                          then auto-runs ./run.sh pipeline-mimicgen (SKIP_PIPELINE=1 to skip)
 #   ./run.sh eval-mimicgen                Run the MimicGen evaluation (all modalities)
 #   ./run.sh pipeline-mimicgen <train_run_dir> [...]  Post-training MimicGen eval + W&B upload
+#   ./run.sh analyze-mimicgen run|filter [...]  Success rate per task family x d0/d1/d2 from W&B
 #
 # Valid benchmarks: libero_10, libero_90, libero_spatial, libero_object, libero_goal
 #
@@ -436,6 +437,16 @@ case "$CMD" in
 
     podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-mimicgen \
         python scripts/mimicgen_pipeline.py upload --train-folder "$train_dir" -- "$@"
+    ;;
+
+  analyze-mimicgen)
+    # Read the mimicgen.csv member scripts/mimicgen_pipeline.py's upload attached to one or
+    # more training runs, and report success rate per task family x difficulty variant.
+    #   ./run.sh analyze-mimicgen run <run_id> [<run_id>...]
+    #   ./run.sh analyze-mimicgen filter --filters '{"config.use_proprio": true}'
+    # Needs WANDB_API_KEY set (vars.env or shell env) since this only reads from W&B.
+    podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-mimicgen \
+        python scripts/mimicgen_sr.py "$@"
     ;;
 
   analyze)

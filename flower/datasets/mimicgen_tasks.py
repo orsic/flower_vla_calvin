@@ -58,21 +58,24 @@ LANGUAGE = {
     "three_piece_assembly": "assemble the three toy pieces together",
 }
 
-# Per-family max rollout length (from visuomotor-stack's MAX_STEPS registry).
+# Per-family max rollout length: upstream MimicGen's experiment.rollout.horizon
+# (mimicgen/scripts/generate_core_training_configs.py) + 25% headroom, except
+# coffee_preparation, which stays at upstream's 800. visuomotor-stack's MAX_STEPS registry
+# had coffee_preparation at 500, shorter than every one of its 591-760-step demos.
 DEFAULT_MAX_STEPS = 800
 _FAMILY_MAX_STEPS = {
-    "square": 400,
-    "stack": 400,
-    "stack_three": 400,
-    "threading": 400,
-    "coffee": 400,
-    "coffee_preparation": 500,
-    "three_piece_assembly": 500,
-    "hammer_cleanup": 500,
-    "mug_cleanup": 500,
-    "nut_assembly": 500,
-    "kitchen": 800,
-    "pick_place": 1000,
+    "square": 500,
+    "stack": 500,
+    "stack_three": 500,
+    "threading": 500,
+    "coffee": 500,
+    "coffee_preparation": 800,
+    "three_piece_assembly": 625,
+    "hammer_cleanup": 625,
+    "mug_cleanup": 625,
+    "nut_assembly": 625,
+    "kitchen": 1000,
+    "pick_place": 1250,
 }
 
 
