@@ -12,7 +12,16 @@ log_dir: ./logs
 slurm: false
 seed: 42
 device: 'cuda'
-batch_size: 32
+# CALVIN recipe (conf/config_calvin.yaml): its global batch of 32 (8/GPU x 4 GPUs) on one
+# GPU, as batch_size x accumulate_grad_batches = 16 x 2 (32 per micro-batch doesn't fit a
+# 48 GB GPU at 224x224). Multi-GPU runs scale the global batch (x devices).
+batch_size: 16
+accumulate_grad_batches: 2
+# Optimizer updates per epoch (CALVIN's limit_train_batches). trainer.limit_train_batches
+# counts micro-batches, so it is scaled by accumulate_grad_batches: any batch/accumulation
+# override (e.g. batch_size=32 accumulate_grad_batches=1) keeps 35 x 1000 = 35k updates,
+# and with them the LR schedule and EMA, which both count optimizer steps.
+updates_per_epoch: 1000
 devices: 4
 goal_window_size: 1
 act_dim: 7
@@ -23,7 +32,7 @@ obs_seq_len: 1
 act_seq_len: 10
 multistep: ${act_seq_len}
 p_last_state: 0
-max_epochs: 40
+max_epochs: 35  # x updates_per_epoch = 35k optimizer updates, as CALVIN
 # Rollout eval is disabled; evaluation runs after training via ./run.sh pipeline-mimicgen.
 rollout_lh_skip_epochs: ${max_epochs}
 num_workers: 1
@@ -37,7 +46,8 @@ trainer:
   sync_batchnorm: True
   accelerator: gpu
   strategy: "ddp"
-  limit_train_batches: 1000
+  accumulate_grad_batches: ${accumulate_grad_batches}
+  limit_train_batches: ${mul:${updates_per_epoch},${accumulate_grad_batches}}
   limit_val_batches: 4
 
 logger:

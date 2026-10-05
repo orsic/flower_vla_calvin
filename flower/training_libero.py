@@ -32,6 +32,32 @@ logger = logging.getLogger(__name__)
 # without duplicating the epoch count. replace=True: training_calvin.py registers the
 # same resolver, and both modules may be imported in one process (e.g. in tests).
 OmegaConf.register_new_resolver("sub", lambda a, b: int(a) - int(b), replace=True)
+# Lets config_mimicgen.yaml scale limit_train_batches (micro-batches) by
+# accumulate_grad_batches, keeping optimizer updates per epoch fixed.
+OmegaConf.register_new_resolver("mul", lambda a, b: int(a) * int(b), replace=True)
+
+def ddp_strategy(accumulate_grad_batches: int) -> DDPStrategy:
+    """DDP strategy for the trainer.
+
+    static_graph=True replaces find_unused_parameters without per-step graph traversal
+    (safe because the used/unused module set is fixed across all steps), but it asserts
+    (expect_autograd_hooks_, reducer.cpp) on the no_sync() backward of a gradient-
+    accumulation micro-batch -- so with accumulation, fall back to find_unused_parameters,
+    CALVIN's own strategy (training_calvin.py's ddp_find_unused_parameters_true).
+    """
+    if accumulate_grad_batches > 1:
+        graph_kwargs = {"find_unused_parameters": True}
+    else:
+        graph_kwargs = {"static_graph": True}
+    return DDPStrategy(
+        **graph_kwargs,
+        # Avoids an extra gradient buffer copy per allreduce.
+        gradient_as_bucket_view=True,
+        # 4-hour timeout: MuJoCo rollout gather (all_gather_object) can stall
+        # for >30 min when ranks finish sequences at very different speeds.
+        timeout=datetime.timedelta(hours=4),
+    )
+
 
 def clear_cuda_cache():
     """Clear CUDA cache and garbage collect unused memory."""
@@ -101,16 +127,7 @@ def train(cfg: DictConfig) -> None:
             "logger": train_logger,
             "callbacks": callbacks,
             "benchmark": False,
-            # static_graph=True: replaces find_unused_parameters without per-step graph
-            # traversal; safe because the used/unused module set is fixed across all steps.
-            # gradient_as_bucket_view=True: avoids an extra gradient buffer copy per allreduce.
-            "strategy": DDPStrategy(
-                static_graph=True,
-                gradient_as_bucket_view=True,
-                # 4-hour timeout: MuJoCo rollout gather (all_gather_object) can stall
-                # for >30 min when ranks finish sequences at very different speeds.
-                timeout=datetime.timedelta(hours=4),
-            ),
+            "strategy": ddp_strategy(cfg.trainer.get("accumulate_grad_batches", 1)),
             "accelerator": "gpu",
             "devices": cfg.trainer.devices,
             "use_distributed_sampler": True,

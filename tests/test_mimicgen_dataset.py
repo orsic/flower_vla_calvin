@@ -50,7 +50,7 @@ def two_dataset_dir(tmp_path, monkeypatch):
     return tmp_path, datasets
 
 
-def _datamodule(data_dir):
+def _datamodule(data_dir, **kwargs):
     from omegaconf import OmegaConf
 
     datasets_cfg = OmegaConf.create(
@@ -73,6 +73,7 @@ def _datamodule(data_dir):
         num_workers=0,
         transforms=None,
         data_dir=str(data_dir),
+        **kwargs,
     )
 
 
@@ -82,6 +83,15 @@ def test_datamodule_builds_one_dataset_per_registered_task(two_dataset_dir):
     dm.setup()
     assert "lang" in dm.train_datasets
     assert len(dm.train_datasets["lang"]) == len(datasets) * T  # pad_seq_length: every timestep is a window start
+
+
+def test_pad_seq_length_false_only_samples_full_windows(two_dataset_dir):
+    """CALVIN's recipe (pad: false): an action window never runs past the episode end,
+    so a T-step demo yields T - act_seq_len + 1 windows instead of T."""
+    data_dir, datasets = two_dataset_dir
+    dm = _datamodule(data_dir, pad_seq_length=False)
+    dm.setup()
+    assert len(dm.train_datasets["lang"]) == len(datasets) * (T - 10 + 1)
 
 
 def test_sample_shape_matches_libero_convention(two_dataset_dir):

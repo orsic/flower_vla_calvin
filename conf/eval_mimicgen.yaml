@@ -24,6 +24,7 @@ log_wandb: False
 n_eval: 20
 eval_batch_size: 10  # episodes per batch; each runs in a separate MuJoCo subprocess
 env_start_method: spawn  # spawn (parallel, real subprocesses) | dummy (sequential, in-process)
+max_steps_scale: 1.0  # multiplies flower.datasets.mimicgen_tasks.max_steps (one-off longer-horizon evals)
 
 datasets: null  # null = all of flower.datasets.mimicgen_tasks.CORE_DATASETS
 

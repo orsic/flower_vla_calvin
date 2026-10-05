@@ -20,6 +20,7 @@ def get_dataset(
     frame_stack=1,
     filter_key=None,
     hdf5_cache_mode="low_dim",
+    pad_seq_length=True,
     *args,
     **kwargs
 ):
@@ -44,7 +45,7 @@ def get_dataset(
         frame_stack=frame_stack,
         seq_length=seq_len,  # length-10 temporal sequences
         pad_frame_stack=True,
-        pad_seq_length=True,  # pad last obs per trajectory to ensure all sequences are sampled
+        pad_seq_length=pad_seq_length,  # True: pad last obs per trajectory to ensure all sequences are sampled
         get_pad_mask=False,
         goal_mode=None,
         hdf5_cache_mode=hdf5_cache_mode,  # cache dataset in memory to avoid repeated file i/o

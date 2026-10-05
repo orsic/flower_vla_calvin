@@ -85,8 +85,12 @@ def seed_and_reset(env, ids: List[int], seeds: List[int]) -> None:
     env.reset(id=ids)
 
 
-def _create_mimicgen_env(dataset_path: str, img_h: int, img_w: int):
+def _create_mimicgen_env(dataset_path: str):
     """Build one MimicGen/robosuite env from a rendered dataset's recorded env_args.
+
+    Cameras render at the per-camera sizes recorded there -- the sizes the training
+    data was rendered at (scripts/prepare_mimicgen.py) -- so rollout frames are pixel-
+    identical to training frames before the shared transform chain.
 
     Lazily imports mimicgen/robomimic (see module docstring): only reached inside a
     spawned worker subprocess, never at module import time.
@@ -116,12 +120,7 @@ def _create_mimicgen_env(dataset_path: str, img_h: int, img_w: int):
             "LIBERO's -- see the plan this module lands with. Refusing to silently "
             "evaluate under a different action semantics."
         )
-    # Render at eval resolution (matches flower_eval_libero.py's img_h=img_w=224,
-    # independent of the 128x128 the training data was rendered at -- both get resized
-    # to 112 by the same transform pipeline either way).
     env_kwargs["camera_names"] = ["agentview", "robot0_eye_in_hand"]
-    env_kwargs["camera_heights"] = img_h
-    env_kwargs["camera_widths"] = img_w
     # Same obs setup as EnvRobosuite.create_for_data_processing, which rendered the
     # training data: get_observation needs this per-process registry to find the image
     # keys (TypeError on None otherwise).
@@ -191,8 +190,7 @@ class EvaluateMimicgen:
         base_seed: int = 0,
         eval_modalities: Optional[Dict[str, bool]] = None,
         env_start_method: str = "spawn",
-        img_h: int = 224,
-        img_w: int = 224,
+        max_steps_scale: float = 1.0,
     ):
         self.model = model
         self.transforms = transforms
@@ -206,8 +204,9 @@ class EvaluateMimicgen:
         self.checkpoint = str(checkpoint)
         self.base_seed = base_seed
         self.env_start_method = env_start_method
-        self.img_h = img_h
-        self.img_w = img_w
+        # Eval-only multiplier on mimicgen_tasks.max_steps, for one-off longer-horizon
+        # re-evaluations; the per-row max_steps column records the scaled value.
+        self.max_steps_scale = max_steps_scale
 
         self.eval_modalities = eval_modalities or {
             "rgb_static": True, "rgb_gripper": True, "language": True, "proprio": True
@@ -259,7 +258,7 @@ class EvaluateMimicgen:
         fallback path.
         """
         dataset_path = os.path.join(self.data_dir, f"{dataset_name}.hdf5")
-        max_steps = mimicgen_tasks.max_steps(dataset_name)
+        max_steps = int(mimicgen_tasks.max_steps(dataset_name) * self.max_steps_scale)
         task_emb = None  # MimicGen's language comes from a fixed instruction string, no CLIP embedding
         language = mimicgen_tasks.language(dataset_name)
 
@@ -275,7 +274,7 @@ class EvaluateMimicgen:
                 # partial, not a lambda over self: each factory is cloudpickled into its
                 # env subprocess, and closing over self would copy the model into every one.
                 env_fns = [
-                    functools.partial(_create_mimicgen_env, dataset_path, self.img_h, self.img_w)
+                    functools.partial(_create_mimicgen_env, dataset_path)
                     for _ in range(current_batch_size)
                 ]
                 if env is None:
@@ -305,6 +304,7 @@ class EvaluateMimicgen:
                 dummy = np.zeros((current_batch_size, 7))
                 for _ in range(5):
                     obs, _, _, _ = env.step(dummy, id=ids)
+                img_h, img_w = obs[0]["agentview_image"].shape[:2]  # as rendered: the dataset's sizes
 
                 video_writers = {}
                 video_frames = {}
@@ -315,7 +315,7 @@ class EvaluateMimicgen:
                         video_path = os.path.join(self.log_dir, video_filename)
                         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                         video_writers[k] = cv2.VideoWriter(
-                            video_path, fourcc, 20.0, (self.img_w, self.img_h)
+                            video_path, fourcc, 20.0, (img_w, img_h)
                         )
                         video_frames[k] = []
 
@@ -367,8 +367,8 @@ class EvaluateMimicgen:
                         "task_category": mimicgen_tasks.family(dataset_name),
                         "init_state_idx": -1,
                         "max_steps": max_steps,
-                        "img_h": self.img_h,
-                        "img_w": self.img_w,
+                        "img_h": img_h,
+                        "img_w": img_w,
                         "num_sampling_steps": getattr(model, "num_sampling_steps", ""),
                         "multistep": getattr(model, "multistep", ""),
                         "eval_batch_size": current_batch_size,
@@ -441,6 +441,7 @@ def _eval_worker(
         base_seed=cfg_dict.get("seed", 0),
         eval_modalities=cfg_dict.get("eval_modalities"),
         env_start_method=cfg_dict.get("env_start_method", "spawn"),
+        max_steps_scale=cfg_dict.get("max_steps_scale", 1.0),
     )
     rows = evaluator.evaluate_policy(
         model, store_video=cfg_dict.get("num_videos", 0) if rank == 0 else 0
@@ -472,6 +473,7 @@ def main(cfg):
     if eval_modalities is not None:
         eval_modalities = OmegaConf.to_container(eval_modalities, resolve=True)
     env_start_method: str = OmegaConf.select(cfg, "env_start_method", default="spawn")
+    max_steps_scale: float = OmegaConf.select(cfg, "max_steps_scale", default=1.0)
     reeval: bool = OmegaConf.select(cfg, "reeval", default=False)
 
     datasets_cfg = OmegaConf.select(cfg, "datasets", default=None)
@@ -496,6 +498,7 @@ def main(cfg):
         base_seed=base_seed,
         eval_modalities=eval_modalities,
         env_start_method=env_start_method,
+        max_steps_scale=max_steps_scale,
     )
 
     n_gpus = torch.cuda.device_count()

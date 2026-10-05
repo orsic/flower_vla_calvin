@@ -1,11 +1,13 @@
 defaults:
-  - transforms: libero_transforms
+  - transforms: calvin_transforms  # CALVIN recipe: 224x224 model input
 _target_: flower.datasets.mimicgen_data_module.MimicgenDataModule
 _recursive_: false
 
 
 data_dir: ${data_dir}
 shuffle_val: false
+# CALVIN recipe (pad: false): only sample action windows fully inside an episode.
+pad_seq_length: false
 dataset_names: null  # null = every dataset in flower.datasets.mimicgen_tasks.CORE_DATASETS
 
 observation_space:

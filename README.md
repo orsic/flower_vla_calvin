@@ -486,20 +486,42 @@ the flower requirements, pyhash) is reused; only the sim stack differs.
 # 2. Download the general pretrained checkpoint (if not already done)
 ./run.sh download-pret
 
-# 3. Download all 26 MimicGen `core` datasets (~95 GB) -- or a single dataset by name
-./run.sh download-mimicgen all
-# ./run.sh download-mimicgen square_d0
+# 3. Download + render all 26 MimicGen `core` datasets, 100 demos each, N datasets at a
+#    time. Each ~1-13 GB source hdf5 (~95 GB total) is deleted right after its render, so
+#    peak extra disk stays ~N datasets' worth. Outputs already rendered at the current
+#    camera sizes are skipped; older renders (e.g. the earlier 128x128 ones) are
+#    re-rendered in place. Pass KEEP_MIMICGEN_SOURCE=1 to keep sources.
+./run.sh rerender-mimicgen -j 4
+# Or per dataset: ./run.sh download-mimicgen square_d0 && ./run.sh prepare-mimicgen square_d0
 
-# 4. Render 100 demos per dataset into image observations. Source hdf5s are deleted
-#    per-dataset after a successful render (keeps peak extra disk ~10 GB, not ~95 GB) --
-#    pass KEEP_MIMICGEN_SOURCE=1 to keep them. -j N renders N datasets concurrently.
-./run.sh prepare-mimicgen all -j 4
-
-# 5. Fine-tune on every dataset -- same training recipe as ./run.sh train (steps, batch
-#    size, precision, all hyperparameters unchanged). On success, auto-runs
-#    ./run.sh pipeline-mimicgen on the same GPUs (SKIP_PIPELINE=1 to skip).
-./run.sh train-mimicgen
+# 4. Fine-tune on every dataset with the CALVIN training recipe (see below). On success,
+#    auto-runs ./run.sh pipeline-mimicgen on the same GPUs (SKIP_PIPELINE=1 to skip).
+CUDA_VISIBLE_DEVICES=0 ./run.sh train-mimicgen
 ```
+
+### Training recipe: CALVIN's
+
+MimicGen fine-tuning follows `conf/config_calvin.yaml`, not LIBERO's recipe:
+
+| | Value | Where |
+|---|---|---|
+| Optimizer updates | 35 epochs x `updates_per_epoch` 1000 = 35k | `conf/config_mimicgen.yaml` |
+| Batch size | `batch_size` 16 x `accumulate_grad_batches` 2 = CALVIN's global 32 (8/GPU x 4 GPUs) on one GPU; N GPUs give 32*N | `conf/config_mimicgen.yaml` |
+| Rendered cameras | 200x200 static, 84x84 wrist (CALVIN's native sizes) | `scripts/prepare_mimicgen.py` |
+| Model input | 224x224, RandomShifts (pad 10/4), CLIP normalization | `calvin_transforms.yaml` |
+| Action windows | only fully inside an episode (CALVIN's `pad: false`) | `conf/datamodule/mimicgen.yaml` |
+
+`trainer.limit_train_batches` counts micro-batches, so it is derived as
+`updates_per_epoch x accumulate_grad_batches`: any batch/accumulation override keeps 35k
+optimizer updates (and with them the LR schedule and EMA, which count optimizer steps) --
+e.g. `batch_size=32 accumulate_grad_batches=1` on a GPU with room for it (a 32-sample
+micro-batch at 224x224 needs ~57 GB; 16 needs ~38 GB). Model, optimizer and LR schedule are
+shared with every benchmark (`conf/model/flower.yaml`).
+Rollouts render at the per-camera sizes recorded in each dataset's `env_args` -- the sizes
+the training data was rendered at -- so rollout frames are pixel-identical to training
+frames before the shared transform chain
+(`tests/test_mimicgen_env_real.py::test_eval_env_reproduces_training_frames_pixel_exact`);
+the only train/rollout difference is train-only RandomShifts augmentation.
 
 ### Evaluation
 
@@ -513,6 +535,13 @@ the flower requirements, pyhash) is reused; only the sim stack differs.
 # run's W&B artifact (same artifact scheme as ./run.sh pipeline, member "mimicgen.csv"):
 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run>
 PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run>   # discard + redo
+
+# One-off longer-horizon re-evaluation: max_steps_scale multiplies every dataset's
+# registered rollout limit (the CSV's max_steps column records the scaled value). Write it
+# to its own csv_dir so the run's main result.csv keeps the standard-limit rows:
+./run.sh eval-mimicgen checkpoint=... train_folder=... max_steps_scale=1.25 \
+    'datasets=[three_piece_assembly_d0,three_piece_assembly_d1,three_piece_assembly_d2]' \
+    +csv_dir=/saves/train_logs/mimicgen/<run>/eval_logs/last/mimicgen_tpa_steps_x1.25
 ```
 
 Evaluation results land in `<train_folder>/eval_logs/<checkpoint>/mimicgen_core/result.csv`,
@@ -557,9 +586,10 @@ construction -- see `flower/models/flower.py`'s `format_instruction`).
 
 ### Budget
 
-~50 GB of rendered training data (26 datasets x 100 demos x 2 cameras x 128x128 RGB),
-~1-2 h to render at `-j 4`. Training uses the identical budget as LIBERO (40 epochs x
-1000 steps, batch 32, 4 GPUs). Evaluation is 26 datasets x 20 episodes, up to 500-1250
+~115 GB of rendered training data (26 datasets x 100 demos x 200x200 + 84x84 RGB, no
+`next_obs` -- training never reads it), plus a ~95 GB source download streamed through
+`rerender-mimicgen`. Training is CALVIN's budget (35k optimizer updates, global batch 32). Evaluation is 26
+datasets x 20 episodes, up to 500-1250
 steps each -- longer than LIBERO-10's 10 x 20; `n_eval` is the knob to shrink it.
 
 

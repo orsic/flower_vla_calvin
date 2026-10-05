@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import h5py
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
@@ -21,16 +22,66 @@ def _output_name(cmd) -> Path:
     return Path(argv[argv.index("--output_name") + 1])
 
 
-def test_render_one_skips_when_output_already_exists(tmp_path, monkeypatch):
-    data_dir = tmp_path
-    (data_dir / "square_d0.hdf5").write_bytes(b"fake")
+def _write_rendered(path: Path, heights, widths) -> None:
+    """A rendered output as far as render_one's up-to-date check is concerned: just the
+    env_args robomimic records, with the camera sizes it was rendered at."""
+    env_kwargs = {
+        "camera_names": list(prepare_mimicgen.CAMERA_SIZES),
+        "camera_heights": heights,
+        "camera_widths": widths,
+    }
+    with h5py.File(path, "w") as f:
+        f.create_group("data").attrs["env_args"] = json.dumps({"env_kwargs": env_kwargs})
+
+
+def test_render_one_skips_when_output_already_at_current_camera_sizes(tmp_path, monkeypatch):
+    sizes = list(prepare_mimicgen.CAMERA_SIZES.values())
+    _write_rendered(tmp_path / "square_d0.hdf5", sizes, sizes)
 
     def fail_if_called(*args, **kwargs):
-        raise AssertionError("subprocess.run should not be called when output already exists")
+        raise AssertionError("subprocess.run should not be called when output is up to date")
 
     monkeypatch.setattr(prepare_mimicgen.subprocess, "run", fail_if_called)
 
-    prepare_mimicgen.render_one("square_d0", str(data_dir), n_demo=100)  # must not raise
+    prepare_mimicgen.render_one("square_d0", str(tmp_path), n_demo=100)  # must not raise
+
+
+def test_render_one_rerenders_output_at_stale_camera_sizes(tmp_path, monkeypatch):
+    """An output from the old 128x128 recipe is re-rendered and replaced in place."""
+    _make_source(tmp_path)
+    _write_rendered(tmp_path / "square_d0.hdf5", 128, 128)
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append(cmd)
+        _output_name(cmd).write_bytes(b"fake rendered")
+
+    monkeypatch.setattr(prepare_mimicgen.subprocess, "run", fake_run)
+
+    prepare_mimicgen.render_one("square_d0", str(tmp_path), n_demo=100)
+
+    assert len(calls) == 1
+    assert (tmp_path / "square_d0.hdf5").read_bytes() == b"fake rendered"
+
+
+def test_render_one_renders_per_camera_sizes_without_next_obs(tmp_path, monkeypatch):
+    _make_source(tmp_path)
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append(cmd)
+        _output_name(cmd).write_bytes(b"fake rendered")
+
+    monkeypatch.setattr(prepare_mimicgen.subprocess, "run", fake_run)
+
+    prepare_mimicgen.render_one("square_d0", str(tmp_path), n_demo=100)
+
+    script = calls[0][2]
+    argv = json.loads(next(l for l in script.splitlines() if l.startswith("sys.argv")).split("=", 1)[1])
+    assert "--exclude-next-obs" in argv  # training never reads next_obs (load_next_obs=False)
+    assert prepare_mimicgen.CAMERA_SIZES == {"agentview": 200, "robot0_eye_in_hand": 84}  # CALVIN's native sizes
+    assert json.dumps(prepare_mimicgen.CAMERA_SIZES) in script
+    assert "create_env_for_data_processing" in script
 
 
 def test_render_one_raises_when_source_missing(tmp_path):

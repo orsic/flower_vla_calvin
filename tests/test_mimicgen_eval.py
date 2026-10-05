@@ -112,8 +112,8 @@ def _make_fake_transforms():
     return {"val": {"rgb_static": [identity], "rgb_gripper": [identity]}}
 
 
-def _build_evaluator(monkeypatch, success_at_step, n_eval, eval_batch_size, model=None):
-    def fake_create_env(dataset_path, img_h, img_w):
+def _build_evaluator(monkeypatch, success_at_step, n_eval, eval_batch_size, model=None, **kwargs):
+    def fake_create_env(dataset_path):
         return _FakeMimicgenEnv(dataset_path, success_at_step=success_at_step)
 
     monkeypatch.setattr(fem, "_create_mimicgen_env", fake_create_env)
@@ -129,6 +129,7 @@ def _build_evaluator(monkeypatch, success_at_step, n_eval, eval_batch_size, mode
         checkpoint="/fake/last.ckpt",
         base_seed=0,
         env_start_method="dummy",
+        **kwargs,
     )
     return evaluator
 
@@ -156,6 +157,25 @@ def test_evaluate_dataset_all_episodes_succeed_early(monkeypatch):
         assert row["use_proprio"] == 0  # model.use_proprio=False
 
 
+class _NonSquareFrameEnv(_FakeMimicgenEnv):
+    def _obs(self):
+        obs = super()._obs()
+        obs["agentview_image"] = np.zeros((12, 10, 3), dtype=np.uint8)
+        return obs
+
+
+def test_img_h_w_recorded_from_rendered_agentview_frame(monkeypatch):
+    """The env renders at the dataset's recorded camera sizes (the training data's), so
+    the CSV records what was actually rendered rather than a configured size."""
+    model = _FakeModel()
+    evaluator = _build_evaluator(monkeypatch, success_at_step=2, n_eval=2, eval_batch_size=2, model=model)
+    monkeypatch.setattr(fem, "_create_mimicgen_env", lambda dataset_path: _NonSquareFrameEnv(dataset_path, 2))
+
+    rows = evaluator.evaluate_dataset(model, "square_d0", idx=0, store_video=0)
+
+    assert {(row["img_h"], row["img_w"]) for row in rows} == {(12, 10)}
+
+
 def test_evaluate_dataset_runs_to_max_steps_when_never_successful(monkeypatch):
     model = _FakeModel()
     evaluator = _build_evaluator(monkeypatch, success_at_step=None, n_eval=1, eval_batch_size=1, model=model)
@@ -166,6 +186,19 @@ def test_evaluate_dataset_runs_to_max_steps_when_never_successful(monkeypatch):
     assert rows[0]["success"] == 0
     assert rows[0]["steps_taken"] == mimicgen_tasks.max_steps("square_d0")
     assert rows[0]["max_steps"] == mimicgen_tasks.max_steps("square_d0")
+
+
+def test_max_steps_scale_extends_rollout_limit(monkeypatch):
+    """Eval-only knob for one-off longer-horizon re-evaluations; the registry is untouched."""
+    model = _FakeModel()
+    evaluator = _build_evaluator(
+        monkeypatch, success_at_step=None, n_eval=1, eval_batch_size=1, model=model, max_steps_scale=1.25
+    )
+
+    rows = evaluator.evaluate_dataset(model, "square_d0", idx=0, store_video=0)
+
+    expected = int(mimicgen_tasks.max_steps("square_d0") * 1.25)
+    assert rows[0]["max_steps"] == rows[0]["steps_taken"] == expected
 
 
 def test_evaluate_dataset_episode_idx_and_rollout_seed_unique_per_episode(monkeypatch):
@@ -181,7 +214,7 @@ def test_evaluate_dataset_episode_idx_and_rollout_seed_unique_per_episode(monkey
 def test_evaluate_policy_aggregates_across_datasets(monkeypatch):
     model = _FakeModel()
 
-    def fake_create_env(dataset_path, img_h, img_w):
+    def fake_create_env(dataset_path):
         return _FakeMimicgenEnv(dataset_path, success_at_step=1)
 
     monkeypatch.setattr(fem, "_create_mimicgen_env", fake_create_env)
@@ -216,7 +249,7 @@ def test_rank_shards_merge_without_task_idx_collisions(tmp_path, monkeypatch):
     not task_name) kept only one rank's row per key -- 140 of 520 rows on a 4-GPU eval."""
     model = _FakeModel()
 
-    def fake_create_env(dataset_path, img_h, img_w):
+    def fake_create_env(dataset_path):
         return _FakeMimicgenEnv(dataset_path, success_at_step=1)
 
     monkeypatch.setattr(fem, "_create_mimicgen_env", fake_create_env)

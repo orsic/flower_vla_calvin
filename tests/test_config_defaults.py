@@ -61,3 +61,17 @@ def test_wandb_project_is_multimodal_florence():
     with initialize(config_path="../conf"):
         assert compose(config_name="config_libero").logger.project == "multimodal_florence"
         assert compose(config_name="config_calvin").logger.project == "multimodal_florence"
+
+
+def test_ddp_strategy_static_graph_without_grad_accumulation():
+    strategy = flower.training_libero.ddp_strategy(accumulate_grad_batches=1)
+    assert strategy._ddp_kwargs["static_graph"] is True
+
+
+def test_ddp_strategy_drops_static_graph_under_grad_accumulation():
+    """static_graph DDP asserts (expect_autograd_hooks_, reducer.cpp) on the no_sync()
+    backward of an accumulation micro-batch -- fall back to CALVIN's own strategy
+    (training_calvin.py's ddp_find_unused_parameters_true)."""
+    strategy = flower.training_libero.ddp_strategy(accumulate_grad_batches=2)
+    assert not strategy._ddp_kwargs.get("static_graph", False)
+    assert strategy._ddp_kwargs["find_unused_parameters"] is True

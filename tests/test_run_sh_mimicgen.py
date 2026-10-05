@@ -151,3 +151,66 @@ def test_mimicgen_hdf5_dir_defaults_under_data_dir(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "MIMICGEN_HDF5_DIR=/ssd/data/mimicgen_hdf5" in result.stdout
+
+
+STUB_RERENDER = """#!/usr/bin/env bash
+joined="$*"
+case "$joined" in
+  *"CORE_DATASETS"*)
+    echo "square_d0 threading_d1 stack_d0"
+    ;;
+  *"huggingface-cli download"*)
+    echo "download $joined" >> "$FAKE_LOG"
+    [[ "$joined" == *"core/${FAKE_FAIL_DS:-none}.hdf5"* ]] && exit 1
+    exit 0
+    ;;
+  *"prepare_mimicgen.py"*)
+    echo "prepare $joined" >> "$FAKE_LOG"
+    ;;
+  *)
+    echo "unexpected podman-compose invocation: $joined" >&2
+    exit 1
+    ;;
+esac
+"""
+
+
+def _run_rerender(tmp_path, extra_env=None):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "podman-compose"
+    stub.write_text(STUB_RERENDER)
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    log = tmp_path / "invocations.log"
+    log.write_text("")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["FAKE_LOG"] = str(log)
+    env.update(extra_env or {})
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "run.sh"), "rerender-mimicgen", "-j", "2"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=60,
+    )
+    return result, log.read_text().splitlines()
+
+
+def test_rerender_mimicgen_downloads_then_renders_each_dataset(tmp_path):
+    result, lines = _run_rerender(tmp_path)
+    assert result.returncode == 0, result.stderr
+    for ds in ("square_d0", "threading_d1", "stack_d0"):
+        download = next(i for i, l in enumerate(lines) if l.startswith("download") and f"core/{ds}.hdf5" in l)
+        prepare = next(i for i, l in enumerate(lines) if l.startswith("prepare") and l.endswith(f"prepare_mimicgen.py {ds}"))
+        assert download < prepare, ds
+    assert len(lines) == 6
+
+
+def test_rerender_mimicgen_skips_render_and_fails_when_download_fails(tmp_path):
+    result, lines = _run_rerender(tmp_path, {"FAKE_FAIL_DS": "threading_d1"})
+    assert result.returncode != 0
+    assert not any(l.startswith("prepare") and "threading_d1" in l for l in lines)
+    assert any(l.startswith("prepare") and l.endswith("prepare_mimicgen.py square_d0") for l in lines)

@@ -21,7 +21,8 @@
 #   ./run.sh build-mimicgen               Build the MimicGen container image (flower-vla-mimicgen:latest)
 #   ./run.sh download-mimicgen [ds|all]   Download MimicGen `core` demo hdf5 files (default: all)
 #   ./run.sh prepare-mimicgen [ds|all] [-j N]  Render downloaded demos into image observations
-#   ./run.sh train-mimicgen [...]         Fine-tune on all MimicGen `core` datasets (same recipe as train)
+#   ./run.sh rerender-mimicgen [-j N]     Download + render each dataset (re-renders stale camera sizes)
+#   ./run.sh train-mimicgen [...]         Fine-tune on all MimicGen `core` datasets (CALVIN's training recipe)
 #                                          then auto-runs ./run.sh pipeline-mimicgen (SKIP_PIPELINE=1 to skip)
 #   ./run.sh eval-mimicgen                Run the MimicGen evaluation (all modalities)
 #   ./run.sh pipeline-mimicgen <train_run_dir> [...]  Post-training MimicGen eval + W&B upload
@@ -379,8 +380,22 @@ case "$CMD" in
         python scripts/prepare_mimicgen.py "$@"
     ;;
 
+  rerender-mimicgen)
+    # Download + render every dataset, one dataset at a time per job (-j N jobs in
+    # parallel): prepare-mimicgen deletes each source after rendering it, so peak extra
+    # disk stays ~N datasets' worth rather than the full ~95 GB source release. Existing
+    # outputs at the current camera sizes are skipped; older ones are re-rendered in place.
+    jobs=1
+    if [[ "${1:-}" == "-j" ]]; then jobs="$2"; fi
+    datasets="$(podman-compose -f "$COMPOSE" run --rm -T shell-mimicgen \
+        python -c "from flower.datasets.mimicgen_tasks import CORE_DATASETS; print(*CORE_DATASETS)" | tail -n 1)"
+    printf '%s\n' $datasets | xargs -P "$jobs" -I{} \
+        bash -c 'bash "$0" download-mimicgen "$1" && bash "$0" prepare-mimicgen "$1"' "$REPO_ROOT/run.sh" {}
+    ;;
+
   train-mimicgen)
-    # Fine-tune on every MimicGen `core` dataset, same recipe as ./run.sh train.
+    # Fine-tune on every MimicGen `core` dataset with CALVIN's training recipe
+    # (conf/config_mimicgen.yaml).
     # On success, chains straight into ./run.sh pipeline-mimicgen on the same GPUs.
     # Set SKIP_PIPELINE=1 to skip.
     run_train_mimicgen train-mimicgen "$@"
@@ -555,8 +570,11 @@ case "$CMD" in
     echo "  prepare-mimicgen [dataset|all] [-j N] [--n-demo N]"
     echo "                     Render downloaded demos into image observations (default: all, 100 demos)"
     echo "                     -j N renders N datasets concurrently. KEEP_MIMICGEN_SOURCE=1 keeps sources."
+    echo "  rerender-mimicgen [-j N]"
+    echo "                     download-mimicgen + prepare-mimicgen per dataset, N datasets at a time;"
+    echo "                     re-renders outputs whose camera sizes are out of date"
     echo "  train-mimicgen [hydra_overrides...]"
-    echo "                     Fine-tune on every MimicGen \`core\` dataset, same recipe as ./run.sh train."
+    echo "                     Fine-tune on every MimicGen \`core\` dataset with CALVIN's training recipe."
     echo "                     On success, auto-runs ./run.sh pipeline-mimicgen on the same GPUs"
     echo "                     (SKIP_PIPELINE=1 to skip)."
     echo "  eval-mimicgen      Run the MimicGen evaluation, all modalities on"

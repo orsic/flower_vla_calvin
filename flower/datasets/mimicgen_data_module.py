@@ -36,6 +36,7 @@ class MimicgenDataModule(pl.LightningDataModule):
         data_dir: str = None,
         split_ratio: float = 0.0,
         dataset_names=None,
+        pad_seq_length: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -50,6 +51,7 @@ class MimicgenDataModule(pl.LightningDataModule):
         # the registry, matching the eval side's identical `datasets` override
         # (conf/eval_mimicgen.yaml).
         self.dataset_names = list(dataset_names) if dataset_names else list(mimicgen_tasks.CORE_DATASETS)
+        self.pad_seq_length = pad_seq_length
         self.train_datasets = []
         self.val_datasets = []
         self.modalities = []
@@ -73,6 +75,7 @@ class MimicgenDataModule(pl.LightningDataModule):
                 obs_modality=self.mimicgen_observation_space,
                 initialize_obs_utils=(i == 0),
                 seq_len=datasets_cfg.lang_dataset.action_seq_len,
+                pad_seq_length=self.pad_seq_length,
             )
             vl_dataset = TranslatedSequenceVLDataset(
                 task_dataset,
