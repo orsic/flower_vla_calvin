@@ -2,30 +2,45 @@
 """Decide, and later collect, the MimicGen evaluation a training run needs.
 
 Sibling of scripts/eval_pipeline.py (the LIBERO/LIBERO-Plus planner), much smaller
-because the first MimicGen run has one suite only: all-modalities-on evaluation across
-every dataset in flower.datasets.mimicgen_tasks.CORE_DATASETS -- no dropout combos, no
-LIBERO-Plus, no modality-off variants. Driven by ./run.sh pipeline-mimicgen.
+because MimicGen has one suite only (every dataset in
+flower.datasets.mimicgen_tasks.CORE_DATASETS) -- no LIBERO-Plus, no modality-off
+variants. A plain run gets one all-modalities eval; a model.modality_dropout=True run
+gets one eval per modality combo (eval_pipeline.modality_combos: 7, or 14 with
+model.use_proprio=True), all merging into the same result.csv. Driven by
+./run.sh pipeline-mimicgen.
 
 Usage:
   python scripts/mimicgen_pipeline.py plan --train-folder <dir> [--reeval] [-- overrides...]
   python scripts/mimicgen_pipeline.py upload --train-folder <dir> [-- overrides...]
 
-`plan` prints one line, tab-separated:
+`plan` prints one line per eval, tab-separated:
     eval-mimicgen\t<override1>\t<override2>\t...
 where the overrides are Hydra "key=value" tokens for
 flower/evaluation/flower_eval_mimicgen.py.
+
+`upload` attaches result.csv as mimicgen.csv and, when it holds more than one modality
+combo, scripts/pid_modality.py's report as pid_modality.txt.
 """
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import wandb
 from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).parent))
-from eval_pipeline import artifact_name, parse_overrides, wandb_run_id  # noqa: E402
+from eval_pipeline import (  # noqa: E402
+    artifact_name,
+    modality_combos,
+    modality_overrides,
+    parse_overrides,
+    wandb_run_id,
+)
+from perturbation_sr import modality_combos_present  # noqa: E402
+from pid_modality import load_rows  # noqa: E402
 
 from flower.evaluation.eval_records import result_dir  # noqa: E402
 
@@ -61,6 +76,7 @@ def _eval_overrides(train_folder: str, checkpoint: str) -> List[str]:
 def plan_lines(
     train_folder: str, extra_overrides: List[str], reeval: bool
 ) -> List[Tuple[str, List[str]]]:
+    train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
     resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
     overrides = _eval_overrides(resolved_train_folder, checkpoint)
     # Forward the rest (n_eval=..., eval_batch_size=...); train_folder/checkpoint are
@@ -68,9 +84,46 @@ def plan_lines(
     overrides += [
         o for o in extra_overrides if o.split("=", 1)[0] not in ("train_folder", "checkpoint")
     ]
-    if reeval:
-        overrides = overrides + ["reeval=True"]
-    return [("eval-mimicgen", overrides)]
+    if not train_cfg.model.get("modality_dropout", False):
+        return [("eval-mimicgen", overrides + (["reeval=True"] if reeval else []))]
+
+    lines = []
+    for i, combo in enumerate(modality_combos(bool(train_cfg.model.use_proprio))):
+        # The combo's eval_modalities.* come after the forwarded overrides (Hydra keeps
+        # the last occurrence), so the sweep wins. reeval only on the first line: every
+        # line merges into the same result.csv, and reeval on a later one would rotate
+        # away the combos the earlier lines just wrote.
+        line = overrides + modality_overrides(combo)
+        if reeval and i == 0:
+            line.append("reeval=True")
+        lines.append(("eval-mimicgen", line))
+    return lines
+
+
+def write_pid_report(csv_path: Path) -> Optional[Path]:
+    """Run scripts/pid_modality.py on a multi-combo result.csv; its report is written next
+    to it as pid_modality.txt. None for a single-combo CSV (nothing to decompose) or if
+    pid_modality.py fails -- that must not cost the upload, as in eval_pipeline.upload."""
+    if len(modality_combos_present(load_rows(str(csv_path)))) < 2:
+        return None
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).parent / "pid_modality.py"), str(csv_path)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(
+            f"WARNING: pid_modality.py failed on {csv_path} ({exc}; stderr: {exc.stderr}) "
+            "-- skipping pid_modality.txt",
+            file=sys.stderr,
+        )
+        return None
+    pid_txt = csv_path.parent / "pid_modality.txt"
+    pid_txt.write_text(result.stdout)
+    print(result.stdout)
+    return pid_txt
 
 
 def upload(train_folder: str, extra_overrides: List[str]) -> None:
@@ -94,6 +147,9 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
     )
     artifact = wandb.Artifact(artifact_name(run_id), type="evaluation")
     artifact.add_file(str(csv_path), name="mimicgen.csv")
+    pid_txt = write_pid_report(csv_path)
+    if pid_txt is not None:
+        artifact.add_file(str(pid_txt), name="pid_modality.txt")
     run.log_artifact(artifact)
     run.finish()
     print(f"Logged eval-{run_id} artifact to {train_cfg.logger.project}/{run_id}")

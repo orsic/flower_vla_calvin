@@ -24,6 +24,7 @@
 #   ./run.sh rerender-mimicgen [-j N]     Download + render each dataset (re-renders stale camera sizes)
 #   ./run.sh train-mimicgen [...]         Fine-tune on all MimicGen `core` datasets (CALVIN's training recipe)
 #                                          then auto-runs ./run.sh pipeline-mimicgen (SKIP_PIPELINE=1 to skip)
+#   ./run.sh train-mimicgen-dropout [...] Same, with modality-token dropout; the pipeline evaluates every modality combo
 #   ./run.sh eval-mimicgen                Run the MimicGen evaluation (all modalities)
 #   ./run.sh pipeline-mimicgen <train_run_dir> [...]  Post-training MimicGen eval + W&B upload
 #   ./run.sh analyze-mimicgen run|filter [...]  Success rate per task family x d0/d1/d2 from W&B
@@ -148,15 +149,16 @@ run_dropout_train() {
         "$@"
 }
 
-# Helper for train-mimicgen. All remaining args are appended as Hydra overrides.
+# Helper for train-mimicgen and train-mimicgen-dropout: the run-folder group under
+# /saves/train_logs (mimicgen, mimicgen_dropout), then Hydra overrides.
 # Unlike run_train there is no benchmark positional arg -- a MimicGen run always trains
 # on every dataset in flower.datasets.mimicgen_tasks.CORE_DATASETS.
 run_train_mimicgen() {
-    local svc="$1"; shift
+    local svc="$1" group="$2"; shift 2
     # See run_train's comment: makes the training GPU set explicit for a chained pipeline.
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
-    # Not local: read back by the train-mimicgen case to chain ./run.sh pipeline-mimicgen.
-    TRAIN_RUN_DIR="/saves/train_logs/mimicgen/$(date +%Y-%m-%d_%H-%M-%S)"
+    # Not local: read back by the train-mimicgen* cases to chain ./run.sh pipeline-mimicgen.
+    TRAIN_RUN_DIR="/saves/train_logs/$group/$(date +%Y-%m-%d_%H-%M-%S)"
     podman-compose -f "$COMPOSE" run --rm "$svc" \
         python flower/training_libero.py \
         --config-name=config_mimicgen \
@@ -398,7 +400,22 @@ case "$CMD" in
     # (conf/config_mimicgen.yaml).
     # On success, chains straight into ./run.sh pipeline-mimicgen on the same GPUs.
     # Set SKIP_PIPELINE=1 to skip.
-    run_train_mimicgen train-mimicgen "$@"
+    run_train_mimicgen train-mimicgen mimicgen "$@"
+    [[ -n "${SKIP_PIPELINE:-}" ]] || PIPELINE_REEVAL= "$0" pipeline-mimicgen "$TRAIN_RUN_DIR"
+    ;;
+
+  train-mimicgen-dropout)
+    # train-mimicgen with train-dropout's modality-token dropout settings. The chained
+    # pipeline-mimicgen evaluates every modality combo (7, or 14 with model.use_proprio=True).
+    #   ./run.sh train-mimicgen-dropout
+    #   ./run.sh train-mimicgen-dropout model.use_proprio=True
+    # Set SKIP_PIPELINE=1 to skip the chained pipeline.
+    run_train_mimicgen train-mimicgen mimicgen_dropout \
+        model.modality_dropout=True \
+        model.modality_dropout_keep_fraction=0.5 \
+        "model.modality_dropout_alphas=[1.0,1.0,1.0]" \
+        model.modality_dropout_proprio_keep_p=0.5 \
+        "$@"
     [[ -n "${SKIP_PIPELINE:-}" ]] || PIPELINE_REEVAL= "$0" pipeline-mimicgen "$TRAIN_RUN_DIR"
     ;;
 
@@ -415,8 +432,9 @@ case "$CMD" in
     ;;
 
   pipeline-mimicgen)
-    # Post-training evaluation for one completed MimicGen training run: a single
-    # all-modalities eval across every dataset in mimicgen_tasks.CORE_DATASETS, then
+    # Post-training evaluation for one completed MimicGen training run: an all-modalities
+    # eval (one per modality combo for a dropout run) across every dataset in
+    # mimicgen_tasks.CORE_DATASETS, then
     # uploads result.csv to that run's W&B artifact. Trailing Hydra overrides reach
     # both the planner and the eval it launches.
     #   ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/2026-09-08_10-00-00

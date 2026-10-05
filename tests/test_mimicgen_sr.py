@@ -98,13 +98,38 @@ def test_format_table_has_rate_ci_and_n_per_row():
     assert overall[-1] == "8"
 
 
-def test_format_table_warns_on_mixed_modality_combos():
-    rows = _rows("square_d0", 1, 1) + [_row("square_d0", 1, lang=0)]
-    assert "WARNING" in mimicgen_sr.format_table(rows)
+def test_split_by_combo_labels_and_orders_all_on_first():
+    rows = (
+        [_row("square_d0", 1, wrist=0, proprio=0)]
+        + [_row("square_d0", 1, static=0, wrist=0, proprio=0)]
+        + [_row("square_d0", 0, proprio=0)]
+        + [_row("square_d0", 1, lang=0, proprio=0)]
+    )
+    groups = mimicgen_sr.split_by_combo(rows)
+    assert list(groups) == ["static+wrist+lang", "static+wrist", "static+lang", "lang"]
+    assert all(len(g) == 1 for g in groups.values())
 
 
-def test_format_table_no_warning_for_single_combo():
-    assert "WARNING" not in mimicgen_sr.format_table(_rows("square_d0", 1, 1))
+def test_split_by_combo_labels_proprio():
+    groups = mimicgen_sr.split_by_combo([_row("square_d0", 1), _row("square_d0", 1, proprio=0)])
+    assert list(groups) == ["static+wrist+lang+proprio", "static+wrist+lang"]
+
+
+def test_format_table_one_section_per_combo_without_pooling():
+    rows = _rows("square_d0", 2, 0) + [_row("square_d0", 0, lang=0), _row("square_d0", 0, lang=0)]
+    text = mimicgen_sr.format_table(rows)
+    assert "WARNING" not in text
+    sections = text.split("\n\n")
+    assert sections[0].splitlines()[0] == "-- static+wrist+lang+proprio --"
+    assert sections[1].splitlines()[0] == "-- static+wrist+proprio --"
+    overall = [line.split() for line in text.splitlines() if line.startswith(mimicgen_sr.OVERALL)]
+    assert [float(o[1]) for o in overall] == [1.0, 0.0]
+
+
+def test_format_table_single_combo_has_no_section_header():
+    text = mimicgen_sr.format_table(_rows("square_d0", 1, 1))
+    assert "WARNING" not in text and "--" not in text
+    assert text.splitlines()[0].split()[0] == "family"
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +157,28 @@ def test_format_aggregate_lists_each_cell():
     assert square[:2] == ["square", "d0"]
     assert [float(v) for v in square[2:5]] == [pytest.approx(0.25), 0.0, 0.5]
     assert square[5] == "2"
+
+
+def test_format_aggregate_by_combo_aggregates_each_combo_separately():
+    per_run = {
+        "r1": _rows("square_d0", 2, 0) + [_row("square_d0", 0, lang=0)],
+        "r2": _rows("square_d0", 0, 2),  # no language-off rows at all
+    }
+    text = mimicgen_sr.format_aggregate_by_combo(per_run)
+    sections = text.split("\n\n")
+    assert sections[0].splitlines()[0] == "-- static+wrist+lang+proprio --"
+    full = next(line.split() for line in sections[0].splitlines() if line.startswith("square"))
+    assert [float(v) for v in full[2:5]] == [pytest.approx(0.5), 0.0, 1.0] and full[5] == "2"
+    assert sections[1].splitlines()[0] == "-- static+wrist+proprio --"
+    no_lang = next(line.split() for line in sections[1].splitlines() if line.startswith("square"))
+    assert float(no_lang[2]) == 0.0 and no_lang[5] == "1"
+
+
+def test_format_aggregate_by_combo_single_combo_matches_format_aggregate():
+    per_run = {"r1": _rows("square_d0", 1, 1), "r2": _rows("square_d0", 0, 2)}
+    assert mimicgen_sr.format_aggregate_by_combo(per_run) == mimicgen_sr.format_aggregate(
+        mimicgen_sr.aggregate_runs(per_run)
+    )
 
 
 # ---------------------------------------------------------------------------

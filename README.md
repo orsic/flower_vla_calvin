@@ -561,6 +561,37 @@ W&B (needs `WANDB_API_KEY`):
 ./run.sh analyze-mimicgen filter --filters '{"config.use_proprio": true}'
 ```
 
+### Modality dropout
+
+Training with modality dropout and evaluating every modality combination works as on LIBERO
+(`./run.sh train-dropout`, see [Pipeline](#pipeline-automated-post-training-evaluation)):
+
+```bash
+# train-mimicgen plus train-dropout's settings: model.modality_dropout=True, keep_fraction
+# 0.5, Dirichlet alphas [1,1,1], proprio keep probability 0.5. Runs land in
+# /saves/train_logs/mimicgen_dropout/<ts> (W&B run id mimicgen_dropout_<ts>).
+CUDA_VISIBLE_DEVICES=0 ./run.sh train-mimicgen-dropout
+CUDA_VISIBLE_DEVICES=0 ./run.sh train-mimicgen-dropout model.use_proprio=True   # proprio is dropped too
+
+# A subset of datasets: train and evaluate on the same list
+SKIP_PIPELINE=1 ./run.sh train-mimicgen-dropout 'datamodule.dataset_names=[square_d0,stack_d0]'
+./run.sh pipeline-mimicgen /saves/train_logs/mimicgen_dropout/<ts> 'datasets=[square_d0,stack_d0]'
+```
+
+For a `model.modality_dropout=True` run, `pipeline-mimicgen` plans one eval per modality
+combination instead of one all-modalities eval:
+- **Which combinations:** every non-empty subset of (static RGB, wrist RGB, language), 7 in
+  all, or 14 with `model.use_proprio=True`, each crossed with proprio on/off. These are the
+  same combinations as LIBERO (`eval_pipeline.modality_combos`).
+- **Where results go:** all combinations merge into the same `result.csv`, since the `use_*`
+  columns are part of the merge key.
+- **Cost:** about 7× (or 14×) the plain eval at the same `n_eval`.
+- **Re-runs:** `PIPELINE_REEVAL=1` rotates the old CSV aside once, before the first
+  combination. There is no resume: a re-run evaluates every combination again.
+- **Upload:** adds a `pid_modality.txt` member (`scripts/pid_modality.py`) next to `mimicgen.csv`.
+- **Analysis:** `analyze-mimicgen` (both `run` and `filter`) prints one family × d0/d1/d2
+  table per combination, labeled e.g. `-- static+wrist+lang --`, all-modalities first.
+
 ### The 26 `core` datasets
 
 | Task family | Variants | Instruction | Max steps |

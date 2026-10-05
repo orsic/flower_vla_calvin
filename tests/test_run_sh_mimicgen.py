@@ -214,3 +214,87 @@ def test_rerender_mimicgen_skips_render_and_fails_when_download_fails(tmp_path):
     assert result.returncode != 0
     assert not any(l.startswith("prepare") and "threading_d1" in l for l in lines)
     assert any(l.startswith("prepare") and l.endswith("prepare_mimicgen.py square_d0") for l in lines)
+
+
+STUB_TRAIN = """#!/usr/bin/env bash
+joined="$*"
+case "$joined" in
+  *"training_libero.py"*)
+    echo "train $joined" >> "$FAKE_LOG"
+    ;;
+  *"mimicgen_pipeline.py plan"*)
+    echo "plan $joined" >> "$FAKE_LOG"
+    ;;
+  *"mimicgen_pipeline.py upload"*)
+    echo "upload $joined" >> "$FAKE_LOG"
+    ;;
+  *)
+    echo "unexpected podman-compose invocation: $joined" >&2
+    exit 1
+    ;;
+esac
+"""
+
+
+def _run_train(tmp_path, subcommand, extra_env=None):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "podman-compose"
+    stub.write_text(STUB_TRAIN)
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    log = tmp_path / "invocations.log"
+    log.write_text("")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["FAKE_LOG"] = str(log)
+    env.pop("SKIP_PIPELINE", None)
+    env.update(extra_env or {})
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "run.sh"), subcommand, "batch_size=8"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+    )
+    return result, log.read_text().splitlines()
+
+
+DROPOUT_OVERRIDES = [
+    "model.modality_dropout=True",
+    "model.modality_dropout_keep_fraction=0.5",
+    "model.modality_dropout_alphas=[1.0,1.0,1.0]",
+    "model.modality_dropout_proprio_keep_p=0.5",
+]
+
+
+def test_train_mimicgen_dropout_passes_dropout_overrides_and_chains_pipeline(tmp_path):
+    result, lines = _run_train(tmp_path, "train-mimicgen-dropout")
+    assert result.returncode == 0, result.stderr
+    train = next(l for l in lines if l.startswith("train"))
+    tokens = train.split()
+    for override in DROPOUT_OVERRIDES:
+        assert override in tokens
+    assert "--config-name=config_mimicgen" in tokens
+    assert tokens[-1] == "batch_size=8"  # user overrides come last, so they win
+    run_dir = next(t for t in tokens if t.startswith("hydra.run.dir=")).split("=", 1)[1]
+    assert run_dir.startswith("/saves/train_logs/mimicgen_dropout/")
+    plan = next(l for l in lines if l.startswith("plan"))
+    assert f"--train-folder {run_dir}" in plan
+    assert any(l.startswith("upload") for l in lines)
+
+
+def test_train_mimicgen_dropout_skip_pipeline(tmp_path):
+    result, lines = _run_train(tmp_path, "train-mimicgen-dropout", {"SKIP_PIPELINE": "1"})
+    assert result.returncode == 0, result.stderr
+    assert [l.split()[0] for l in lines] == ["train"]
+
+
+def test_train_mimicgen_unchanged_run_dir_and_no_dropout(tmp_path):
+    result, lines = _run_train(tmp_path, "train-mimicgen", {"SKIP_PIPELINE": "1"})
+    assert result.returncode == 0, result.stderr
+    tokens = lines[0].split()
+    assert not any(t.startswith("model.modality_dropout") for t in tokens)
+    run_dir = next(t for t in tokens if t.startswith("hydra.run.dir=")).split("=", 1)[1]
+    assert run_dir.startswith("/saves/train_logs/mimicgen/")

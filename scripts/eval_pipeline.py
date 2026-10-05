@@ -298,9 +298,12 @@ def _eval_overrides(benchmark_name: str, train_folder: str, checkpoint: str, com
         "num_videos=0",
         "log_wandb=False",
     ]
-    for key in ("rgb_static", "rgb_gripper", "language", "proprio"):
-        overrides.append(f"eval_modalities.{key}={combo[key]}")
-    return overrides
+    return overrides + modality_overrides(combo)
+
+
+def modality_overrides(combo: Dict[str, bool]) -> List[str]:
+    """eval_modalities.* Hydra overrides selecting one combo (shared with mimicgen_pipeline.py)."""
+    return [f"eval_modalities.{key}={combo[key]}" for key in ("rgb_static", "rgb_gripper", "language", "proprio")]
 
 
 def _resolve(train_folder: str, extra_overrides: List[str]) -> Tuple[str, str, str]:

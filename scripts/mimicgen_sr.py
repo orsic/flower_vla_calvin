@@ -4,7 +4,9 @@
 Reads the `mimicgen.csv` member of the `evaluation` W&B artifact scripts/mimicgen_pipeline.py's
 `upload` attaches to a training run (one row per episode, eval_records.py's schema), and
 prints success rate + 95% Wilson CI per (family, d0/d1/d2), a pooled per-family ALL row
-(families with more than one variant), and an OVERALL row.
+(families with more than one variant), and an OVERALL row. A modality-dropout run's CSV
+holds several modality combos (scripts/mimicgen_pipeline.py); each gets its own table,
+all-modalities first.
 
 Two modes, mirroring scripts/analyze_wandb.py:
   run     One or more W&B run IDs -- one table per run.
@@ -30,7 +32,7 @@ import wandb
 from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).parent))
-from perturbation_sr import modality_combos_present  # noqa: E402
+from compare_eval_csvs import MODALITY_COLUMNS  # noqa: E402
 from pid_modality import load_rows  # noqa: E402
 from severity_sr import wilson_interval  # noqa: E402
 
@@ -88,15 +90,29 @@ def ordered_keys(cells: Dict[Key, Any]) -> List[Key]:
     return keys
 
 
+def split_by_combo(rows: List[Dict]) -> Dict[str, List[Dict]]:
+    """combo label (e.g. 'static+wrist+lang') -> its rows; all-modalities first, then by
+    descending number of enabled modalities."""
+    groups: Dict[Tuple[int, ...], List[Dict]] = defaultdict(list)
+    for row in rows:
+        groups[tuple(int(row.get(col) or 0) for col in MODALITY_COLUMNS.values())].append(row)
+    order = sorted(groups, key=lambda flags: (sum(flags), flags), reverse=True)
+    return {"+".join(m for m, on in zip(MODALITY_COLUMNS, flags) if on): groups[flags] for flags in order}
+
+
+def by_combo(sections: Dict[str, str]) -> str:
+    """One labeled section per combo; a single combo prints its table alone, unlabeled."""
+    if len(sections) == 1:
+        return next(iter(sections.values()))
+    return "\n\n".join(f"-- {label} --\n{text}" for label, text in sections.items())
+
+
 def format_table(rows: List[Dict]) -> str:
-    lines = []
-    combos = modality_combos_present(rows)
-    if len(combos) > 1:
-        lines.append(
-            f"WARNING: {len(combos)} distinct modality combos present ({sorted(combos)}) "
-            "-- success rates below pool them together."
-        )
-    lines.append(f"{'family':<22} {'variant':<7} {'success_rate':>12} {'ci_low':>7} {'ci_high':>7} {'n':>6}")
+    return by_combo({label: format_combo_table(group) for label, group in split_by_combo(rows).items()})
+
+
+def format_combo_table(rows: List[Dict]) -> str:
+    lines = [f"{'family':<22} {'variant':<7} {'success_rate':>12} {'ci_low':>7} {'ci_high':>7} {'n':>6}"]
     cells = breakdown(rows)
     for key in ordered_keys(cells):
         s, n = cells[key]
@@ -120,6 +136,16 @@ def format_aggregate(agg: Dict[Key, Tuple[float, float, float, int]]) -> str:
         mean, lo, hi, n_runs = agg[key]
         lines.append(f"{key[0]:<22} {key[1]:<7} {mean:>7.3f} {lo:>7.3f} {hi:>7.3f} {n_runs:>6}")
     return "\n".join(lines)
+
+
+def format_aggregate_by_combo(per_run: Dict[str, List[Dict]]) -> str:
+    """format_aggregate per combo; a run contributes to every combo it was evaluated on."""
+    per_combo: Dict[str, Dict[str, List[Dict]]] = defaultdict(dict)
+    for run_id, rows in per_run.items():
+        for label, group in split_by_combo(rows).items():
+            per_combo[label][run_id] = group
+    labels = list(split_by_combo([row for rows in per_run.values() for row in rows]))
+    return by_combo({label: format_aggregate(aggregate_runs(per_combo[label])) for label in labels})
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +233,7 @@ def main() -> None:
         for run_id in per_run:
             print(f"  {run_id}  {names[run_id]}")
         print()
-        print(format_aggregate(aggregate_runs(per_run)))
+        print(format_aggregate_by_combo(per_run))
 
 
 if __name__ == "__main__":
