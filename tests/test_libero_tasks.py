@@ -4,7 +4,15 @@ base_task()'s own logic is exercised in tests/test_severity_sr.py (imported ther
 severity_sr's re-export); this file covers original_task_names() and a direct import
 of base_task from its new home.
 """
-from flower.evaluation.libero_tasks import base_task, original_task_names
+import pytest
+
+from flower.evaluation.libero_tasks import (
+    base_task,
+    matched_init_states,
+    original_task_names,
+    pro_base_suite,
+    pro_suite_tag,
+)
 
 
 def test_base_task_longest_prefix_match():
@@ -27,3 +35,52 @@ def test_original_task_names_lists_only_pruned_init_stems(tmp_path):
 
 def test_original_task_names_missing_suite_dir_is_empty(tmp_path):
     assert original_task_names(str(tmp_path), "libero_10") == []
+
+
+# ---------------------------------------------------------------------------
+# LIBERO-PRO suite helpers
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "suite,tag",
+    [
+        ("libero_10_lan", "lan"),
+        ("libero_10_object", "object"),
+        ("libero_10_swap", "swap"),
+        ("libero_10_task", "task"),
+        ("libero_10", None),
+        ("libero_spatial", None),
+    ],
+)
+def test_pro_suite_tag(suite, tag):
+    assert pro_suite_tag(suite) == tag
+
+
+@pytest.mark.parametrize(
+    "suite,base",
+    [
+        ("libero_10_swap", "libero_10"),
+        ("libero_spatial_object", "libero_spatial"),
+        ("libero_10", "libero_10"),
+    ],
+)
+def test_pro_base_suite(suite, base):
+    assert pro_base_suite(suite) == base
+
+
+def test_matched_init_states_reads_the_original_suite(tmp_path):
+    """The matched arm's whole point: a libero_10_lan task loads libero_10's init file,
+    the same one the orig baseline episode rolled out from."""
+    import torch
+
+    orig_dir = tmp_path / "libero_10"
+    orig_dir.mkdir()
+    states = torch.zeros(50, 47)
+    torch.save(states, orig_dir / "task_a.pruned_init")
+
+    loaded = matched_init_states(str(tmp_path), "libero_10_lan", "task_a")
+    assert loaded is not None and loaded.shape == (50, 47)
+
+
+def test_matched_init_states_missing_file_is_none(tmp_path):
+    assert matched_init_states(str(tmp_path), "libero_10_lan", "task_a") is None

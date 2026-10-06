@@ -304,6 +304,74 @@ services:
       - --config-name=eval_libero_plus
       - "hydra.run.dir=/saves/hydra_outputs/$${now:%Y-%m-%d_%H-%M-%S}"
 
+  # Download LIBERO-PRO perturbation bddl/init files from HuggingFace.
+  # Run once before eval-pro: ./run.sh download-pro
+  # Only the libero_10_* suites are pulled (see conf/eval_libero_pro.yaml for scope).
+  # The 3D assets ship inside the submodule itself, so there is nothing else to fetch.
+  # Files land in LIBERO-pro/libero/libero/{bddl_files,init_files}/libero_10_* (gitignored).
+  download-pro:
+    <<: *base
+    volumes:
+      - ${REPO_ROOT}:/workspace:z
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+      - ${SAVES_DIR}:/saves:z
+      - ${LIBERO_HDF5_DIR:-./data/libero_hdf5}:/libero_hdf5:z
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        huggingface-cli download zhouxueyang/LIBERO-Pro \
+          --repo-type dataset \
+          --include "bddl_files/libero_10_lan/*" "bddl_files/libero_10_object/*" \
+                    "bddl_files/libero_10_swap/*" "bddl_files/libero_10_task/*" \
+                    "init_files/libero_10_lan/*" "init_files/libero_10_object/*" \
+                    "init_files/libero_10_swap/*" "init_files/libero_10_task/*" \
+          --local-dir /tmp/libero_pro_dl
+        pkg=/workspace/LIBERO-pro/libero/libero
+        for kind in bddl_files init_files; do
+          for suite in libero_10_lan libero_10_object libero_10_swap libero_10_task; do
+            src=/tmp/libero_pro_dl/$$kind/$$suite
+            dst=$$pkg/$$kind/$$suite
+            if [ ! -d "$$src" ]; then echo "missing $$src" >&2; exit 1; fi
+            rm -rf "$$dst"
+            mv "$$src" "$$dst"
+            echo "$$dst: $$(ls "$$dst" | wc -l) files"
+          done
+        done
+        rm -rf /tmp/libero_pro_dl
+        echo "LIBERO-PRO bddl/init files installed into LIBERO-pro/libero/libero/"
+
+  # Run the LIBERO-PRO generalization evaluation.
+  # Prerequisites: ./run.sh download (baseline ckpt) && ./run.sh download-pro
+  # One suite per invocation; pass overrides as extra args, e.g.:
+  #   ./run.sh eval-pro benchmark_name=libero_10_task pro_init_states=matched
+  # Suites: libero_10_lan (semantic), libero_10_object (object), libero_10_swap
+  #   (position), libero_10_task (task redefinition).
+  eval-pro:
+    <<: *base
+    shm_size: "8g"
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      WANDB_MODE: disabled
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      LIBERO_VARIANT: "pro"
+    command:
+      - python
+      - flower/evaluation/flower_eval_libero.py
+      - --config-name=eval_libero_pro
+      - "hydra.run.dir=/saves/hydra_outputs/$${now:%Y-%m-%d_%H-%M-%S}"
+
   # --- MimicGen services ---
   # Run on flower-vla-mimicgen:latest (scripts/podman/Containerfile.mimicgen), a
   # separate image extending flower-vla-eval:latest with MimicGen's newer robosuite/

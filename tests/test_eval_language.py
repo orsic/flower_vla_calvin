@@ -128,3 +128,77 @@ def test_unmatched_task_name_raises():
     )
     with pytest.raises(ValueError, match="totally_unrelated_task_1"):
         task_language("plus", task_i, ORIG_TASK_NAMES)
+
+
+# --- LIBERO-PRO -------------------------------------------------------------------
+# PRO's task names are the *original* names, so task_i.language is always the
+# training-matched instruction. That is the right control for the object and position
+# suites (the perturbation is in the scene), but it would make the semantic and task
+# suites inert -- their whole perturbation lives in the bddl's (:language ...) line.
+
+_PRO_BDDL = """(define (problem LIBERO_Kitchen_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language switch stove on and put moka pot on it)
+  (:fixtures
+    kitchen_table - kitchen_table
+  )
+  (:objects
+    moka_pot_1 - moka_pot
+  )
+  (:obj_of_interest
+    moka_pot_1
+  )
+  (:init
+    (On moka_pot_1 kitchen_table_moka_pot_init_region)
+  )
+  (:goal
+    (And (On moka_pot_1 kitchen_table))
+  )
+)
+"""
+
+
+@pytest.fixture
+def pro_bddl(tmp_path):
+    path = tmp_path / "KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it.bddl"
+    path.write_text(_PRO_BDDL)
+    return str(path)
+
+
+def _pro_task(suite):
+    return Task(
+        name="KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it",
+        language="turn on the stove and put the moka pot on it",
+        problem="Libero", problem_folder=suite,
+        bddl_file="KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it.bddl",
+        init_states_file="x",
+    )
+
+
+@pytest.mark.parametrize("suite", ["libero_10_lan", "libero_10_task"])
+def test_pro_perturbed_instruction_comes_from_the_bddl(suite, pro_bddl):
+    """The semantic and task suites perturb (:language ...); prompting from the filename
+    would hand the model the unperturbed instruction and make the suite a no-op."""
+    assert task_language("pro", _pro_task(suite), [], pro_bddl) == (
+        "switch stove on and put moka pot on it"
+    )
+
+
+@pytest.mark.parametrize("suite", ["libero_10_object", "libero_10_swap"])
+def test_pro_scene_perturbations_keep_the_training_matched_instruction(suite, pro_bddl):
+    """object/swap leave (:language ...) alone; task_i.language is the original, which is
+    the correct control -- the bddl is not read at all."""
+    task_i = _pro_task(suite)
+    assert task_language("pro", task_i, [], pro_bddl) == task_i.language
+
+
+def test_pro_matched_arm_dispatches_like_pro():
+    """The matched arm folds its name into libero_variant ("pro_matched"); instruction
+    dispatch must still see it as LIBERO-PRO."""
+    task_i = _pro_task("libero_10_swap")
+    assert task_language("pro_matched", task_i, [], None) == task_i.language
+
+
+def test_pro_perturbed_suite_without_bddl_path_raises():
+    with pytest.raises(ValueError, match="bddl_path"):
+        task_language("pro", _pro_task("libero_10_lan"), [], None)

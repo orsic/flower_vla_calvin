@@ -173,3 +173,13 @@ cython_debug/
 
 # LIBERO-Plus simulation assets (downloaded via ./run.sh download-plus; not tracked)
 LIBERO-plus/libero/libero/assets/
+
+# LIBERO-PRO perturbation bddl/init files (downloaded via ./run.sh download-pro; not tracked)
+LIBERO-pro/libero/libero/bddl_files/libero_10_lan/
+LIBERO-pro/libero/libero/bddl_files/libero_10_object/
+LIBERO-pro/libero/libero/bddl_files/libero_10_swap/
+LIBERO-pro/libero/libero/bddl_files/libero_10_task/
+LIBERO-pro/libero/libero/init_files/libero_10_lan/
+LIBERO-pro/libero/libero/init_files/libero_10_object/
+LIBERO-pro/libero/libero/init_files/libero_10_swap/
+LIBERO-pro/libero/libero/init_files/libero_10_task/

@@ -15,6 +15,7 @@ import eval_pipeline  # noqa: E402
 import severity_sr  # noqa: E402
 from eval_pipeline import (  # noqa: E402
     MODALITY_OFF_VARIANTS,
+    PRO_VARIANTS,
     all_variants,
     artifact_members,
     artifact_name,
@@ -26,6 +27,7 @@ from eval_pipeline import (  # noqa: E402
     modality_off_severity_member,
     parse_overrides,
     plan_lines,
+    pro_benchmark_name,
     resolve_reeval_variants,
     suite_dir_name,
     token_combos,
@@ -34,6 +36,14 @@ from eval_pipeline import (  # noqa: E402
 )
 
 from flower.evaluation.eval_records import read_csv, write_csv  # noqa: E402
+
+# LIBERO-PRO plan lines: the 4 native-arm suites are always full-modality, and the 2
+# matched-arm suites are swept across every modality combo the checkpoint supports (14
+# with proprio, 7 without). Unaffected by dropout -- the sweep is a control the
+# non-dropout runs need too -- and by --skip-modality-off, which targets plus_no_* only.
+def pro_lines(use_proprio: bool, skip_pro_combos: bool = False) -> int:
+    matched = 1 if skip_pro_combos else len(modality_combos(use_proprio))
+    return 4 + 2 * matched
 
 
 def _write_train_cfg(train_folder: Path, *, dropout: bool, use_proprio: bool, benchmark="libero_10", seed=42):
@@ -138,13 +148,17 @@ def test_modality_off_combo_turns_off_exactly_one(variant):
     assert combo[key] is False
 
 
-def test_all_variants_is_six_with_proprio_five_without():
+def test_all_variants_is_twelve_with_proprio_eleven_without():
+    """orig + plus + 4 modality-off + 6 LIBERO-PRO suite/arm combinations. Only
+    plus_no_proprio is conditional: EvaluateLibero raises on eval_modalities.proprio=False
+    for a use_proprio=False checkpoint, so it is structurally inapplicable there."""
     with_proprio = all_variants(True)
     without_proprio = all_variants(False)
-    assert len(with_proprio) == 6
-    assert len(without_proprio) == 5
+    assert len(with_proprio) == 6 + len(PRO_VARIANTS)
+    assert len(without_proprio) == 5 + len(PRO_VARIANTS)
     assert "plus_no_proprio" in with_proprio
     assert "plus_no_proprio" not in without_proprio
+    assert set(PRO_VARIANTS) <= set(without_proprio)
 
 
 def test_modality_off_member_names_are_distinct_and_prefixed():
@@ -161,6 +175,202 @@ def test_modality_off_member_names_are_distinct_and_prefixed():
     assert not csv_names & sev_names
     assert "libero_plus.csv" not in csv_names
     assert "severity_sr.csv" not in sev_names
+
+
+# ---------------------------------------------------------------------------
+# LIBERO-PRO naming and plan lines
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "variant,expected",
+    [
+        ("pro_lan", "pro_libero_10_lan"),
+        ("pro_object", "pro_libero_10_object"),
+        ("pro_swap", "pro_libero_10_swap"),
+        ("pro_task", "pro_libero_10_task"),
+        ("pro_matched_lan", "pro_matched_libero_10_lan"),
+        ("pro_matched_task", "pro_matched_libero_10_task"),
+    ],
+)
+def test_suite_dir_name_pro_matches_what_result_dir_writes(variant, expected):
+    """result_dir names a directory "<libero_variant>_<suite>"; for PRO the arm is the
+    variant and the tagged suite is the benchmark, so these must line up exactly or the
+    planner's resume check reads a different file than the eval writes."""
+    assert suite_dir_name(variant, "libero_10") == expected
+
+
+def test_pro_benchmark_name_derives_the_registry_key():
+    assert pro_benchmark_name("pro_object", "libero_10") == "libero_10_object"
+    assert pro_benchmark_name("pro_matched_task", "libero_spatial") == "libero_spatial_task"
+
+
+def test_plan_lines_pro_sets_benchmark_and_arm_per_line(tmp_path):
+    """4 native lines (full modality, one per suite), then the matched arm swept across
+    every combo -- 14 per suite for a use_proprio=True checkpoint."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+    pro = [overrides for svc, overrides in lines if svc == "eval-pro"]
+
+    assert len(pro) == pro_lines(True)
+    benchmarks = [next(o for o in ov if o.startswith("benchmark_name=")) for ov in pro]
+    arms = [next(o for o in ov if o.startswith("pro_init_states=")) for ov in pro]
+    n_combos = len(modality_combos(True))
+
+    assert benchmarks[:4] == [
+        "benchmark_name=libero_10_lan", "benchmark_name=libero_10_object",
+        "benchmark_name=libero_10_swap", "benchmark_name=libero_10_task",
+    ]
+    assert arms[:4] == ["pro_init_states=native"] * 4
+    assert arms[4:] == ["pro_init_states=matched"] * (2 * n_combos)
+    assert benchmarks[4:] == (
+        ["benchmark_name=libero_10_lan"] * n_combos
+        + ["benchmark_name=libero_10_task"] * n_combos
+    )
+
+    # Every combo appears exactly once per matched suite, and they are distinct.
+    lan_combos = [
+        tuple(o for o in ov if o.startswith("eval_modalities."))
+        for ov, b in zip(pro[4:], benchmarks[4:])
+        if b == "benchmark_name=libero_10_lan"
+    ]
+    assert len(set(lan_combos)) == n_combos
+
+
+def test_plan_lines_pro_matched_sweep_follows_use_proprio(tmp_path):
+    """7 combos, not 14, for a checkpoint that never receives proprioception."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=False)
+
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+    matched = [ov for svc, ov in lines if svc == "eval-pro" and "pro_init_states=matched" in ov]
+
+    assert len(matched) == 2 * len(modality_combos(False)) == 14
+    assert all("eval_modalities.proprio=True" in ov for ov in matched)
+
+
+def test_plan_lines_skip_pro_combos_collapses_to_full_modality(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(
+        str(train_folder), resume=False, extra_overrides=[], skip_pro_combos=True
+    )
+    pro = [ov for svc, ov in lines if svc == "eval-pro"]
+
+    assert len(pro) == pro_lines(True, skip_pro_combos=True) == 6
+    assert all("eval_modalities.rgb_static=True" in ov for ov in pro)
+    assert all("eval_modalities.language=True" in ov for ov in pro)
+
+
+def test_plan_lines_skip_modality_off_does_not_touch_the_pro_sweep(tmp_path):
+    """The two skip flags target different axes."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(
+        str(train_folder), resume=False, extra_overrides=[], skip_modality_off=True
+    )
+
+    assert len([1 for svc, _ in lines if svc == "eval-pro"]) == pro_lines(True)
+
+
+def test_plan_lines_reeval_marks_only_one_line_per_matched_suite(tmp_path):
+    """A matched suite's 14 combo lines all merge into one result.csv, so exactly one of
+    them may carry reeval=true -- otherwise each line would rotate away the rows the
+    previous one just wrote."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(
+        str(train_folder), resume=False, extra_overrides=[],
+        reeval_variants={"pro_matched_lan"},
+    )
+    pro = [ov for svc, ov in lines if svc == "eval-pro"]
+
+    assert len(pro) == len(modality_combos(True))
+    assert sum(1 for ov in pro if "reeval=true" in ov) == 1
+
+
+def test_plan_lines_resume_backfills_only_the_missing_combos(tmp_path):
+    """The back-fill property: a result.csv written before the sweep existed holds only
+    the full-modality combo, so resume replans the other 13 rather than all 14."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    csv_path = train_folder / "eval_logs" / "last" / "pro_matched_libero_10_lan" / "result.csv"
+    write_csv(csv_path, [_row(True, True, True, True)])
+
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
+    lan_matched = [
+        ov for svc, ov in lines
+        if svc == "eval-pro"
+        and "pro_init_states=matched" in ov
+        and "benchmark_name=libero_10_lan" in ov
+    ]
+
+    assert len(lan_matched) == len(modality_combos(True)) - 1
+    assert not any("eval_modalities.rgb_static=True" in ov
+                   and "eval_modalities.rgb_gripper=True" in ov
+                   and "eval_modalities.language=True" in ov
+                   and "eval_modalities.proprio=True" in ov
+                   for ov in lan_matched)
+
+
+def test_plan_lines_pro_drops_a_trailing_benchmark_name_override(tmp_path):
+    """A user `benchmark_name=libero_10` names the *base* suite; appended verbatim it
+    would clobber the per-line libero_10_<tag> the PRO line has to run (Hydra: last
+    wins). Every other override still reaches the line."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    lines = plan_lines(
+        str(train_folder), resume=False, extra_overrides=["benchmark_name=libero_10", "n_eval=3"]
+    )
+    pro = [overrides for svc, overrides in lines if svc == "eval-pro"]
+
+    for overrides in pro:
+        benchmarks = [o for o in overrides if o.startswith("benchmark_name=")]
+        assert len(benchmarks) == 1
+        assert benchmarks[0] != "benchmark_name=libero_10"
+        assert benchmarks[0].startswith("benchmark_name=libero_10_")
+        assert "n_eval=3" in overrides
+
+
+def test_plan_lines_resume_skips_a_completed_pro_suite(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    csv_path = train_folder / "eval_logs" / "last" / "pro_libero_10_swap" / "result.csv"
+    write_csv(csv_path, [_row(True, True, True, True)])
+
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
+    pro = [overrides for svc, overrides in lines if svc == "eval-pro"]
+
+    assert len(pro) == pro_lines(True) - 1
+    assert not any("benchmark_name=libero_10_swap" in ov for ov in pro)
+
+
+def test_plan_lines_pro_matched_and_native_are_separate_suites(tmp_path):
+    """The two arms of the same suite must not mark each other done -- they are different
+    experiments writing different directories."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    csv_path = train_folder / "eval_logs" / "last" / "pro_libero_10_lan" / "result.csv"
+    write_csv(csv_path, [_row(True, True, True, True)])
+
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
+    pro = [overrides for svc, overrides in lines if svc == "eval-pro"]
+
+    # The native lan line is done; the matched arm's full sweep is untouched.
+    assert not any(
+        "benchmark_name=libero_10_lan" in ov and "pro_init_states=native" in ov for ov in pro
+    )
+    matched_lan = [
+        ov for ov in pro
+        if "benchmark_name=libero_10_lan" in ov and "pro_init_states=matched" in ov
+    ]
+    assert len(matched_lan) == len(modality_combos(True))
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +402,7 @@ def test_plan_lines_regular_run_is_eval_then_eval_plus(tmp_path):
     # One full-modality eval-plus, then one per withheld modality -- no_proprio is
     # excluded since this checkpoint never receives proprioception.
     services = [svc for svc, _ in lines]
-    assert services == ["eval"] + ["eval-plus"] * 4
+    assert services == ["eval"] + ["eval-plus"] * 4 + ["eval-pro"] * pro_lines(False)
 
 
 def test_plan_lines_dropout_no_proprio_is_seven_plus_four(tmp_path):
@@ -204,7 +414,8 @@ def test_plan_lines_dropout_no_proprio_is_seven_plus_four(tmp_path):
     services = [svc for svc, _ in lines]
     assert services.count("eval") == 7
     assert services.count("eval-plus") == 4
-    assert services[-1] == "eval-plus"
+    assert services.count("eval-pro") == pro_lines(False)
+    assert services[-1] == "eval-pro"
 
 
 def test_plan_lines_dropout_with_proprio_is_fourteen_plus_five(tmp_path):
@@ -261,7 +472,7 @@ def test_plan_lines_resume_skips_already_evaluated_combo(tmp_path):
 
     # The one combo a non-dropout run needs on LIBERO is already in result.csv; the
     # full-modality eval-plus and all 4 modality-off eval-plus lines remain (untouched).
-    assert [svc for svc, _ in lines] == ["eval-plus"] * 5
+    assert [svc for svc, _ in lines] == ["eval-plus"] * 5 + ["eval-pro"] * pro_lines(True)
 
 
 def test_plan_lines_resume_keeps_uncovered_combo(tmp_path):
@@ -465,7 +676,9 @@ def test_plan_lines_skip_modality_off_flag_suppresses_all_four(tmp_path):
 
     lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], skip_modality_off=True)
 
-    assert [svc for svc, _ in lines] == ["eval", "eval-plus"]
+    # --skip-modality-off targets the four plus_no_* suites only; LIBERO-PRO is a
+    # separate axis and is unaffected.
+    assert [svc for svc, _ in lines] == ["eval", "eval-plus"] + ["eval-pro"] * pro_lines(True)
 
 
 def test_plan_lines_resume_skips_a_completed_modality_off_suite(tmp_path):
@@ -478,7 +691,7 @@ def test_plan_lines_resume_skips_a_completed_modality_off_suite(tmp_path):
 
     # orig ("eval") + full-plus stay (not seeded); no_static/no_wrist/no_proprio stay;
     # no_lang is done.
-    assert len(lines) == 5
+    assert len(lines) == 5 + pro_lines(True)
     for _svc, overrides in lines:
         assert "csv_dir=" + str(train_folder / "eval_logs" / "last" / "plus_libero_10_no_lang") not in "".join(overrides)
 
@@ -506,7 +719,7 @@ def test_plan_lines_resume_full_plus_csv_does_not_mark_modality_off_done(tmp_pat
     lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
 
     # orig ("eval") isn't seeded, so it stays; full-plus is done; all 4 modality-off stay.
-    assert [svc for svc, _ in lines] == ["eval"] + ["eval-plus"] * 4
+    assert [svc for svc, _ in lines] == ["eval"] + ["eval-plus"] * 4 + ["eval-pro"] * pro_lines(True)
 
 
 def test_plan_lines_resume_modality_off_csv_does_not_mark_full_plus_done(tmp_path):
@@ -518,7 +731,7 @@ def test_plan_lines_resume_modality_off_csv_does_not_mark_full_plus_done(tmp_pat
     lines = plan_lines(str(train_folder), resume=True, extra_overrides=[])
 
     # orig ("eval") + full-plus + no_wrist + no_lang + no_proprio; no_static is done.
-    assert len(lines) == 5
+    assert len(lines) == 5 + pro_lines(True)
 
 
 # ---------------------------------------------------------------------------
@@ -561,13 +774,13 @@ def test_artifact_name_matches_wandb_charset():
 def test_resolve_reeval_variants_none_means_every_suite():
     assert resolve_reeval_variants(None, "libero_10") == {
         "orig", "plus", "plus_no_static", "plus_no_wrist", "plus_no_lang", "plus_no_proprio",
-    }
+    } | set(PRO_VARIANTS)
 
 
 def test_resolve_reeval_variants_none_excludes_no_proprio_without_proprio():
     assert resolve_reeval_variants(None, "libero_10", use_proprio=False) == {
         "orig", "plus", "plus_no_static", "plus_no_wrist", "plus_no_lang",
-    }
+    } | set(PRO_VARIANTS)
 
 
 def test_resolve_reeval_variants_single_suite():
@@ -677,7 +890,7 @@ def test_plan_lines_reeval_variants_none_is_unrestricted(tmp_path):
 
     lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], reeval_variants=None)
 
-    assert [svc for svc, _ in lines] == ["eval"] + ["eval-plus"] * 4
+    assert [svc for svc, _ in lines] == ["eval"] + ["eval-plus"] * 4 + ["eval-pro"] * pro_lines(False)
 
 
 def test_plan_lines_reeval_marks_only_the_first_of_several_lines_sharing_one_path(tmp_path):
@@ -839,7 +1052,8 @@ def test_main_reeval_csv_dir_override_with_every_suite_selected_succeeds(tmp_pat
     )
 
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
-    assert len(lines) == 6  # orig + full-plus + 4 modality-off, all selected
+    # orig + full-plus + 4 modality-off + the 6 LIBERO-PRO suite/arm lines, all selected
+    assert len(lines) == 6 + pro_lines(True)
 
 
 def test_main_reeval_modality_off_suite_replans_only_that_line(tmp_path, monkeypatch, capsys):
@@ -871,7 +1085,7 @@ def test_main_skip_modality_off_flag_suppresses_the_four_lines(tmp_path, monkeyp
     _run_plan_cli(monkeypatch, ["--train-folder", str(train_folder), "--skip-modality-off"])
 
     lines = [line for line in capsys.readouterr().out.splitlines() if line]
-    assert [line.split("\t")[0] for line in lines] == ["eval", "eval-plus"]
+    assert [line.split("\t")[0] for line in lines] == ["eval", "eval-plus"] + ["eval-pro"] * pro_lines(True)
 
 
 # ---------------------------------------------------------------------------

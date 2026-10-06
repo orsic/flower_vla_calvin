@@ -14,6 +14,8 @@
 #   ./run.sh eval                         Run the LIBERO-10 evaluation
 #   ./run.sh download-plus                Download LIBERO-Plus simulation assets (run once before eval-plus)
 #   ./run.sh eval-plus                    Run the LIBERO-Plus robustness evaluation (7 perturbation categories)
+#   ./run.sh download-pro                 Download LIBERO-PRO perturbation bddl/init files (run once before eval-pro)
+#   ./run.sh eval-pro                     Run the LIBERO-PRO generalization evaluation (one suite per invocation)
 #   ./run.sh pipeline <train_run_dir> [...]  Full post-training eval (LIBERO[-Plus], modality sweep if dropout) + W&B upload
 #   ./run.sh smoke                        Run the smoke test (verifies env before full eval)
 #   ./run.sh devenv                       Regenerate .devcontainer/.env from vars.env (run after editing vars.env)
@@ -285,10 +287,29 @@ case "$CMD" in
         "$@"
     ;;
 
+  download-pro)
+    podman-compose -f "$COMPOSE" run --rm download-pro
+    ;;
+
+  eval-pro)
+    # LIBERO-PRO generalization eval, one suite per invocation. Pass Hydra overrides as
+    # extra args, e.g.:
+    #   ./run.sh eval-pro benchmark_name=libero_10_object
+    #   ./run.sh eval-pro benchmark_name=libero_10_task pro_init_states=matched
+    # Runs with LIBERO_VARIANT=pro (set in the eval-pro compose service).
+    podman-compose -f "$COMPOSE" run --rm eval-pro \
+        python flower/evaluation/flower_eval_libero.py \
+        --config-name=eval_libero_pro \
+        "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)" \
+        "$@"
+    ;;
+
   pipeline)
     # Post-training evaluation for one completed training run: LIBERO (all modality
     # combos for a dropout run, full-modality otherwise) + LIBERO-Plus (full-modality,
-    # plus one eval per withheld modality: rgb_gripper/rgb_static/proprio/language),
+    # plus one eval per withheld modality: rgb_gripper/rgb_static/proprio/language)
+    # + LIBERO-PRO (4 native suites at full modality, 2 matched suites swept over every
+    # modality combo),
     # then upload the result.csv files + a scripts/pid_modality.py summary onto that
     # run's W&B artifact. Trailing Hydra overrides reach both the planner and every eval
     # it launches, e.g.:
@@ -304,6 +325,11 @@ case "$CMD" in
     #                      # skip the 4 modality-withheld LIBERO-Plus evals this run
     #                      # (they make the LIBERO-Plus portion ~5x longer); catch them
     #                      # up later with PIPELINE_REEVAL_SUITES=plus_<bench>_no_<modality>
+    #   PIPELINE_SKIP_PRO_COMBOS=1 ./run.sh pipeline /saves/train_logs/.../<run>
+    #                      # run LIBERO-PRO at full modality only (6 lines) instead of
+    #                      # sweeping the matched arm across all 14 combos (~6.5 h);
+    #                      # catch up later with PIPELINE_RESUME=1, which back-fills
+    #                      # only the combos still missing
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline <train_run_dir> [hydra_overrides...]" >&2
         exit 1
@@ -320,10 +346,13 @@ case "$CMD" in
     fi
     skip_modality_off_flag=()
     [[ -n "${PIPELINE_SKIP_MODALITY_OFF:-}" ]] && skip_modality_off_flag=(--skip-modality-off)
+    skip_pro_combos_flag=()
+    [[ -n "${PIPELINE_SKIP_PRO_COMBOS:-}" ]] && skip_pro_combos_flag=(--skip-pro-combos)
 
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell \
         python scripts/eval_pipeline.py plan --train-folder "$train_dir" \
-        "${resume_flag[@]}" "${reeval_flag[@]}" "${skip_modality_off_flag[@]}" -- "$@")"
+        "${resume_flag[@]}" "${reeval_flag[@]}" "${skip_modality_off_flag[@]}" \
+        "${skip_pro_combos_flag[@]}" -- "$@")"
 
     # Read every plan line into memory before launching anything -- a long-running eval
     # container previously held the loop's plan text on a shared fd for its entire
@@ -341,7 +370,10 @@ case "$CMD" in
         overrides=("${fields[@]:1}")
         i=$((i + 1))
         config_arg=()
-        [[ "$svc" == "eval-plus" ]] && config_arg=(--config-name=eval_libero_plus)
+        case "$svc" in
+            eval-plus) config_arg=(--config-name=eval_libero_plus) ;;
+            eval-pro)  config_arg=(--config-name=eval_libero_pro) ;;
+        esac
         podman-compose -f "$COMPOSE" run --rm -T "$svc" \
             python flower/evaluation/flower_eval_libero.py \
             "${config_arg[@]}" \
@@ -518,7 +550,7 @@ case "$CMD" in
     ;;
 
   help|*)
-    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|download-plus|train|train-frozen|train-dropout|eval|eval-plus|pipeline|analyze|plot|smoke|devenv>"
+    echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|download-plus|download-pro|train|train-frozen|train-dropout|eval|eval-plus|eval-pro|pipeline|analyze|plot|smoke|devenv>"
     echo ""
     echo "  build              Build the container image (flower-vla-eval:latest)"
     echo "  shell              Interactive bash inside the container"
@@ -528,6 +560,7 @@ case "$CMD" in
     echo "                               bench: libero_10 | libero_90 | libero_spatial | libero_object | libero_goal"
     echo "                               all: download every suite"
     echo "  download-plus      Download LIBERO-Plus simulation assets (3D objects/textures)"
+    echo "  download-pro       Download LIBERO-PRO perturbation bddl/init files"
     echo "  train [bench] [hydra_overrides...]"
     echo "                     Fine-tune, 4 GPUs, ~15-22 h (default: libero_10, all modalities)"
     echo "                     bench: libero_10 | libero_90 | libero_spatial | libero_object | libero_goal"
@@ -550,6 +583,8 @@ case "$CMD" in
     echo "                     Example: CKPT_PATH=/saves/.../last.ckpt ./run.sh train-dropout-resume libero_90"
     echo "  eval               Run LIBERO-10 evaluation (./run.sh download first)"
     echo "  eval-plus          Run LIBERO-Plus robustness eval (./run.sh download-plus first)"
+    echo "  eval-pro           Run LIBERO-PRO generalization eval (./run.sh download-pro first)"
+    echo "                     PIPELINE_SKIP_PRO_COMBOS=1 skips the matched-arm modality sweep"
     echo "                     Pass Hydra overrides: task_category=\"Camera Viewpoints\" checkpoint=/saves/..."
     echo "  pipeline <train_run_dir> [hydra_overrides...]"
     echo "                     Full post-training eval for one run: LIBERO + LIBERO-Plus, or (if the"

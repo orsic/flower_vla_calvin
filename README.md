@@ -698,7 +698,8 @@ below) — set it to each model's own directory so the two models' CSVs don't co
 
 ### Evaluation results (CSV)
 
-Every `./run.sh eval` / `./run.sh eval-plus` run writes one row per episode to:
+Every `./run.sh eval` / `./run.sh eval-plus` / `./run.sh eval-pro` run writes one row per
+episode to:
 ```
 <train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<benchmark_name>/result.csv
 ```
@@ -1130,8 +1131,8 @@ The hypothesis is that the modality-dropout model degrades less, especially on `
 
 `./run.sh pipeline <train_run_dir> [hydra_overrides...]` automates everything above for one
 completed training run — deciding which evaluations it needs, running them, and uploading
-the results — instead of invoking `eval`/`eval-plus`/`compare_eval_csvs.py`/`pid_modality.py`
-by hand:
+the results — instead of invoking `eval`/`eval-plus`/`eval-pro`/`compare_eval_csvs.py`/
+`pid_modality.py` by hand:
 
 ```bash
 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-08_10-00-00
@@ -1162,6 +1163,18 @@ It reads `<train_run_dir>/.hydra/config.yaml` to branch:
   `model.use_proprio=True` (each token combo crossed with proprio on/off; "proprio only" is
   never evaluated, since the model requires at least one vision/language modality) — then one
   full-modality LIBERO-Plus eval, then one LIBERO-Plus eval per withheld modality (below).
+
+Both branches then run the **LIBERO-PRO** lines (see
+[LIBERO-PRO Generalization Evaluation](#libero-pro-generalization-evaluation)): the 4
+published perturbation suites on the native init-state arm at full modality, plus
+`libero_10_lan` and `libero_10_task` on the matched arm swept across every modality combo
+— 32 lines for a `use_proprio=true` checkpoint, 18 otherwise. This is unaffected by
+`PIPELINE_SKIP_MODALITY_OFF` (which targets the four `plus_no_*` suites); use
+`PIPELINE_SKIP_PRO_COMBOS=1` to collapse it to 6 full-modality lines. Their reeval-suite
+tokens are the result-directory names, e.g.
+`PIPELINE_REEVAL_SUITES=pro_libero_10_swap,pro_matched_libero_10_lan` — selecting a
+matched suite replans all of its combo lines, and only the first carries `reeval=true`
+since they share one `result.csv`.
 
 **LIBERO-Plus with one modality withheld at inference.** In addition to the full-modality
 LIBERO-Plus eval, the pipeline plans 4 more, in this order — each with exactly one of
@@ -1530,6 +1543,229 @@ Sometimes this causes problems for the python env so just delete it:
 log.info(f"Using calvin_env with commit {get_git_commit_hash(Path(calvin_env.__file__))}.")
 ```
 The path for this line is in the CALVIN env repo: https://github.com/mees/calvin_env/blob/797142c588c21e76717268b7b430958dbd13bf48/calvin_env/envs/play_table_env.py#L72
+
+---
+
+## LIBERO-PRO Generalization Evaluation
+
+[LIBERO-PRO](https://github.com/Zxy-MLlab/LIBERO-PRO) ([paper](https://arxiv.org/abs/2510.03827))
+perturbs *what a task is* — which object, where it starts, how the instruction is worded,
+what counts as success — rather than how the scene is sensed (LIBERO-Plus's axis). Its
+finding is that VLA success on LIBERO comes largely from memorising training scenarios:
+models above 0.9 on the originals collapse toward 0 under task and position perturbations.
+
+It is integrated as a third side-by-side submodule (`LIBERO-pro/`), selected by
+`LIBERO_VARIANT=pro` exactly like LIBERO-Plus.
+
+### Why this benchmark pairs so cleanly with our baseline
+
+A LIBERO-PRO suite keeps the original libero_10 **task names, bddl filenames and init
+filenames verbatim** — only the file contents change. So a PRO task maps to its orig
+baseline task by identity (no prefix matching, no suffix grammar), and because
+`eval_records.base_task_name` is the identity on those names, a PRO episode draws the
+**same `rollout_seed`** — hence the same fixture placement and the same flow-matching
+noise — as the orig episode with the same task and episode index.
+
+Diffing the four published libero_10 suites against `LIBERO/libero/libero/bddl_files/libero_10/`:
+
+| suite (`benchmark_name`) | perturbation | bddl delta vs original | scene model |
+|---|---|---|---|
+| `libero_10_lan` | semantic | `(:language)` | identical |
+| `libero_10_task` | task redefinition | `(:language)` `(:goal)` `(:obj_of_interest)` | identical |
+| `libero_10_swap` | position | `(:init (On …))` placements | identical |
+| `libero_10_object` | object | object/fixture classes (`moka_pot` → `yellow_moka_pot`) | different meshes |
+
+Confirmed in-simulator by `scripts/debug_pro_scene_identity.py` over all 10 tasks:
+`_lan`/`_task`/`_swap` reproduce the original's sim-state width **and** its joint and
+body name ordering exactly; `_object` keeps the width (its replacements are same-DOF
+bodies) but renames joints and bodies — which is why matchability is a property of the
+suite, not something a shape check could decide.
+
+### The two init-state arms
+
+`pro_init_states` selects which initial states the rollouts start from, and the arm is
+recorded in the result CSV's `libero_variant` column (`pro` / `pro_matched`), so the two
+never merge together:
+
+- **`native`** — the suite's own `.pruned_init`. Upstream-faithful and comparable to the
+  paper's leaderboard. Pairs with the orig baseline at task level only.
+- **`matched`** — the **original** libero_10 `.pruned_init`, so each PRO episode starts
+  from the exact state the corresponding `libero_orig.csv` episode did and the pair
+  differs *only* by the perturbation. Legal for `libero_10_lan` and `libero_10_task`;
+  requesting it for `_swap` (where the init state *is* the perturbation) or `_object`
+  (different meshes) is a config error, not a silent fallback.
+
+### The matched-arm modality sweep
+
+The matched arm is evaluated at **every modality combination** the checkpoint supports —
+14 for a `use_proprio=true` model (7 token combos × proprio on/off), 7 otherwise — while
+the native arm stays full-modality.
+
+This is what makes the modality-dropout hypothesis testable on PRO. Only the matched arm
+pairs one-to-one with an orig episode, and `pro_sr.py` keys that pairing on the modality
+combo, so a swept record answers exactly *"how much does withholding this modality cost on
+this perturbation"* against an episode it differs from in nothing else. The native arm can
+only ever pair at task level, so sweeping it would add lines without adding the
+measurement.
+
+The sweep keys off `use_proprio`, **not** off `modality_dropout`: a non-dropout model
+evaluated with a modality withheld is the control the dropout model is compared against,
+so it has to exist for both — the same reason the modality-off LIBERO-Plus suites are
+already planned for every run. On a non-dropout run the orig side is missing for the
+withheld combos (its `orig_libero_10/result.csv` holds only full modality), and `pro_sr.py`
+reports those records with empty paired columns rather than inventing a baseline; the
+cross-model success-rate comparison still works.
+
+All of a matched suite's combo lines merge into **one** `result.csv` — the modality flags
+are `eval_records.KEY_COLUMNS`, so they key apart rather than collide, exactly as orig's
+combos do. (LIBERO-Plus needs its `csv_dir=` split only because `perturbation_sr.py` and
+`severity_sr.py` assume one combo per file; `pro_sr.py` groups by combo natively.)
+
+| run | combos | PRO lines | PRO episodes | approx. cost (1 GPU) |
+|---|---|---|---|---|
+| `use_proprio=true` | 14 | 32 | 6400 | ~6.5 h |
+| `use_proprio=false` | 7 | 18 | 3600 | ~3.3 h |
+| any, with `PIPELINE_SKIP_PRO_COMBOS=1` | 1 | 6 | 1200 | ~1.4 h |
+
+Measured at ~14 min per 200-episode suite on one GPU. `PIPELINE_SKIP_PRO_COMBOS=1` drops
+the sweep back to full modality only — use it to keep a chained
+`train-dropout` → `pipeline` run short, then catch the rest up later with
+`PIPELINE_RESUME=1`, which back-fills only the combos still missing. It is independent of
+`PIPELINE_SKIP_MODALITY_OFF` (that one gates the LIBERO-Plus axis).
+
+`pro_sr.py` prints a `mod` column — a 4-slot mask over (static, wrist, lang, proprio):
+`SWLP` is full modality, `SW-P` is language withheld. `./run.sh analyze` shows the
+full-modality row per suite by default and every combo under `--modality-off-detail=full`.
+
+### Instruction handling (a deliberate deviation from upstream)
+
+LIBERO derives `task.language` from the *filename*, and PRO filenames are the original
+ones — so prompting from the filename would hand the model the **unperturbed**
+instruction and make the semantic and task suites inert. `task_language()` therefore
+reads `(:language …)` out of the task's own bddl for `_lan` and `_task`, and passes
+`task_i.language` through for `_object` and `_swap`, where the original instruction is
+the correct control. Our `_lan` numbers will not match the published leaderboard if
+upstream prompts from the filename there; the alternative is a perturbation that is a
+no-op by construction.
+
+### Scope
+
+Only the four suites published on [HuggingFace](https://huggingface.co/datasets/zhouxueyang/LIBERO-Pro)
+are wired up, for `libero_10`. `libero_10_env` (environment replacement) is not published
+and upstream documents an object-drift bug in it; multi-flag `_temp` combinations require
+running `perturbation.create_env()` locally, whose init states are freshly sampled and so
+not reproducible against the published set. `scripts/pro_sr.py`'s `perturbation_vector`
+column is already the full 5-flag tuple, so either would slot in without a schema change.
+
+### Setup
+
+```bash
+git submodule update --init LIBERO-pro   # ~900 MB; the 3D assets ship inside the repo
+./run.sh build                           # entrypoint.sh is baked into the image
+./run.sh download-pro                    # bddl + init files for the 4 libero_10_* suites
+```
+
+### Running
+
+```bash
+# One suite per invocation.
+./run.sh eval-pro benchmark_name=libero_10_object train_folder=$CKPT_BASE checkpoint=$CKPT_BASE
+./run.sh eval-pro benchmark_name=libero_10_task pro_init_states=matched train_folder=$CKPT_BASE checkpoint=$CKPT_BASE
+
+# Scene-identity pre-flight (re-run after a LIBERO-PRO submodule bump):
+podman-compose -f scripts/podman/compose.yml run --rm -T eval-pro \
+    python scripts/debug_pro_scene_identity.py
+```
+
+`./run.sh pipeline` runs all six lines automatically (4 native suites + the 2 matched
+arms, full modality only) and uploads `libero_pro.csv` and `pro_sr.csv` to the run's W&B
+artifact alongside the LIBERO/LIBERO-Plus members.
+
+### Back-filling PRO onto runs evaluated before it existed
+
+`PIPELINE_RESUME=1` skips every suite whose `result.csv` already covers the combo, so on
+an older run the PRO lines are the only ones left to plan — no re-evaluation of LIBERO or
+LIBERO-Plus. The check is per *combo*, not per suite, so a run evaluated before the
+matched-arm sweep existed back-fills only the combos it is missing (13 of 14 per matched
+suite, the full-modality one already being on disk):
+
+```bash
+# PRO only (use when the run's modality-off evals are already done, or you don't want them):
+PIPELINE_RESUME=1 PIPELINE_SKIP_MODALITY_OFF=1 \
+    ./run.sh pipeline /saves/train_logs/libero_10_dropout/<run>
+
+# PRO plus anything else still missing:
+PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/<run>
+```
+
+Check what it would do first — the planner prints one tab-separated line per eval and runs
+nothing:
+
+```bash
+podman-compose -f scripts/podman/compose.yml run --rm -T pipeline-artifacts \
+    python scripts/eval_pipeline.py plan --train-folder /saves/train_logs/.../<run> \
+    --resume --skip-modality-off
+```
+
+The pipeline's upload step runs even when the plan is empty, so the same command
+regenerates `libero_pro.csv`/`pro_sr.csv` and re-uploads the artifact once the evals exist.
+
+**Episode pairing across old and new runs.** `pro_sr.py`'s matched arm pairs on
+(modality combo, task, episode index), so the old `libero_orig.csv` has to have been
+written with the same `seed` and a compatible `n_eval` — `seed: 0` and `n_eval: 20` are
+the defaults in both `eval_libero.yaml` and `eval_libero_pro.yaml`, which is what runs on
+this box used. If an older run used a smaller `n_eval`, nothing breaks: the equated subset
+is the intersection of the two key sets, and `mcnemar_n` reports how many pairs actually
+contributed. Check with:
+
+```bash
+python - <<'EOF'
+import csv
+rows = list(csv.DictReader(open("<run>/eval_logs/last/orig_libero_10/result.csv")))
+print({r["base_seed"] for r in rows}, len({r["episode_idx"] for r in rows}))
+EOF
+```
+
+**Checkpoints with no training run** (the HuggingFace baseline at
+`/saves/checkpoints/libero_10` has no `.hydra/config.yaml`, which `pipeline` reads to
+decide what to plan) — invoke the four suites directly and analyse with `pro_sr.py`:
+
+```bash
+CKPT=/saves/checkpoints/libero_10
+for s in lan object swap task; do
+    ./run.sh eval-pro benchmark_name=libero_10_$s train_folder=$CKPT checkpoint=$CKPT
+done
+for s in lan task; do
+    ./run.sh eval-pro benchmark_name=libero_10_$s pro_init_states=matched \
+        train_folder=$CKPT checkpoint=$CKPT
+done
+```
+
+### Analysis — the equated-subset measurement
+
+```bash
+python scripts/pro_sr.py <pro result.csv>... --orig-csv libero_orig.csv --out pro_sr.csv
+```
+
+A PRO suite's raw success rate says little on its own; what says something is how it
+moves relative to the **same** episodes run unperturbed. So each record's baseline is not
+the whole `libero_orig.csv` — it is exactly the subset of orig rows whose
+(modality combo, task, episode) keys appear on the PRO side. Pairing granularity follows
+the arm: `pro_matched` pairs one-to-one per episode (same task, same init state, same
+seed); `pro` collapses to one majority-vote pair per task, ties dropped, since its init
+states were sampled independently. `delta` is read off those pairs on both sides, so it
+compares like with like (and equals `(mcnemar_b − mcnemar_c) / mcnemar_n`), while
+`success_rate` stays the raw per-episode rate.
+
+Baseline checkpoint (`mbreuss/flower_libero_10`), spot check at small `n_eval`:
+
+| suite | perturbation | success rate |
+|---|---|---|
+| `libero_10` (orig) | — | 0.80 |
+| `libero_10_lan` | semantic | 0.85 |
+| `libero_10_object` | object | 0.50 |
+| `libero_10_task` | task redefinition | 0.10 |
+| `libero_10_swap` | position | 0.00 |
 
 ---
 

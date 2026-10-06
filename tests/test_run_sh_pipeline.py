@@ -40,7 +40,7 @@ case "$joined" in
     if [[ -n "${FAKE_PLAN_EMPTY:-}" ]]; then
         exit 0
     fi
-    printf '%s\\n' "eval\tx=1" "eval\tx=2" "eval-plus\tx=3"
+    printf '%s\\n' "eval\tx=1" "eval\tx=2" "eval-plus\tx=3" "eval-pro\tx=4"
     ;;
   *"flower_eval_libero.py"*)
     cat > /dev/null
@@ -103,16 +103,34 @@ def _run_pipeline(tmp_path, extra_env=None):
 
 
 def test_pipeline_runs_every_planned_eval(tmp_path):
-    """A 3-line plan (2 eval + 1 eval-plus) must produce 3 eval invocations, not 1."""
+    """A 4-line plan (2 eval + 1 eval-plus + 1 eval-pro) must produce 4 eval
+    invocations, not 1."""
     result, lines, _, _ = _run_pipeline(tmp_path)
 
     assert result.returncode == 0, f"run.sh failed:\nstdout={result.stdout}\nstderr={result.stderr}"
-    assert len(lines) == 3, (
-        f"expected 3 eval invocations, got {len(lines)}: {lines}\nstderr={result.stderr}"
+    assert len(lines) == 4, (
+        f"expected 4 eval invocations, got {len(lines)}: {lines}\nstderr={result.stderr}"
     )
     assert any("x=1" in line for line in lines)
     assert any("x=2" in line for line in lines)
     assert any("x=3" in line for line in lines)
+    assert any("x=4" in line for line in lines)
+
+
+def test_pipeline_selects_the_config_for_each_service(tmp_path):
+    """Each service runs the same entrypoint script, so the suite it evaluates is
+    selected purely by --config-name -- an eval-pro line running eval_libero_plus's
+    config would silently evaluate the wrong benchmark."""
+    _, lines, _, _ = _run_pipeline(tmp_path)
+
+    by_service = {}
+    for line in lines:
+        service = next(s for s in ("eval-plus", "eval-pro", "eval") if f" {s} " in line)
+        by_service.setdefault(service, []).append(line)
+
+    assert all("--config-name" not in line for line in by_service["eval"])
+    assert all("--config-name=eval_libero_plus" in line for line in by_service["eval-plus"])
+    assert all("--config-name=eval_libero_pro" in line for line in by_service["eval-pro"])
 
 
 def test_pipeline_omits_reeval_flags_by_default(tmp_path):
@@ -156,6 +174,28 @@ def test_pipeline_passes_skip_modality_off_flag_when_env_set(tmp_path):
     _, _, plan_lines, _ = _run_pipeline(tmp_path, extra_env={"PIPELINE_SKIP_MODALITY_OFF": "1"})
 
     assert "--skip-modality-off" in plan_lines[0]
+
+
+def test_pipeline_omits_skip_pro_combos_flag_by_default(tmp_path):
+    _, _, plan_lines, _ = _run_pipeline(tmp_path)
+
+    assert "--skip-pro-combos" not in plan_lines[0]
+
+
+def test_pipeline_passes_skip_pro_combos_flag_when_env_set(tmp_path):
+    _, _, plan_lines, _ = _run_pipeline(tmp_path, extra_env={"PIPELINE_SKIP_PRO_COMBOS": "1"})
+
+    assert "--skip-pro-combos" in plan_lines[0]
+
+
+def test_pipeline_skip_flags_are_independent(tmp_path):
+    """The two flags gate different axes -- modality-off is LIBERO-Plus, pro-combos is
+    the LIBERO-PRO matched sweep -- so setting one must not imply the other."""
+    _, _, plan_lines, _ = _run_pipeline(tmp_path, extra_env={"PIPELINE_SKIP_MODALITY_OFF": "1"})
+    assert "--skip-pro-combos" not in plan_lines[0]
+
+    _, _, plan_lines, _ = _run_pipeline(tmp_path, extra_env={"PIPELINE_SKIP_PRO_COMBOS": "1"})
+    assert "--skip-modality-off" not in plan_lines[0]
 
 
 def test_pipeline_aborts_when_plan_fails(tmp_path):

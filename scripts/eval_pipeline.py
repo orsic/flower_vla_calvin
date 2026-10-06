@@ -62,6 +62,16 @@ Branching (read from <train-folder>/.hydra/config.yaml):
     all 4 of these lines, e.g. to keep a chained ./run.sh train-dropout -> pipeline run
     from taking ~5x longer on its LIBERO-Plus portion; catch them up later with
     `--reeval --reeval-suites plus_<bench>_no_<modality>`.
+  - LIBERO-PRO: the 4 perturbation suites on the native init-state arm, plus the 2 whose
+    scene is unchanged (libero_<bench>_lan/_task) on the matched arm. The matched arm is
+    swept across every modality combo the checkpoint supports (14, or 7 without proprio),
+    because only it pairs one-to-one with an orig episode, which is what makes "how much
+    does withholding this modality cost on this perturbation" answerable. All of a
+    matched suite's combo lines share one result.csv -- the modality flags are
+    eval_records.KEY_COLUMNS, so they merge rather than collide, exactly as orig's combos
+    do (pro_sr.py groups by combo, so it needs no csv_dir= split the way LIBERO-Plus
+    does). --skip-pro-combos (PIPELINE_SKIP_PRO_COMBOS=1) collapses the sweep back to
+    full modality only, leaving 6 PRO lines.
 
 --overrides (after a literal "--") are Hydra overrides appended, unmodified, to every
 emitted line -- last on the line, so they take precedence (see run.sh's run_train/eval
@@ -96,9 +106,10 @@ import wandb
 from omegaconf import OmegaConf
 
 sys.path.insert(0, Path(__file__).absolute().parents[1].as_posix())
-from flower.evaluation.eval_records import checkpoint_name, read_csv  # noqa: E402
+from flower.evaluation.eval_records import checkpoint_name, read_csv, write_csv  # noqa: E402
 
-import severity_sr  # noqa: E402 -- same-directory import, python puts scripts/ on sys.path[0]
+import pro_sr  # noqa: E402 -- same-directory import, python puts scripts/ on sys.path[0]
+import severity_sr  # noqa: E402
 
 TOKEN_MODALITIES = ["rgb_static", "rgb_gripper", "language"]
 FLAG_COLUMNS = {
@@ -119,6 +130,32 @@ MODALITY_OFF_VARIANTS = {
     "plus_no_proprio": ("proprio", "no_proprio"),
     "plus_no_lang": ("language", "no_lang"),
 }
+
+# Variant token -> (LIBERO_VARIANT arm, LIBERO-PRO suite tag). Unlike orig/plus, a PRO
+# eval line evaluates a *different benchmark registry key* per perturbation
+# (libero_10_lan, libero_10_object, ...), so the tag has to be part of the variant token
+# rather than of the trailing benchmark_name= override.
+#
+# The "pro_matched" arm rolls out from the original suite's init states, making every
+# episode an exact counterfactual of the orig baseline episode it shares a task and
+# episode index with (see conf/eval_libero_pro.yaml). It only exists for the two suites
+# whose perturbed bddl compiles to the same MuJoCo scene -- for swap the init state IS
+# the perturbation, and object changes the meshes.
+PRO_VARIANTS = {
+    "pro_lan": ("pro", "lan"),
+    "pro_object": ("pro", "object"),
+    "pro_swap": ("pro", "swap"),
+    "pro_task": ("pro", "task"),
+    "pro_matched_lan": ("pro_matched", "lan"),
+    "pro_matched_task": ("pro_matched", "task"),
+}
+
+
+def pro_benchmark_name(variant: str, benchmark_name: str) -> str:
+    """The LIBERO benchmark-registry key one PRO variant evaluates: "libero_10" +
+    "_lan" -> "libero_10_lan"."""
+    _arm, tag = PRO_VARIANTS[variant]
+    return f"{benchmark_name}_{tag}"
 
 
 def full_modality_combo() -> Dict[str, bool]:
@@ -163,7 +200,7 @@ def all_variants(use_proprio: bool) -> List[str]:
     "plus_no_proprio" is absent when use_proprio is False: EvaluateLibero.__init__
     raises on eval_modalities.proprio=False there (flower_eval_libero.py) -- it is
     structurally not applicable to such a run, not an eval that merely hasn't run yet."""
-    variants = ["orig", "plus"] + list(MODALITY_OFF_VARIANTS)
+    variants = ["orig", "plus"] + list(MODALITY_OFF_VARIANTS) + list(PRO_VARIANTS)
     if not use_proprio:
         variants.remove("plus_no_proprio")
     return variants
@@ -178,6 +215,11 @@ def suite_dir_name(variant: str, benchmark_name: str) -> str:
     if variant in MODALITY_OFF_VARIANTS:
         _key, suffix = MODALITY_OFF_VARIANTS[variant]
         return f"plus_{benchmark_name}_{suffix}"
+    if variant in PRO_VARIANTS:
+        # Exactly what eval_records.result_dir writes for this line: the arm is the
+        # libero_variant the eval records, and the benchmark it runs is the tagged suite.
+        arm, _tag = PRO_VARIANTS[variant]
+        return f"{arm}_{pro_benchmark_name(variant, benchmark_name)}"
     return f"{variant}_{benchmark_name}"
 
 
@@ -325,6 +367,7 @@ def plan_lines(
     extra_overrides: List[str],
     reeval_variants: Optional[Set[str]] = None,
     skip_modality_off: bool = False,
+    skip_pro_combos: bool = False,
 ) -> List[Tuple[str, List[str]]]:
     """reeval_variants, when given, restricts the plan to those variants only, and each
     of them is replanned unconditionally (see should_replan below) -- the caller
@@ -420,6 +463,47 @@ def plan_lines(
             overrides += reeval_overrides(variant)
             lines.append(("eval-plus", overrides + extra_overrides))
 
+    # LIBERO-PRO: one line per (perturbation suite, init-state arm, modality combo).
+    # A trailing `benchmark_name=` is dropped from these lines: it names the *base*
+    # suite (that's how _resolve read it in the first place), and the registry key this
+    # line must actually run is the derived libero_10_<tag>. Every other override still
+    # applies.
+    #
+    # The matched arm is swept across every modality combo; the native arm stays
+    # full-modality. Only the matched arm pairs one-to-one with an orig episode (same
+    # task, init state and seed), and pro_sr.py keys that pairing on the modality combo
+    # too -- so a swept matched record measures exactly "how much worse is this model on
+    # this perturbation when this modality is withheld", against the orig episode it
+    # differs from in nothing else. The native arm can only ever pair at task level, so
+    # sweeping it would add lines without adding that measurement.
+    #
+    # Unlike orig's `combos` above, the sweep keys off use_proprio and NOT off dropout: a
+    # non-dropout model evaluated with a modality withheld is the control the dropout
+    # model is being compared against, so it has to exist for both. (Same reasoning the
+    # modality-off LIBERO-Plus suites are already planned for every run.) Its orig side
+    # will be missing for the withheld combos on a non-dropout run -- pro_sr.py reports
+    # those records with empty paired columns rather than inventing a baseline.
+    pro_extra = [o for o in extra_overrides if not o.startswith("benchmark_name=")]
+    pro_combos = [full_modality_combo()] if skip_pro_combos else modality_combos(use_proprio)
+    for variant in PRO_VARIANTS:
+        if reeval_variants is not None and variant not in reeval_variants:
+            continue
+        arm, _tag = PRO_VARIANTS[variant]
+        for combo in (pro_combos if arm == "pro_matched" else [full_modality_combo()]):
+            if not should_replan(variant, combo):
+                continue
+            overrides = _eval_overrides(
+                pro_benchmark_name(variant, benchmark_name),
+                resolved_train_folder,
+                checkpoint,
+                combo,
+            )
+            overrides.append(
+                "pro_init_states=" + ("matched" if arm == "pro_matched" else "native")
+            )
+            overrides += reeval_overrides(variant)
+            lines.append(("eval-pro", overrides + pro_extra))
+
     return lines
 
 
@@ -472,6 +556,44 @@ def write_severity_csv(plus_csv: Path, orig_csv: Optional[Path] = None) -> Optio
     return csv_path
 
 
+def pro_csv_paths(train_folder: str, checkpoint: str, benchmark_name: str) -> Dict[str, Path]:
+    """variant -> result.csv path, for every LIBERO-PRO suite/arm."""
+    return {
+        variant: _csv_path(train_folder, checkpoint, variant, benchmark_name)
+        for variant in PRO_VARIANTS
+    }
+
+
+def write_pro_csv(
+    pro_csvs: Dict[str, Path], orig_csv: Optional[Path]
+) -> Tuple[Optional[Path], Optional[Path]]:
+    """Concatenate the PRO result.csv files into one libero_pro.csv and derive pro_sr.csv
+    beside it, returning (combined, breakdown) paths that exist. Both land in the first
+    PRO suite's directory. A failure here must not cost the whole upload -- same
+    principle as write_severity_csv."""
+    existing = {v: path for v, path in pro_csvs.items() if path.exists()}
+    if not existing:
+        return None, None
+    out_dir = next(iter(existing.values())).parent
+    combined = out_dir / "libero_pro.csv"
+    try:
+        rows = []
+        for path in existing.values():
+            rows.extend(read_csv(path))
+        if not rows:
+            return None, None
+        write_csv(combined, rows)
+        breakdown = out_dir / "pro_sr.csv"
+        pro_sr.write_csv(
+            breakdown,
+            pro_sr.collect(rows, pro_sr.load_rows(orig_csv) if orig_csv and orig_csv.exists() else None),
+        )
+        return combined, breakdown
+    except Exception as exc:
+        print(f"WARNING: LIBERO-PRO summary failed ({exc}) -- skipping libero_pro.csv", file=sys.stderr)
+        return None, None
+
+
 def modality_off_csv_paths(
     train_folder: str, checkpoint: str, benchmark_name: str, use_proprio: bool
 ) -> Dict[str, Path]:
@@ -490,6 +612,7 @@ def artifact_members(
     plus_csv: Path,
     modality_off_csvs: Dict[str, Path],
     pid_txt: Optional[Path],
+    pro_csvs: Optional[Dict[str, Path]] = None,
 ) -> List[Tuple[Path, str]]:
     """(file, artifact member name) for every derived/raw file that actually exists.
     Every member is optional: a suite that hasn't been evaluated yet, or whose severity
@@ -517,6 +640,12 @@ def artifact_members(
         modality_off_severity_csv = write_severity_csv(csv_path, orig_csv)
         if modality_off_severity_csv is not None:
             members.append((modality_off_severity_csv, modality_off_severity_member(variant)))
+    if pro_csvs:
+        pro_csv, pro_breakdown = write_pro_csv(pro_csvs, orig_csv)
+        if pro_csv is not None:
+            members.append((pro_csv, "libero_pro.csv"))
+        if pro_breakdown is not None:
+            members.append((pro_breakdown, "pro_sr.csv"))
     return members
 
 
@@ -528,6 +657,7 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
     orig_csv = _csv_path(resolved_train_folder, checkpoint, "orig", benchmark_name)
     plus_csv = _csv_path(resolved_train_folder, checkpoint, "plus", benchmark_name)
     modality_off_csvs = modality_off_csv_paths(resolved_train_folder, checkpoint, benchmark_name, use_proprio)
+    pro_csvs = pro_csv_paths(resolved_train_folder, checkpoint, benchmark_name)
 
     pid_txt = None
     if orig_csv.exists():
@@ -551,9 +681,9 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
             )
             pid_txt = None
 
-    members = artifact_members(orig_csv, plus_csv, modality_off_csvs, pid_txt)
+    members = artifact_members(orig_csv, plus_csv, modality_off_csvs, pid_txt, pro_csvs)
 
-    if not any(p.exists() for p in [orig_csv, plus_csv, *modality_off_csvs.values()]):
+    if not any(p.exists() for p in [orig_csv, plus_csv, *modality_off_csvs.values(), *pro_csvs.values()]):
         print(f"Nothing to upload: no result.csv found under {orig_csv.parent.parent}.")
         return
 
@@ -582,6 +712,7 @@ def main() -> None:
     plan_p.add_argument("--reeval", action="store_true")
     plan_p.add_argument("--reeval-suites", default=None)
     plan_p.add_argument("--skip-modality-off", action="store_true")
+    plan_p.add_argument("--skip-pro-combos", action="store_true")
     plan_p.add_argument("overrides", nargs="*")
 
     upload_p = subparsers.add_parser("upload")
@@ -616,7 +747,12 @@ def main() -> None:
                 )
 
         for service, overrides in plan_lines(
-            args.train_folder, args.resume, args.overrides, reeval_variants, args.skip_modality_off
+            args.train_folder,
+            args.resume,
+            args.overrides,
+            reeval_variants,
+            args.skip_modality_off,
+            args.skip_pro_combos,
         ):
             print("\t".join([service] + overrides))
     elif args.cmd == "upload":

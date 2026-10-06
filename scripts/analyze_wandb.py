@@ -58,6 +58,7 @@ from omegaconf import OmegaConf
 
 import pid_modality
 import perturbation_sr
+import pro_sr
 import severity_sr
 import eval_pipeline
 from compare_eval_csvs import MODALITY_COLUMNS
@@ -180,8 +181,9 @@ def analyze(
     modality_off_variants: Optional[List[str]] = None,
 ) -> dict:
     """{"orig_rows", "plus_rows", "pid", "perturbation", "severity", "modality_off", "missing"}.
-    "pid"/"perturbation"/"severity" are None when the corresponding CSV wasn't in the
-    artifact. severity_sr.collect() reads scene XMLs for Light Conditions
+    "pid"/"perturbation"/"severity"/"pro" are None when the corresponding CSV wasn't in
+    the artifact. "pro" is optional throughout -- libero_pro.csv only exists for runs
+    evaluated after LIBERO-PRO was added, and its absence is not reported as missing. severity_sr.collect() reads scene XMLs for Light Conditions
     (perturbation_severity.light_severity) -- if the LIBERO-Plus assets aren't checked
     out locally it raises, which is reported via `missing` rather than aborting the
     whole run's analysis.
@@ -197,6 +199,7 @@ def analyze(
     pid_collected = None
     perturbation = None
     severity = None
+    pro = None
     modality_off: Dict[str, Optional[dict]] = {}
     missing = list(missing)
 
@@ -234,12 +237,20 @@ def analyze(
                 "severity": sev,
             }
 
+        pro_path = artifact_dir / "libero_pro.csv"
+        if pro_path.exists():
+            try:
+                pro = pro_sr.collect(pid_modality.load_rows(str(pro_path)), orig_rows or None)
+            except Exception as exc:  # noqa: BLE001 -- see docstring
+                missing.append(f"LIBERO-PRO breakdown ({exc})")
+
     return {
         "orig_rows": orig_rows,
         "plus_rows": plus_rows,
         "pid": pid_collected,
         "perturbation": perturbation,
         "severity": severity,
+        "pro": pro,
         "modality_off": modality_off,
         "missing": missing,
     }
@@ -387,6 +398,17 @@ def print_single(
                 severity_sr.report(data["rows"], libero_plus_root, orig_rows=analysis["orig_rows"] or None)
             else:
                 print("  (severity breakdown unavailable -- see WARNING above)")
+
+    print()
+    print(f"=== {run_id}: LIBERO-PRO ===")
+    if analysis["pro"]:
+        # The matched arm is swept across every modality combo (see eval_pipeline's
+        # PRO_VARIANTS), so the default view keeps just full modality -- 28 extra lines
+        # per run would drown an `analyze filter` over several runs. Same flag, same
+        # meaning, as the modality-off LIBERO-Plus detail above.
+        pro_sr.report(analysis["pro"], full_modality_only=(modality_off_detail != "full"))
+    else:
+        print("  (no libero_pro.csv)")
 
 
 # ---------------------------------------------------------------------------

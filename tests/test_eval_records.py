@@ -472,3 +472,40 @@ def test_rotate_then_merge_rank_csvs_ignores_backup(tmp_path):
     assert {int(row["task_idx"]) for row in merged} == {1, 2}
     assert backup.exists()
     assert read_csv(backup)[0]["task_idx"] == "0"
+
+
+# ---------------------------------------------------------------------------
+# LIBERO-PRO
+# ---------------------------------------------------------------------------
+
+def test_result_dir_separates_every_pro_suite_and_arm(tmp_path):
+    """Each PRO suite is its own benchmark key, and the matched arm is its own
+    libero_variant -- so six evals write six directories that never merge together."""
+    train_folder = tmp_path / "train_run"
+    ckpt = train_folder / "seed_42" / "saved_models" / "last.ckpt"
+    ckpt.parent.mkdir(parents=True)
+    ckpt.write_text("x")
+
+    dirs = [
+        result_dir(train_folder, ckpt, "pro", f"libero_10_{tag}")
+        for tag in ("lan", "object", "swap", "task")
+    ] + [
+        result_dir(train_folder, ckpt, "pro_matched", f"libero_10_{tag}")
+        for tag in ("lan", "task")
+    ]
+
+    assert len({d.name for d in dirs}) == 6
+    assert dirs[0].name == "pro_libero_10_lan"
+    assert dirs[-1].name == "pro_matched_libero_10_task"
+    assert result_dir(train_folder, ckpt, "orig", "libero_10") not in dirs
+
+
+def test_pro_task_name_shares_the_orig_rollout_seed():
+    """LIBERO-PRO keeps the original task names, so base_task_name is the identity on
+    them and a PRO episode draws exactly the same placement and flow-matching noise as
+    the orig baseline episode it is paired against. Episode-level pairing in
+    scripts/pro_sr.py rests on this."""
+    name = "KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it"
+    assert base_task_name(name) == name
+    assert rollout_seed(0, name, 7) == rollout_seed(0, name, 7)
+    assert rollout_seed(0, name, 7) != rollout_seed(0, name, 8)

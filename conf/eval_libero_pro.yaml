@@ -1,0 +1,72 @@
+# Eval config for LIBERO-PRO generalization evaluation.
+# Run via: ./run.sh eval-pro [overrides...]  (sets LIBERO_VARIANT=pro automatically)
+#
+# LIBERO-PRO perturbs what the task *is*, not how it is sensed (that is LIBERO-Plus's
+# axis). One suite per perturbation, 10 tasks each, with task names, bddl filenames and
+# init filenames identical to the original libero_10 -- so every PRO task pairs with an
+# orig baseline task by identity, no prefix matching needed.
+#
+#   benchmark_name       perturbation   bddl delta vs original           scene model
+#   libero_10_lan        semantic       (:language)                      identical
+#   libero_10_task       task           (:language) (:goal) (:obj_of_interest)  identical
+#   libero_10_swap       position       (:init (On ...)) placements      identical
+#   libero_10_object     object         object/fixture classes           different meshes
+#
+# libero_10_env (environment perturbation) and the multi-flag "_temp" combos are out of
+# scope: neither is published on HuggingFace, and upstream documents an object-drift bug
+# in the environment replacement.
+#
+# pro_init_states selects which initial states the rollouts start from:
+#   native   — the suite's own .pruned_init (upstream-faithful; comparable to the paper)
+#   matched  — the ORIGINAL libero_10 .pruned_init, giving each episode the exact same
+#              starting state as the corresponding libero_orig.csv episode, so the pair
+#              differs only by the perturbation. Legal only for libero_10_lan and
+#              libero_10_task, whose compiled MuJoCo scene is unchanged; requesting it
+#              for _swap (where the init state IS the perturbation) or _object
+#              (different meshes) is a config error.
+#
+# Usage examples:
+#   ./run.sh eval-pro benchmark_name=libero_10_object
+#   ./run.sh eval-pro benchmark_name=libero_10_task pro_init_states=matched
+
+eval_cfg_overwrite:
+  datamodule:
+    datasets:
+      lang_dataset:
+        lang_folder: lang_annotations
+  model:
+    num_sampling_steps: 4
+
+task_embedding_format: clip
+log_dir: /saves/eval_logs
+dataset_path: /workspace
+train_folder: /saves/checkpoints/libero_10
+checkpoint: /saves/checkpoints/libero_10
+device: 0
+num_videos: 0
+debug: False
+
+log_wandb: False
+wandb_entity: orsic-university-of-zagreb-faculty-of-electrical-enginee
+
+num_sequences: 50
+max_steps: 520
+n_eval: 20  # same as conf/eval_libero.yaml -- episode-level pairing with the orig baseline
+eval_batch_size: 10
+env_start_method: spawn  # spawn (parallel, real subprocesses) | dummy (sequential, in-process)
+cross_task_batching: false  # 10 tasks x 20 episodes fills a batch from one task, like orig
+num_sampling_steps: 4
+multistep: 10
+
+benchmark_name: libero_10_lan  # overridden per suite by scripts/eval_pipeline.py
+task_category: null  # LIBERO-PRO ships no task_classification.json; the suite IS the category
+pro_init_states: native  # native | matched (see note above)
+
+seed: 0  # base seed for per-episode rollout seeding (recorded in the result CSV)
+eval_modalities:  # set any to false to physically drop that modality's tokens pre-encoder
+  rgb_static: true
+  rgb_gripper: true
+  language: true
+  proprio: true  # requires model.use_proprio=True; not a token, gated separately (see FLOWERVLA.eval_proprio_mask)
+reeval: false  # set by eval_pipeline.py's `plan --reeval` -- rotate result.csv aside before writing, instead of merging into it
+csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<suite>/

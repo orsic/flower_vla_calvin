@@ -7,3 +7,6 @@
 [submodule "LIBERO-plus"]
 	path = LIBERO-plus
 	url = https://github.com/sylvestf/LIBERO-plus.git
+[submodule "LIBERO-pro"]
+	path = LIBERO-pro
+	url = https://github.com/Zxy-MLlab/LIBERO-PRO.git

@@ -172,6 +172,7 @@ def test_analyze_no_artifact_at_all():
         "pid": None,
         "perturbation": None,
         "severity": None,
+        "pro": None,
         "modality_off": {},
         "missing": ["<no evaluation artifact>"],
     }
@@ -655,6 +656,54 @@ def test_print_single_full_adds_the_severity_tables(tmp_path, capsys):
 
     assert "=== r1: LIBERO-Plus (no_static) ===" in out
     assert "by physical severity" in out
+
+
+def _pro_row(static, wrist, lang, proprio, success, suite="libero_10_lan"):
+    return {
+        **_combo_row(static, wrist, lang, proprio, success),
+        "libero_variant": "pro_matched",
+        "suite": suite,
+        "task_name": "foo",
+        "episode_idx": "0",
+    }
+
+
+def test_print_single_pro_shows_only_full_modality_by_default(tmp_path, capsys):
+    """The matched arm is swept across every combo, so the default view keeps one row per
+    suite -- otherwise an `analyze filter` over several runs gains 28 lines each."""
+    artifact_dir = tmp_path / "artifact"
+    write_csv(
+        artifact_dir / "libero_pro.csv",
+        [_pro_row(1, 1, 1, 1, 1), _pro_row(1, 1, 0, 1, 0)],
+    )
+    analysis = analyze_wandb.analyze(
+        artifact_dir, missing=[], measure="ccs", modality_off_variants=[]
+    )
+
+    analyze_wandb.print_single("r1", analysis, severity_sr.DEFAULT_LIBERO_PLUS_ROOT)
+    out = capsys.readouterr().out
+
+    assert "=== r1: LIBERO-PRO ===" in out
+    assert "SWLP" in out
+    assert "SW-P" not in out
+
+
+def test_print_single_pro_full_detail_shows_every_combo(tmp_path, capsys):
+    artifact_dir = tmp_path / "artifact"
+    write_csv(
+        artifact_dir / "libero_pro.csv",
+        [_pro_row(1, 1, 1, 1, 1), _pro_row(1, 1, 0, 1, 0)],
+    )
+    analysis = analyze_wandb.analyze(
+        artifact_dir, missing=[], measure="ccs", modality_off_variants=[]
+    )
+
+    analyze_wandb.print_single(
+        "r1", analysis, severity_sr.DEFAULT_LIBERO_PLUS_ROOT, modality_off_detail="full"
+    )
+    out = capsys.readouterr().out
+
+    assert "SWLP" in out and "SW-P" in out
 
 
 def test_print_single_prints_placeholder_for_an_applicable_but_missing_variant(tmp_path, capsys):

@@ -9,10 +9,15 @@ set -euo pipefail
 #   orig (default) — upstream LIBERO submodule; original suites (libero_10 = 10 tasks)
 #   plus           — LIBERO-Plus fork; expanded suites with perturbation variants
 #                    (libero_10 = 2519 tasks across 7 perturbation categories)
+#   pro            — LIBERO-PRO fork; generalization suites libero_10_{lan,object,swap,task}
+#                    (10 tasks each, same task names as the originals)
 LIBERO_VARIANT="${LIBERO_VARIANT:-orig}"
 if [ "$LIBERO_VARIANT" = "plus" ]; then
     LIBERO_PKG=/workspace/LIBERO-plus/libero/libero
     export PYTHONPATH=/workspace/LIBERO-plus:/workspace
+elif [ "$LIBERO_VARIANT" = "pro" ]; then
+    LIBERO_PKG=/workspace/LIBERO-pro/libero/libero
+    export PYTHONPATH=/workspace/LIBERO-pro:/workspace
 else
     LIBERO_PKG=/workspace/LIBERO/libero/libero
     export PYTHONPATH=/workspace/LIBERO:/workspace

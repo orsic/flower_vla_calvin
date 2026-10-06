@@ -34,6 +34,7 @@ sys.path.insert(0, Path(__file__).absolute().parents[2].as_posix())
 from libero.libero import benchmark, get_libero_path
 from libero.libero.benchmark import get_benchmark
 from libero.libero.envs import OffScreenRenderEnv
+from libero.libero.envs.bddl_utils import get_problem_info
 from libero.lifelong.metric import evaluate_multitask_training_success, raw_obs_to_tensor_obs
 from libero.lifelong.utils import create_experiment_dir, get_task_embs, safe_device
 
@@ -50,7 +51,14 @@ from flower.evaluation.eval_records import (
     write_csv,
 )
 from flower.evaluation import obs_translation
-from flower.evaluation.libero_tasks import base_task, original_task_names
+from flower.evaluation.libero_tasks import (
+    PRO_MATCHABLE_TAGS,
+    base_task,
+    matched_init_states,
+    original_task_names,
+    pro_base_suite,
+    pro_suite_tag,
+)
 from flower.evaluation.libero_venv import make_libero_venv
 from flower.evaluation.multistep_sequences import get_sequences
 from flower.evaluation.utils import (
@@ -192,7 +200,12 @@ def _filename_language(task_name: str) -> str:
     return language[: language.find(".bddl")]
 
 
-def task_language(libero_variant: str, task_i, orig_task_names: Sequence[str]) -> str:
+def task_language(
+    libero_variant: str,
+    task_i,
+    orig_task_names: Sequence[str],
+    bddl_path: Optional[str] = None,
+) -> str:
     """Instruction to feed the model for one task.
 
     The model was fine-tuned on LIBERO's *filename*-derived instruction (the LIBERO
@@ -214,9 +227,27 @@ def task_language(libero_variant: str, task_i, orig_task_names: Sequence[str]) -
     category: the two agree exactly (verified across every suite), and the name is
     always present, so there is no missing/empty task_category case to handle.
 
+    LIBERO-PRO needs the mirror-image fix. Its task names are the *original* names, so
+    task_i.language is always the training-matched instruction -- which is correct for
+    the object and position suites (there the instruction is the control, and the
+    perturbation is in the scene), but makes the semantic and task suites inert: their
+    whole perturbation lives in the bddl's (:language ...) line, which filename-derived
+    prompting would never read. For those two the instruction is taken from the task's
+    own bddl instead, which is the independent variable being tested.
+
     LIBERO_VARIANT=orig is a pure passthrough: orig task names carry no perturbation
     suffix, so task_i.language is already the training-matched string.
     """
+    if libero_variant.startswith("pro"):
+        if pro_suite_tag(task_i.problem_folder) in PRO_MATCHABLE_TAGS:
+            if bddl_path is None:
+                raise ValueError(
+                    f"bddl_path is required to read the perturbed instruction for "
+                    f"LIBERO-PRO suite '{task_i.problem_folder}'"
+                )
+            return get_problem_info(bddl_path)["language_instruction"]
+        return task_i.language
+
     if libero_variant != "plus":
         return task_i.language
 
@@ -293,6 +324,7 @@ class EvaluateLibero:
         eval_modalities: Optional[Dict[str, bool]] = None,
         env_start_method: str = "spawn",
         cross_task_batching: bool = False,
+        pro_init_states: str = "native",
     ):
         self.model = model
         self.transforms = transforms
@@ -303,6 +335,7 @@ class EvaluateLibero:
             "rgb_static": True, "rgb_gripper": True, "language": True, "proprio": True
         }
         self.libero_variant = os.environ.get("LIBERO_VARIANT", "orig")
+        self.pro_init_states = pro_init_states
         self.env_start_method = env_start_method
         self.cross_task_batching = cross_task_batching
 
@@ -354,6 +387,29 @@ class EvaluateLibero:
                 f"No *.pruned_init files under {self.init_states_folder}/{self.benchmark_name}; "
                 "cannot map LIBERO-Plus tasks back to their original instruction."
             )
+
+        # LIBERO-PRO's "matched" arm rolls out from the ORIGINAL suite's init states, so
+        # each episode is an exact counterfactual of the orig baseline episode it shares
+        # a task and episode index with. Only legal where the perturbed bddl compiles to
+        # the same MuJoCo scene (see flower.evaluation.libero_tasks.PRO_MATCHABLE_TAGS).
+        # The arm is folded into libero_variant because that is both a result.csv key
+        # column and the result_dir() namespace -- so the two arms never merge together.
+        self.pro_tag = pro_suite_tag(benchmark_name) if self.libero_variant == "pro" else None
+        if self.libero_variant == "pro":
+            if self.pro_init_states not in ("native", "matched"):
+                raise ValueError(
+                    f"pro_init_states must be 'native' or 'matched', got {self.pro_init_states!r}"
+                )
+            if self.pro_init_states == "matched":
+                if self.pro_tag not in PRO_MATCHABLE_TAGS:
+                    raise ValueError(
+                        f"pro_init_states=matched is not valid for suite '{benchmark_name}': "
+                        "the original init states would either undo the perturbation "
+                        "(libero_10_swap, where the placement IS the perturbation) or land "
+                        "poses on different meshes (libero_10_object). Matchable suites: "
+                        f"{[benchmark_name.rsplit('_', 1)[0] + '_' + t for t in PRO_MATCHABLE_TAGS]}"
+                    )
+                self.libero_variant = "pro_matched"
         self.benchmark_dict = benchmark.get_benchmark_dict()
         self.benchmark_instance = self.benchmark_dict[self.benchmark_name]()
         self.num_tasks = self.benchmark_instance.get_num_tasks()
@@ -441,6 +497,40 @@ class EvaluateLibero:
 
         return all_rows
 
+    def _task_init_states(self, idx: int, task_name: str):
+        """(initial_states, n_states) for one task; (None, 0) when LIBERO has none.
+
+        In LIBERO-PRO's matched arm the ORIGINAL suite's states replace the perturbed
+        suite's, which is what makes a PRO episode and its orig baseline episode differ
+        only by the perturbation. The shape guard is the runtime check on the claim that
+        the perturbed bddl compiles to the same scene: a different state width means it
+        does not, and loading it would silently scramble the simulator.
+        """
+        try:
+            initial_states = self.benchmark_instance.get_task_init_states(idx)
+        except Exception as e:
+            print(f"Could not get LIBERO initial states for task {idx}: {e}, using random resets")
+            return None, 0
+
+        if self.libero_variant == "pro_matched":
+            matched = matched_init_states(self.init_states_folder, self.benchmark_name, task_name)
+            if matched is None:
+                raise FileNotFoundError(
+                    f"No original init states for '{task_name}' under "
+                    f"{self.init_states_folder}/{pro_base_suite(self.benchmark_name)}/ — "
+                    "pro_init_states=matched needs the orig LIBERO suite installed."
+                )
+            if matched.shape != initial_states.shape:
+                raise ValueError(
+                    f"Init-state shape mismatch for '{task_name}': original {matched.shape} "
+                    f"vs {self.benchmark_name} {initial_states.shape}. The perturbed bddl "
+                    "does not compile to the same MuJoCo scene, so its episodes cannot be "
+                    "matched to the orig baseline."
+                )
+            initial_states = matched
+
+        return initial_states, len(initial_states)
+
     def evaluate_task(self, model, task_i, task_emb, task_str, idx, sim_states=None, store_video=0):
         """Evaluate a task, running eval_batch_size parallel episodes per batch.
 
@@ -456,18 +546,14 @@ class EvaluateLibero:
             "camera_widths": self.img_w,
         }
 
-        try:
-            initial_states = self.benchmark_instance.get_task_init_states(idx)
-            n_states = len(initial_states)
-            print(f"Using LIBERO native initial states, count: {n_states}")
-        except Exception as e:
-            print(f"Could not get LIBERO initial states: {e}, using random resets")
-            initial_states = None
-            n_states = 0
-
         task_name = self.task_names[idx]
+        initial_states, n_states = self._task_init_states(idx, task_name)
+        print(f"Using {self.libero_variant} initial states, count: {n_states}")
+
         task_meta = self.task_classification.get(task_name, {})
-        language = task_language(self.libero_variant, task_i, self.orig_task_names)
+        language = task_language(
+            self.libero_variant, task_i, self.orig_task_names, env_args["bddl_file_name"]
+        )
 
         rows: List[Dict[str, Any]] = []
         episode_idx = 0
@@ -668,22 +754,19 @@ class EvaluateLibero:
         task_cache: Dict[int, Dict[str, Any]] = {}
         for idx in self.all_tasks:
             task_i = self.benchmark_instance.get_task(idx)
-            try:
-                initial_states = self.benchmark_instance.get_task_init_states(idx)
-                n_states = len(initial_states)
-            except Exception as e:
-                print(f"Could not get LIBERO initial states for task {idx}: {e}, using random resets")
-                initial_states = None
-                n_states = 0
             task_name = self.task_names[idx]
+            initial_states, n_states = self._task_init_states(idx, task_name)
+            bddl_path = os.path.join(self.bddl_folder, task_i.problem_folder, task_i.bddl_file)
             task_cache[idx] = {
                 "task_i": task_i,
                 "task_name": task_name,
                 "task_meta": self.task_classification.get(task_name, {}),
-                "language": task_language(self.libero_variant, task_i, self.orig_task_names),
+                "language": task_language(
+                    self.libero_variant, task_i, self.orig_task_names, bddl_path
+                ),
                 "initial_states": initial_states,
                 "n_states": n_states,
-                "bddl_path": os.path.join(self.bddl_folder, task_i.problem_folder, task_i.bddl_file),
+                "bddl_path": bddl_path,
             }
 
         rows: List[Dict[str, Any]] = []
@@ -956,6 +1039,7 @@ def _eval_worker(
         eval_modalities=cfg_dict.get("eval_modalities"),
         env_start_method=cfg_dict.get("env_start_method", "spawn"),
         cross_task_batching=cfg_dict.get("cross_task_batching", False),
+        pro_init_states=cfg_dict.get("pro_init_states", "native"),
     )
     eval_libero.setup()
 
@@ -1000,6 +1084,7 @@ def main(cfg):
         eval_modalities = OmegaConf.to_container(eval_modalities, resolve=True)
     env_start_method: str = OmegaConf.select(cfg, "env_start_method", default="spawn")
     cross_task_batching: bool = OmegaConf.select(cfg, "cross_task_batching", default=False)
+    pro_init_states: str = OmegaConf.select(cfg, "pro_init_states", default="native")
     # Set by eval_pipeline.py's `plan --reeval` on exactly the first eval line touching
     # a given result.csv (see scripts/eval_pipeline.py:plan_lines) -- rotates that file
     # aside immediately before this invocation's own fresh rows replace it, instead of
@@ -1025,6 +1110,7 @@ def main(cfg):
         eval_modalities=eval_modalities,
         env_start_method=env_start_method,
         cross_task_batching=cross_task_batching,
+        pro_init_states=pro_init_states,
     )
     csv_dir_override = OmegaConf.select(cfg, "csv_dir", default=None)
     if csv_dir_override:
