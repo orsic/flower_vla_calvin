@@ -40,6 +40,7 @@ from libero.lifelong.utils import create_experiment_dir, get_task_embs, safe_dev
 
 # Local project imports
 from flower.evaluation.eval_records import (
+    base_task_name,
     checkpoint_name,
     env_seed,
     merge_rank_csvs,
@@ -61,6 +62,7 @@ from flower.evaluation.libero_tasks import (
 )
 from flower.evaluation.libero_venv import make_libero_venv
 from flower.evaluation.multistep_sequences import get_sequences
+from flower.evaluation.rerun_recorder import RerunRecorder
 from flower.evaluation.utils import (
     LangEmbeddings,
     get_default_mode_and_env,
@@ -71,6 +73,75 @@ from flower.evaluation.utils import (
 from flower.rollout.rollout_video import RolloutVideo
 
 logger = logging.getLogger(__name__)
+
+
+def restrict_tasks(
+    task_indices: List[int],
+    task_names: Sequence[str],
+    base_task: Optional[str] = None,
+    max_tasks: Optional[int] = None,
+) -> List[int]:
+    """Narrow an eval to one base task and/or the first N tasks, in registry order.
+
+    ``base_task`` keeps only tasks whose eval_records.base_task_name matches it. On
+    LIBERO-Plus that is every perturbation variant of one original task -- the way to
+    evaluate the same episode under, say, every camera viewpoint, since each variant
+    shares the base task's init state and (via rollout_seed, keyed on the base task
+    name) its noise and env reset.
+
+    ``max_tasks`` then keeps at most N of what is left, spread **evenly** across it with
+    the first and last always included -- not the first N. A perturbation suite orders
+    its variants by parameter, so the first N are a cluster of near-identical
+    perturbations (ten camera poses a centimetre apart) rather than a sample of the
+    range the category actually covers. The pick is deterministic, so two arms of a
+    comparison select the same variants.
+
+    Unlike rerun.max_episodes, which only caps *recording*, these narrow the evaluation
+    itself. A filter matching nothing is an error rather than a silently empty run.
+    """
+    selected = list(task_indices)
+    if base_task:
+        selected = [i for i in selected if base_task_name(task_names[i]) == base_task]
+        if not selected:
+            raise ValueError(
+                f"base_task={base_task!r} matched no task. It must equal a task name "
+                "with any LIBERO-Plus/PRO perturbation suffix stripped "
+                "(eval_records.base_task_name), e.g. "
+                "'KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it'."
+            )
+    n = int(max_tasks) if max_tasks is not None else 0
+    if 0 < n < len(selected):
+        if n == 1:
+            positions = [0]
+        else:
+            last = len(selected) - 1
+            positions = [round(i * last / (n - 1)) for i in range(n)]
+        # dict.fromkeys dedupes while preserving order; rounding can only collide when
+        # n is close to len(selected), in which case fewer than n tasks is correct.
+        selected = [selected[i] for i in dict.fromkeys(positions)]
+    return selected
+
+
+def task_filter_label(
+    task_category: Optional[str],
+    base_task: Optional[str] = None,
+    max_tasks: Optional[int] = None,
+) -> str:
+    """The result.csv task_category_filter value for this run's task restrictions.
+
+    Empty if and only if the run covered the whole suite -- eval_pipeline.already_done()
+    keys `--resume` completeness on exactly that, so every restriction has to show up
+    here or a partial run would be mistaken for a finished suite. Only emptiness is
+    load-bearing downstream; the text is for humans reading the CSV.
+    """
+    parts = []
+    if task_category:
+        parts.append(str(task_category))
+    if base_task:
+        parts.append(f"base_task={base_task}")
+    if max_tasks is not None and int(max_tasks) > 0:
+        parts.append(f"max_tasks={int(max_tasks)}")
+    return ";".join(parts)
 
 
 def select_task_indices(
@@ -325,6 +396,7 @@ class EvaluateLibero:
         env_start_method: str = "spawn",
         cross_task_batching: bool = False,
         pro_init_states: str = "native",
+        rerun_cfg: Optional[Dict[str, Any]] = None,
     ):
         self.model = model
         self.transforms = transforms
@@ -410,6 +482,22 @@ class EvaluateLibero:
                         f"{[benchmark_name.rsplit('_', 1)[0] + '_' + t for t in PRO_MATCHABLE_TAGS]}"
                     )
                 self.libero_variant = "pro_matched"
+
+        # Opt-in rollout recording (rerun.enabled, off by default). Built from the same
+        # fields result.csv's use_* columns come from, so a recording and the CSV always
+        # agree about which modalities reached the model.
+        self.recorder = RerunRecorder(
+            rerun_cfg,
+            log_dir,
+            self.eval_modalities,
+            self.uses_proprio,
+            libero_variant=self.libero_variant,
+            benchmark_name=benchmark_name,
+            # Fixes the per-episode frame slot width, so two arms whose episodes end at
+            # different steps still line up episode-for-episode on the frame timeline.
+            max_steps=max_steps,
+        )
+
         self.benchmark_dict = benchmark.get_benchmark_dict()
         self.benchmark_instance = self.benchmark_dict[self.benchmark_name]()
         self.num_tasks = self.benchmark_instance.get_num_tasks()
@@ -479,7 +567,10 @@ class EvaluateLibero:
     def evaluate_policy(self, model, store_video=False) -> List[Dict[str, Any]]:
         """Run every task in self.all_tasks; return one row per episode across all tasks."""
         if self.cross_task_batching:
-            return self.evaluate_work_list(model, store_video=store_video)
+            try:
+                return self.evaluate_work_list(model, store_video=store_video)
+            finally:
+                self.recorder.close()
 
         all_rows: List[Dict[str, Any]] = []
 
@@ -495,6 +586,7 @@ class EvaluateLibero:
             logger.info(f"Task {task_name} success rate: {success_rate:.4f}")
             all_rows.extend(rows)
 
+        self.recorder.close()
         return all_rows
 
     def _task_init_states(self, idx: int, task_name: str):
@@ -639,6 +731,11 @@ class EvaluateLibero:
                         )
                         video_frames[k] = []
 
+                self.recorder.begin_batch(
+                    [(task_name, episode_idx + k) for k in range(current_batch_size)],
+                    language,
+                )
+
                 dones = [False] * current_batch_size
                 steps_taken = [0] * current_batch_size
                 steps = 0
@@ -662,6 +759,9 @@ class EvaluateLibero:
                     # the still-active episodes. Simulation is the expensive part, so
                     # only step the envs that haven't finished yet.
                     actions = model.step_batch(data, goal).cpu().numpy()  # [B, 7]
+                    # Logged before the env step, so the observation recorded at step t is
+                    # the one this step's action was produced from.
+                    self.recorder.log_step(steps, obs, actions, active_ids)
                     step_obs, _, step_done, _ = env.step(actions[active_ids], id=active_ids)
 
                     still_active = []
@@ -684,6 +784,8 @@ class EvaluateLibero:
                     for frame in video_frames[k]:
                         writer.write(frame)
                     writer.release()
+
+                self.recorder.end_batch(dones, steps_taken, seeds)
 
                 for k in range(current_batch_size):
                     rows.append({
@@ -876,6 +978,11 @@ class EvaluateLibero:
                 model.reset()
 
                 lang_texts = [metas[k]["language"] for k in range(B)]
+                self.recorder.begin_batch(
+                    [(metas[k]["task_name"], ep) for k, (_, ep) in enumerate(batch_items)],
+                    lang_texts,
+                )
+
                 active_ids = list(range(B))
                 while steps < self.max_steps:
                     steps += 1
@@ -886,6 +993,9 @@ class EvaluateLibero:
                     else:
                         data, goal = None, None
                     actions = model.step_batch(data, goal).cpu().numpy()  # [B, 7]
+                    # Logged before the env step, so the observation recorded at step t is
+                    # the one this step's action was produced from.
+                    self.recorder.log_step(steps, obs, actions, active_ids)
                     step_obs, _, step_done, _ = env.step(actions[active_ids], id=active_ids)
 
                     still_active = []
@@ -907,6 +1017,8 @@ class EvaluateLibero:
                     for frame in video_frames[k]:
                         writer.write(frame)
                     writer.release()
+
+                self.recorder.end_batch(dones, steps_taken, seeds)
 
                 for k in range(B):
                     task_idx, ep = batch_items[k]
@@ -1040,6 +1152,9 @@ def _eval_worker(
         env_start_method=cfg_dict.get("env_start_method", "spawn"),
         cross_task_batching=cfg_dict.get("cross_task_batching", False),
         pro_init_states=cfg_dict.get("pro_init_states", "native"),
+        # Rank 0 only, like num_videos above: every rank shares one rerun.path, and each
+        # shard evaluates a different slice of the tasks anyway.
+        rerun_cfg=cfg_dict.get("rerun") if rank == 0 else None,
     )
     eval_libero.setup()
 
@@ -1053,7 +1168,9 @@ def _eval_worker(
     # write time so the tag survives merge_rank_csvs' read-shards-then-merge.
     task_category = cfg_dict.get("task_category")
     for row in rows:
-        row["task_category_filter"] = task_category or ""
+        row["task_category_filter"] = task_filter_label(
+            task_category, cfg_dict.get("base_task"), cfg_dict.get("max_tasks")
+        )
     write_csv(os.path.join(csv_dir, f"result_rank{rank}.csv"), rows)
 
 
@@ -1082,6 +1199,11 @@ def main(cfg):
     eval_modalities = OmegaConf.select(cfg, "eval_modalities", default=None)
     if eval_modalities is not None:
         eval_modalities = OmegaConf.to_container(eval_modalities, resolve=True)
+    base_task: Optional[str] = OmegaConf.select(cfg, "base_task", default=None)
+    max_tasks: Optional[int] = OmegaConf.select(cfg, "max_tasks", default=None)
+    rerun_cfg = OmegaConf.select(cfg, "rerun", default=None)
+    if rerun_cfg is not None:
+        rerun_cfg = OmegaConf.to_container(rerun_cfg, resolve=True)
     env_start_method: str = OmegaConf.select(cfg, "env_start_method", default="spawn")
     cross_task_batching: bool = OmegaConf.select(cfg, "cross_task_batching", default=False)
     pro_init_states: str = OmegaConf.select(cfg, "pro_init_states", default="native")
@@ -1111,6 +1233,7 @@ def main(cfg):
         env_start_method=env_start_method,
         cross_task_batching=cross_task_batching,
         pro_init_states=pro_init_states,
+        rerun_cfg=rerun_cfg,
     )
     csv_dir_override = OmegaConf.select(cfg, "csv_dir", default=None)
     if csv_dir_override:
@@ -1123,6 +1246,10 @@ def main(cfg):
     task_subset = select_task_indices(eval_libero.benchmark_instance, task_category)
     if task_subset is not None:
         eval_libero.all_tasks = task_subset
+    # Narrows the eval itself (rerun.max_episodes only narrows the recording).
+    eval_libero.all_tasks = restrict_tasks(
+        eval_libero.all_tasks, eval_libero.task_names, base_task, max_tasks
+    )
 
     if cfg.log_wandb:
         os.makedirs(log_dir / "wandb", exist_ok=False)
@@ -1144,7 +1271,9 @@ def main(cfg):
         # category-filtered row must never look like suite-completion evidence to
         # eval_pipeline.py's already_done().
         for row in eval_libero.last_rows:
-            row["task_category_filter"] = task_category or ""
+            row["task_category_filter"] = task_filter_label(
+                task_category, base_task, max_tasks
+            )
 
         csv_path = csv_dir / "result.csv"
         if reeval:

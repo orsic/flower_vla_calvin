@@ -69,4 +69,24 @@ eval_modalities:  # set any to false to physically drop that modality's tokens p
   language: true
   proprio: true  # requires model.use_proprio=True; not a token, gated separately (see FLOWERVLA.eval_proprio_mask)
 reeval: false  # set by eval_pipeline.py's `plan --reeval` -- rotate result.csv aside before writing, instead of merging into it
+base_task: null  # keep only tasks whose eval_records.base_task_name matches -- on LIBERO-Plus,
+                 # every perturbation variant of one original task (e.g. all its camera viewpoints)
+max_tasks: null  # keep at most N tasks after task_category/base_task filtering, spread evenly
+                 # across them (first and last included) rather than the first N -- a
+                 # perturbation suite orders variants by parameter, so the first N cluster.
+                 # Unlike rerun.max_episodes (recording only), these narrow the eval itself and
+                 # so mark result.csv's task_category_filter non-empty.
 csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/<libero_variant>_<suite>/
+
+rerun:  # opt-in Rerun (.rrd) recording of rollouts -- see flower/evaluation/rerun_recorder.py
+  enabled: false
+  max_episodes: 10     # record the first N episodes in work order; two evals differing only
+                       # in eval_modalities therefore record the identical episode set
+  jpeg_quality: 40     # 1-100 for both camera views; lower = smaller file
+  path: null           # null -> <log_dir>/rollouts.rrd
+  combo_name: null     # null -> the '+'-joined present-modality combo, e.g. static+lang+proprio
+                       # (the entity root; two arms become two branches under one cursor)
+  frame_stride: null   # null -> max_steps; width of each episode's slot on the `frame`
+                       # timeline, which is what keeps two arms episode-aligned
+  recording_id: null   # null -> "<libero_variant>_<benchmark_name>"; two .rrd files sharing one
+                       # recording id merge into a single recording when opened together

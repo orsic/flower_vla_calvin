@@ -1127,6 +1127,199 @@ Each category reports a per-category average success rate (`eval_lh/cat_<categor
 The hypothesis is that the modality-dropout model degrades less, especially on `Language Instructions`
 (where LIBERO-Plus shows standard VLAs regress to pure visuomotor control).
 
+### Rollout recordings (Rerun)
+
+`result.csv` says whether an episode succeeded; it doesn't let you *watch* one. Setting
+`rerun.enabled=true` on any `./run.sh eval` / `eval-plus` / `eval-pro` additionally writes a
+[Rerun](https://rerun.io) `.rrd` recording of the first `rerun.max_episodes` episodes
+(`flower/evaluation/rerun_recorder.py`):
+
+```
+/<modality combo>/
+    input/rgb_static     3rd-person camera, JPEG at rerun.jpeg_quality
+    input/rgb_gripper    wrist camera, JPEG
+    input/proprio        9-D robot0_joint_pos + robot0_gripper_qpos, named series
+    input/present        0/1 per modality -- which of static/wrist/lang/proprio
+                         actually reached the model
+    output/action        the 7-D action the model emitted (x y z rx ry rz gripper)
+    output/success       the outcome, one point per episode
+    info                 task name, instruction, combo, rollout_seed, steps_taken,
+                         success -- structured fields, for programmatic reading
+    summary              the same, as markdown for a viewer text panel
+```
+
+**The episode is a position on the timeline, not a level in the entity path.** Every
+episode logs to the same entity paths, on one `frame` timeline where episode *i* occupies
+the fixed slot `[i * frame_stride, (i+1) * frame_stride)`. One time slider therefore
+scrolls continuously through every recorded rollout in a single set of views. Rerun
+resolves data as "latest value at time T on the active timeline", so an episode can live
+either in the path or on the timeline — not both; putting it on the timeline is what makes
+a single scrubbing view possible.
+
+Fixed-width slots (rather than packing episodes end to end) keep two recordings
+frame-aligned: a full-modality arm and a withheld-modality arm run the same episodes in the
+same order, so frame F lands on the same episode of both even though their episodes end at
+different steps. `info`/`summary` are written at each episode's *first* frame, so scrubbing
+anywhere inside an episode tells you which rollout you are in and how it ended.
+
+```yaml
+rerun:
+  enabled: false       # off by default — nothing changes, and rerun-sdk is never imported
+  max_episodes: 10     # first N episodes in work order
+  jpeg_quality: 40     # 1-100, both camera views
+  path: null           # null -> <log_dir>/rollouts.rrd
+  combo_name: null     # null -> the '+'-joined present-modality combo; the entity root
+  frame_stride: null   # null -> max_steps; width of each episode's slot on `frame`
+  recording_id: null   # null -> "<libero_variant>_<benchmark_name>"
+```
+
+**Withheld modalities are still recorded.** The camera frames and proprio come from the
+environment observation, so `eval_modalities.rgb_gripper=False` does *not* blank out
+`input/rgb_gripper` — the rollout stays watchable, and the withholding shows up as a zero
+in `input/present` (and in `info`'s `present_*` fields) instead. Those flags come from the
+same place `result.csv`'s `use_*` columns do, so a recording and the CSV never disagree.
+
+**Camera frames are vertically flipped, for display only.** robosuite renders bottom-up, so
+the raw `agentview_image`/`robot0_eye_in_hand_image` arrays — the ones the model is fed, and
+the ones the training data was rendered in — are upside down to a human. The recording flips
+them so the viewer is legible. The consequence worth knowing: a recorded frame is **not**
+byte-identical to the model's input, it is that input mirrored vertically. Nothing on the
+inference path sees the flip.
+
+**Episode selection** is the first N episodes *in work order*, applied identically in both
+batching modes — deliberately unlike `num_videos`, which caps per task under
+`cross_task_batching: false` and globally under `true`. Two evals of the same suite that
+differ only in `eval_modalities` therefore record the identical episode set into the
+identical frame slots, which is what makes them comparable. Combine with `task_category=`
+to choose which slice of LIBERO-Plus gets recorded. On multi-GPU, only rank 0 records (all
+ranks share one `rerun.path`).
+
+**`rerun.max_episodes` caps recording, not evaluation** — the eval still rolls out every
+task in the suite (or category) to produce its `result.csv`. Recording 10 episodes of a
+LIBERO-Plus category costs the whole category's GPU time.
+
+**Size**: roughly 2–4 MB per `libero_10` episode at `jpeg_quality: 40` and 224x224 — so the
+default cap of 10 is ~20-40 MB, while an uncapped 2519-task LIBERO-Plus run would be several
+GB. Raise `max_episodes` deliberately.
+
+**Dependency**: `rerun-sdk==0.26.2`, its own trailing layer in
+`scripts/podman/Containerfile` (rebuild with `./run.sh build`). 0.26 is the last release
+supporting this image's python3.9; 0.27+ needs >=3.10. Its `numpy>=1.23` constraint would
+otherwise resolve to numpy 2.x, which LIBERO and robomimic can't use, so the same layer
+re-pins `numpy~=1.23`.
+
+#### The viewer layout (`scripts/rerun_blueprint.py`)
+
+`scripts/rerun_blueprint.py` writes a Rerun blueprint (`.rbl`) giving one row per modality
+combo found in the recordings — two camera views side by side, then the action chart above
+the proprio chart — with a thin strip on top naming the rollout under the cursor:
+
+```
+┌───────────── rollout: task, instruction, outcome ─────────────┐
+├─ 3rd person ─┬─ 1st person ─┬──────── action ────────────────┤  static+wrist+lang+proprio
+│              │              ├──────── proprio ───────────────┤
+├─ 3rd person ─┬─ 1st person ─┬──────── action ────────────────┤  static+lang+proprio
+│              │              ├──────── proprio ───────────────┤
+└───────────────────────────────────────────────────────────────┘
+ ◀──────────────────────── frame ──────────────────────────────▶
+   ep0        ep1        ep2        ...                     ep9
+```
+
+```bash
+python scripts/rerun_blueprint.py /saves/rerun/layout.rbl \
+    /saves/rerun/plus_libero_10_all.rrd /saves/rerun/plus_libero_10_no_wrist.rrd
+
+rerun /saves/rerun/layout.rbl \
+    /saves/rerun/plus_libero_10_all.rrd /saves/rerun/plus_libero_10_no_wrist.rrd
+```
+
+The combos are read back out of the recordings, so the blueprint can never name a row with
+no data behind it; `--combo static+lang+proprio` (repeatable) names them explicitly instead.
+Dragging the one time slider scrolls through all recorded rollouts, in both arms at once.
+
+#### Comparing a modality combo against the full one
+
+Two evals of the same episodes, one with every modality and one with the wrist view
+withheld. They share a `recording_id`, so opening both `.rrd` files together merges them
+into a single recording whose two combos become the two rows above.
+
+**A few recordings, cheaply.** `n_eval=1` on plain LIBERO-10 is 10 episodes — one per task,
+all 10 tasks — which is minutes of GPU rather than the better part of an hour.
+`cross_task_batching=true` is what makes them run as one parallel batch instead of ten
+batches of one (it's required whenever `n_eval < eval_batch_size`):
+
+```bash
+RUN=/saves/train_logs/libero_10_dropout/2026-09-14_17-00-58   # a train-dropout run, use_proprio=true
+CKPT=$RUN/seed_42/saved_models/last.ckpt
+COMMON="n_eval=1 cross_task_batching=true eval_batch_size=10 num_videos=0 log_wandb=False"
+
+# A. every modality present
+./run.sh eval checkpoint=$CKPT train_folder=$RUN $COMMON \
+    csv_dir=/saves/rerun/csv_orig_all \
+    rerun.enabled=true rerun.max_episodes=10 \
+    rerun.path=/saves/rerun/orig_libero_10_all.rrd
+
+# B. wrist view withheld at the model input
+./run.sh eval checkpoint=$CKPT train_folder=$RUN $COMMON \
+    eval_modalities.rgb_gripper=False csv_dir=/saves/rerun/csv_orig_no_wrist \
+    rerun.enabled=true rerun.max_episodes=10 \
+    rerun.path=/saves/rerun/orig_libero_10_no_wrist.rrd
+```
+
+Note `n_eval` is the knob for *plain* LIBERO (default 20 per task). **LIBERO-Plus is already
+1 episode per task** — its cost is the number of tasks (~2519, or ~419 in a single
+`task_category`), which `base_task`/`max_tasks` below are for. Swap `./run.sh eval` for
+`./run.sh eval-plus task_category="Camera Viewpoints"` (dropping `$COMMON`, whose defaults
+Plus already sets) when the perturbed scenes are what you want to look at.
+
+#### One episode, many perturbations (`base_task`, `max_tasks`)
+
+`base_task` keeps only the tasks whose `eval_records.base_task_name` matches — on
+LIBERO-Plus that is every perturbation variant of one original task. Since all of a base
+task's variants share its init state and, via `rollout_seed` (keyed on the base task name),
+its flow-matching noise and env reset, the result is **the same episode under a sweep of
+perturbations** — e.g. one rollout seen from ten camera angles. `max_tasks` then caps how
+many of those variants run.
+
+Both narrow the *evaluation*, unlike `rerun.max_episodes` which only caps recording, so
+both mark `result.csv`'s `task_category_filter` non-empty and such a run can never be
+mistaken for a finished suite by `./run.sh pipeline --resume`
+(`eval_pipeline.already_done`).
+
+```bash
+BT=KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it
+
+./run.sh eval-plus checkpoint=$CKPT train_folder=$RUN \
+    task_category="Camera Viewpoints" base_task=$BT max_tasks=10 \
+    csv_dir=/saves/rerun/csv_view_all \
+    rerun.enabled=true rerun.max_episodes=10 \
+    rerun.path=/saves/rerun/views_all.rrd
+```
+
+Each frame slot is then one camera pose of the same rollout, and the `summary` panel's task
+name carries that pose's own id (`_view_<h>_<v>_<s>_<er>_<ev>_initstate_0`). A base task's
+name is any of its variants' names with the perturbation suffix stripped; the per-base-task
+breakdown in `scripts/severity_sr.py` and `scripts/compare_eval_csvs.py --base-task` uses
+the same derivation.
+
+Both arms draw the same episodes, in the same order, into the same frame slots, and use the
+same per-episode seeds (`rollout_seed` is keyed on the base task name, not on the modality
+combo — see [Reproducibility](#evaluation-results-csv) above), so this is a paired
+comparison. `csv_dir=` keeps each arm's rows in its own file.
+
+To read a recording back programmatically, note that entity paths are escaped per Rerun's
+path grammar — the `+` in a combo name is written `\+` on the wire. Build paths with
+`flower.evaluation.rerun_recorder.combo_entity_path` rather than by hand:
+
+```python
+import rerun as rr
+from flower.evaluation.rerun_recorder import TIMELINE, combo_entity_path
+
+root = combo_entity_path("static+wrist+lang+proprio")
+rec = rr.dataframe.load_recording("/saves/rerun/orig_libero_10_all.rrd")
+rec.view(index=TIMELINE, contents={f"{root}/output/action": ["Scalars:scalars"]}).select().read_all()
+```
+
 ### Pipeline: automated post-training evaluation
 
 `./run.sh pipeline <train_run_dir> [hydra_overrides...]` automates everything above for one

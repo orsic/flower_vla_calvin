@@ -75,3 +75,19 @@ def test_ddp_strategy_drops_static_graph_under_grad_accumulation():
     strategy = flower.training_libero.ddp_strategy(accumulate_grad_batches=2)
     assert not strategy._ddp_kwargs.get("static_graph", False)
     assert strategy._ddp_kwargs["find_unused_parameters"] is True
+
+
+def test_rerun_recording_is_opt_in_on_every_libero_eval_config():
+    """Every eval entry point carries the rerun block, defaulting off -- so no existing
+    eval changes behaviour (or even imports rerun-sdk) until it is asked for."""
+    for config_name in ("eval_libero", "eval_libero_plus", "eval_libero_pro"):
+        with initialize(config_path="../conf"):
+            cfg = compose(config_name=config_name)
+        assert cfg.rerun.enabled is False, config_name
+        assert cfg.rerun.max_episodes == 10, config_name
+        assert 1 <= cfg.rerun.jpeg_quality <= 100, config_name
+        # Defaulted at runtime from log_dir / the modality combo / the suite name.
+        assert cfg.rerun.path is None, config_name
+        assert cfg.rerun.combo_name is None, config_name
+        assert cfg.rerun.frame_stride is None, config_name
+        assert cfg.rerun.recording_id is None, config_name

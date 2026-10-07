@@ -74,6 +74,14 @@ RUN python -m pip install --no-cache-dir "dit==1.2.3"
 # ----- layer 8: tyro (CLI for scripts/plot_eval.py) -----
 RUN python -m pip install --no-cache-dir "tyro"
 
+# ----- layer 9: rerun-sdk (rollout recordings for flower/evaluation/rerun_recorder.py) -----
+# 0.26.2 is the last release supporting this image's python3.9; 0.27+ requires
+# python>=3.10. Its "numpy>=1.23" constraint resolves to numpy 2.x, which LIBERO and
+# robomimic cannot use, so layer 6's pin is restored in the same layer -- 1.23.x still
+# satisfies rerun's own constraint, and its pyarrow dependency runs fine against it.
+RUN python -m pip install --no-cache-dir "rerun-sdk==0.26.2" \
+    && python -m pip install --no-cache-dir "numpy~=1.23"
+
 # Offscreen rendering via NVIDIA EGL (CDI provides the GPU/EGL libraries).
 # libosmesa6 is installed above as an osmesa fallback if EGL is unavailable.
 ENV MUJOCO_GL=egl
