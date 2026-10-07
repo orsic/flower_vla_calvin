@@ -193,6 +193,12 @@ def record(
 
     pairing = EPISODE_PAIRING if libero_variant == "pro_matched" else TASK_PAIRING
     pairs = equated_subset(pro_rows, orig_rows, pairing)
+    if not pairs:
+        # No orig episode shares a key with this group -- e.g. a withheld-modality record
+        # on a non-dropout run, whose orig_libero_10 only ever held full modality. That is
+        # an absent baseline, not a zero one, so it reads the same as "no orig csv given"
+        # rather than printing nan down the paired columns.
+        return out
     orig_successes = sum(o for _p, o in pairs)
     pro_paired_successes = sum(p for p, _o in pairs)
     orig_n = len(pairs)
@@ -261,8 +267,16 @@ def report(records: List[Dict[str, Any]], full_modality_only: bool = False) -> N
     """Print one line per record. full_modality_only keeps just the all-on combo, for
     callers (analyze_wandb's default view) that would otherwise gain 28 swept matched-arm
     lines per run."""
-    if full_modality_only:
-        records = [r for r in records if r["modality_combo"] == "1,1,1,1"]
+    if full_modality_only and records:
+        # Model-relative: a use_proprio=False checkpoint records use_proprio=0 on every
+        # row (EvaluateLibero.uses_proprio is what the model actually received), so its
+        # full-modality combo is "1,1,1,0". Keying on a literal "1,1,1,1" would filter
+        # such a run's report down to nothing.
+        widest = max(sum(int(v) for v in r["modality_combo"].split(",")) for r in records)
+        records = [
+            r for r in records
+            if sum(int(v) for v in r["modality_combo"].split(",")) == widest
+        ]
     show_baseline = any(r["orig_n"] != "" for r in records)
     header = (
         f"{'suite':<20} {'arm':<12} {'mod':<5} {'success_rate':>12} {'95% CI':>16} "

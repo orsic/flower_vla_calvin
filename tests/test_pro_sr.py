@@ -286,3 +286,42 @@ def test_report_full_modality_only_filters(capsys):
     assert filtered.count("libero_10_lan") == 1
     assert everything.count("libero_10_lan") == 2
     assert "SW-P" in everything and "SW-P" not in filtered
+
+
+def test_no_equated_baseline_reads_as_absent_not_zero():
+    """A withheld-modality record on a non-dropout run has no orig episode to pair with
+    (its orig_libero_10 only holds full modality). That is an absent baseline, not a zero
+    one -- printing nan would read as a failed computation."""
+    pro_rows = [_row("task_a", 0, 1, variant="pro_matched", lang=0)]
+    orig_rows = [_row("task_a", 0, 1, variant="orig")]  # full modality only
+
+    record = collect(pro_rows, orig_rows)[0]
+
+    assert record["orig_n"] == ""
+    assert record["orig_success_rate"] == ""
+    assert record["delta"] == ""
+    assert record["mcnemar_p"] == ""
+    assert record["success_rate"] == 1.0  # the PRO side is still reported
+
+
+def test_full_modality_only_is_relative_to_what_the_model_receives():
+    """A use_proprio=False checkpoint records use_proprio=0 on every row, so its
+    full-modality combo is (1,1,1,0). Keying on a literal (1,1,1,1) would filter such a
+    run's report down to nothing."""
+    records = collect(
+        [_row("task_a", 0, 1, variant="pro_matched", proprio=0)]
+        + [_row("task_a", 1, 1, variant="pro_matched", proprio=0, lang=0)],
+        None,
+    )
+
+    kept = [r for r in records if r["modality_combo"] == "1,1,1,0"]
+    assert len(kept) == 1
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        pro_sr.report(records, full_modality_only=True)
+    out = buf.getvalue()
+
+    assert "SWL-" in out
+    assert "SW--" not in out
