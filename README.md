@@ -360,12 +360,13 @@ sh download_data.sh D | ABCD
 ## Training
 To train the FLOWER FLOWERl with the 4 GPUS, run:
 ```
-python flower/training.py 
+python flower/training_calvin.py
 ```
+In the container, use `./run.sh train-calvin` instead (see [CALVIN (ABCD→D)](#calvin-abcdd)).
 
 You can use the pretrained FLOWER checkpoint from [hf-link](https://huggingface.co/mbreuss/flower_vla_pret) to train your own model on any of the datasets. 
 
-Note that during CALVIN training the full CALVIN eval will be called after _rollout_lh_skip_epochs_ and then every _callbacks.rollout_lh.rollout_freq_*1k training steps. LIBERO training no longer runs rollout eval at all (`rollout_lh_skip_epochs` is set to `max_epochs`) — evaluate a finished LIBERO run with `./run.sh pipeline` instead (see [Pipeline: automated post-training evaluation](#pipeline-automated-post-training-evaluation)). Check out the training config for adopting the parameters.
+CALVIN training no longer runs the in-training rollout eval either (`conf/callbacks/calvin.yaml` has no `rollout_lh`); evaluate a finished CALVIN run with `./run.sh pipeline-calvin`. LIBERO training no longer runs rollout eval at all (`rollout_lh_skip_epochs` is set to `max_epochs`) — evaluate a finished LIBERO run with `./run.sh pipeline` instead (see [Pipeline: automated post-training evaluation](#pipeline-automated-post-training-evaluation)). Check out the training config for adopting the parameters.
 
 For replication of the orginial training results I recommend to use 4 GPUs with a batch_size of 8 and train them for 40k steps for ABC (ABCD) and evaluating after 19 epochs to get the best possible results.
 See training configs for details.
@@ -449,6 +450,45 @@ FLOWER achieves strong performance across all LIBERO benchmarks:
 | LIBERO-OBJECT | 99.3% | 
 | LIBERO-GOAL | 96.9% | 
 
+
+## CALVIN (ABCD→D)
+
+Trains and evaluates on CALVIN ABCD→D in the container. The workflow matches MimicGen's: train with `flower/training_libero.py --config-name=config_calvin`, then a post-training pipeline runs the standard 1000-chain long-horizon eval and uploads it to the training run's W&B artifact.
+
+CALVIN runs on its own image, `flower-vla-calvin:latest` (`scripts/podman/Containerfile.calvin`). That image is `flower-vla-eval` plus `pybullet`, with the bind-mounted `calvin_env/` submodule put on `sys.path`. Set `CALVIN_DATA_DIR` in `vars.env` to the directory containing `task_ABCD_D/`. It is mounted read-only at `/calvin_data`.
+
+```bash
+./run.sh build-calvin        # one-time
+./run.sh download-pret       # if not already done
+./run.sh extract-calvin      # one-time, a few minutes: writes task_ABCD_D/{training,validation}/extracted/
+
+# Baseline (all modalities) and modality-token dropout (train-dropout's settings). Runs land in
+# /saves/train_logs/calvin_abcd_d[_dropout]/<ts>; 35 epochs x 1000 optimizer updates, global
+# batch 32. On success each auto-runs ./run.sh pipeline-calvin on the same GPUs
+# (SKIP_PIPELINE=1 to skip).
+./run.sh train-calvin                       # 4 GPUs x batch 8
+CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-calvin batch_size=4 accumulate_grad_batches=4
+CUDA_VISIBLE_DEVICES=2,3 ./run.sh train-calvin-dropout batch_size=4 accumulate_grad_batches=4
+```
+
+`trainer.limit_train_batches` is `updates_per_epoch x accumulate_grad_batches`, so any batch/accumulation split keeps 35k optimizer updates (and with them the LR schedule and EMA). There is no in-training rollout, and every epoch writes `seed_42/saved_models/last.ckpt`, which the pipeline evaluates (EMA weights).
+
+### Evaluation
+
+```bash
+# Post-training pipeline (what train-calvin* auto-runs): one eval for a baseline run, one per
+# modality combo (7) for a dropout run, then upload of result.csv ("calvin.csv") + PID report.
+./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d_dropout/<ts>
+PIPELINE_REEVAL=1 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/<ts>   # discard + redo
+
+# One-off eval of a checkpoint (eval_modalities.* to withhold a modality, num_sequences=... to shorten):
+./run.sh eval-calvin train_folder=/saves/train_logs/calvin_abcd_d/<ts> \
+    checkpoint=/saves/train_logs/calvin_abcd_d/<ts>/seed_42/saved_models/last.ckpt
+```
+
+`flower/evaluation/flower_evaluate.py` shards the chains round-robin across `CUDA_VISIBLE_DEVICES`, with one spawned worker per GPU, each running its own model and pybullet env. Each chain's noise is seeded from (`base_seed`, subtask, chain index). The same chain therefore draws the same noise under every modality combo and every sharding.
+
+Results go to `<run>/eval_logs/last/calvin_ABCD_D/result.csv`, with one row per *attempted* subtask (`task_idx` = chain, `episode_idx` = position 0–4). A chain stops at its first failure, so a chain's length is the sum of its rows' `success`, and avg_seq_len is the total `success` divided by the number of chains. The eval also prints avg_seq_len, chain and per-task success rates, and writes them to `/saves/eval_logs/logs/<ts>/results.json`.
 
 ## MimicGen
 

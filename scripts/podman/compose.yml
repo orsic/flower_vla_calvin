@@ -513,3 +513,120 @@ services:
       OPENBLAS_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
       TOKENIZERS_PARALLELISM: "false"
+
+  # --- CALVIN services ---
+  # Run on flower-vla-calvin:latest (scripts/podman/Containerfile.calvin): flower-vla-eval
+  # plus pybullet, with the calvin_env/ submodule on sys.path. See ./run.sh build-calvin.
+  # The CALVIN dataset dir (CALVIN_DATA_DIR, the parent of task_ABCD_D/) is mounted
+  # read-only at /calvin_data; extract-calvin mounts it writable.
+  x-base-calvin: &base-calvin
+    image: flower-vla-calvin:latest
+    <<: *limits
+    hostname: "${HOST_HOSTNAME:-flower-vla}"
+    working_dir: /workspace
+    volumes:
+      - ${REPO_ROOT}:/workspace:z
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+      - ${SAVES_DIR}:/saves:z
+      - ${CALVIN_DATA_DIR:-./data/calvin}:/calvin_data:ro
+    devices:
+      - "nvidia.com/gpu=all"
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      WANDB_MODE: disabled
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+
+  # Interactive shell on the CALVIN image.
+  shell-calvin:
+    <<: *base-calvin
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+  # One-time preprocessing: writes <split>/extracted/{ep_npz_names.list,ep_rel_actions.npy}
+  # into both splits (config_calvin's use_extracted_rel_actions reads these). Writable
+  # data mount. Run via ./run.sh extract-calvin.
+  extract-calvin:
+    <<: *base-calvin
+    # The extractor's DataLoader uses torch's file_system sharing strategy (/dev/shm).
+    shm_size: "16g"
+    volumes:
+      - ${REPO_ROOT}:/workspace:z
+      - ${CALVIN_DATA_DIR:-./data/calvin}:/calvin_data:z
+    command:
+      - python
+      - preprocess/extract_by_key.py
+      - -i
+      - /calvin_data
+      - --in_task
+      - task_ABCD_D
+
+  # Shared env block for the CALVIN training service (same shape as x-train-env above).
+  x-train-env-calvin: &train-env-calvin
+    MUJOCO_GL: egl
+    PYOPENGL_PLATFORM: egl
+    PYTHONPATH: /workspace
+    HYDRA_FULL_ERROR: "1"
+    WANDB_MODE: ${WANDB_MODE:-online}
+    HF_HOME: /root/.cache/huggingface
+    CUDA_DEVICE_ORDER: PCI_BUS_ID
+    WANDB_API_KEY: ${WANDB_API_KEY:-}
+    PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    TOKENIZERS_PARALLELISM: "true"
+    NCCL_DEBUG: WARN
+    CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+
+  # Fine-tune FlowerVLA on CALVIN ABCD->D from the general pretrained checkpoint
+  # (conf/config_calvin.yaml). Prerequisites: ./run.sh download-pret && ./run.sh extract-calvin
+  train-calvin:
+    <<: *base-calvin
+    shm_size: "16g"
+    environment:
+      <<: *train-env-calvin
+    command:
+      - python
+      - flower/training_libero.py
+      - --config-name=config_calvin
+      - "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt"
+      - devices=-1
+      - log_dir=/saves/train_logs
+      - seed=42
+      - "hydra.run.dir=/saves/train_logs/calvin_abcd_d/$${now:%Y-%m-%d_%H-%M-%S}"
+
+  # CALVIN long-horizon evaluation (flower/evaluation/flower_evaluate.py, conf/eval_calvin.yaml).
+  eval-calvin:
+    <<: *base-calvin
+    shm_size: "8g"
+    command:
+      - python
+      - flower/evaluation/flower_evaluate.py
+      - "hydra.run.dir=/saves/hydra_outputs/$${now:%Y-%m-%d_%H-%M-%S}"
+
+  # Uploads a completed CALVIN run's result.csv to its W&B run (same role as
+  # pipeline-artifacts-mimicgen). Needs WANDB_MODE=online unlike eval-calvin's default.
+  pipeline-artifacts-calvin:
+    <<: *base-calvin
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      WANDB_MODE: ${WANDB_MODE:-online}
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"

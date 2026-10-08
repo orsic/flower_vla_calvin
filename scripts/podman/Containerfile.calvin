@@ -1,0 +1,13 @@
+# Extends flower-vla-eval:latest with CALVIN's simulator (pybullet) for the long-horizon
+# evaluation, kept out of the base image so LIBERO reproducibility is untouched.
+# calvin_env itself is NOT baked: the calvin_env/ submodule is bind-mounted with the rest of
+# the repo at /workspace, and a .pth file puts it on sys.path (the entrypoint overwrites
+# PYTHONPATH, so a compose env var wouldn't stick).
+FROM flower-vla-eval:latest
+
+# ----- layer c1: calvin_env requirements missing from the base image -----
+RUN python -m pip install --no-cache-dir pybullet numpy-quaternion pandas
+
+# ----- layer c2: calvin_env on sys.path, numpy re-pinned last (same reason as base layer 6) -----
+RUN echo /workspace/calvin_env > /usr/local/lib/python3.9/dist-packages/calvin_env.pth \
+    && python -m pip install --no-cache-dir "numpy~=1.23"

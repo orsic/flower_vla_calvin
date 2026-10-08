@@ -10,20 +10,37 @@ eval_cfg_overwrite:
   model:
     num_sampling_steps: ${num_sampling_steps}
 
-train_folder: /home/hk-project-sustainebot/ft4740/code/flower_vla_calvin/logs/best_checkpoints/calvin_abcd/.hydra/config.yaml
-checkpoint: /home/hk-project-sustainebot/ft4740/code/flower_vla_calvin/logs/best_checkpoints/calvin_abcd/seed_342/avg_seq_len=4.72.ckpt
+# Training run dir (holding .hydra/config.yaml) and the checkpoint to evaluate, e.g.
+# <run>/seed_42/saved_models/last.ckpt. Set by ./run.sh pipeline-calvin.
+train_folder: ???
+checkpoint: ???
 device: 0
 
 
-log_dir: /home/hk-project-sustainebot/ft4740/code/flower_vla_calvin/logs/
-dataset_path: /home/hk-project-robolear/ft4740/code/calvin_d_old/dataset/task_D_D
-num_videos: 30
+log_dir: /saves/eval_logs
+dataset_path: /calvin_data/task_ABCD_D
+num_videos: 0
 debug: False
 
-log_wandb: True
+# W&B logging from inside the eval; ./run.sh pipeline-calvin uploads result.csv instead.
+log_wandb: False
 wandb_entity: orsic-university-of-zagreb-faculty-of-electrical-enginee
 
-num_sequences: 100
+num_sequences: 1000
 ep_len: 360
 num_sampling_steps: 4
 multistep: 10
+
+# Per-subtask rows go to <train_folder>/eval_logs/<ckpt>/calvin_ABCD_D/result.csv
+# (flower/evaluation/eval_records.py); csv_dir overrides that directory.
+csv_dir: null
+# Move an existing result.csv aside instead of merging into it.
+reeval: False
+# Each chain is seeded from (base_seed, chain, sequence index), independent of GPU sharding.
+base_seed: 0
+# Modalities fed to the model; a dropout-trained model is evaluated once per combo.
+eval_modalities:
+  rgb_static: True
+  rgb_gripper: True
+  language: True
+  proprio: True

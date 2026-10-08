@@ -31,6 +31,14 @@
 #   ./run.sh pipeline-mimicgen <train_run_dir> [...]  Post-training MimicGen eval + W&B upload
 #   ./run.sh analyze-mimicgen run|filter [...]  Success rate per task family x d0/d1/d2 from W&B
 #
+#   ./run.sh build-calvin                 Build the CALVIN container image (flower-vla-calvin:latest)
+#   ./run.sh extract-calvin               One-time: extract rel_actions from the CALVIN_DATA_DIR dataset
+#   ./run.sh train-calvin [...]           Fine-tune on CALVIN ABCD->D (all modalities)
+#                                          then auto-runs ./run.sh pipeline-calvin (SKIP_PIPELINE=1 to skip)
+#   ./run.sh train-calvin-dropout [...]   Same, with modality-token dropout; the pipeline evaluates every modality combo
+#   ./run.sh eval-calvin [...]            Run the CALVIN long-horizon evaluation (needs train_folder=, checkpoint=)
+#   ./run.sh pipeline-calvin <train_run_dir> [...]  Post-training CALVIN eval + W&B upload
+#
 # Valid benchmarks: libero_10, libero_90, libero_spatial, libero_object, libero_goal
 #
 # Configure host-specific paths in vars.env (copied from vars.env.example).
@@ -168,6 +176,26 @@ run_train_mimicgen() {
         devices=-1 \
         log_dir=/saves/train_logs \
         num_workers=8 \
+        seed=42 \
+        "hydra.run.dir=$TRAIN_RUN_DIR" \
+        "$@"
+}
+
+# Helper for train-calvin and train-calvin-dropout: the run-folder group under
+# /saves/train_logs (calvin_abcd_d, calvin_abcd_d_dropout), then Hydra overrides.
+# Trains with training_libero.py (as MimicGen does) for its DDP strategy and CKPT_PATH resume.
+run_train_calvin() {
+    local svc="$1" group="$2"; shift 2
+    # See run_train's comment: makes the training GPU set explicit for a chained pipeline.
+    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
+    # Not local: read back by the train-calvin* cases to chain ./run.sh pipeline-calvin.
+    TRAIN_RUN_DIR="/saves/train_logs/$group/$(date +%Y-%m-%d_%H-%M-%S)"
+    podman-compose -f "$COMPOSE" run --rm "$svc" \
+        python flower/training_libero.py \
+        --config-name=config_calvin \
+        "model.pretrained_model_path=/saves/checkpoints/flower_vla_pret/360000_model_weights.pt" \
+        devices=-1 \
+        log_dir=/saves/train_logs \
         seed=42 \
         "hydra.run.dir=$TRAIN_RUN_DIR" \
         "$@"
@@ -514,6 +542,91 @@ case "$CMD" in
         python scripts/mimicgen_sr.py "$@"
     ;;
 
+  build-calvin)
+    podman build \
+        --tag flower-vla-calvin:latest \
+        --file "$REPO_ROOT/scripts/podman/Containerfile.calvin" \
+        "$REPO_ROOT"
+    ;;
+
+  extract-calvin)
+    # One-time: writes <split>/extracted/ into both CALVIN_DATA_DIR/task_ABCD_D splits.
+    # Already-extracted splits are skipped (pass -f to overwrite).
+    podman-compose -f "$COMPOSE" run --rm -T extract-calvin \
+        python preprocess/extract_by_key.py -i /calvin_data --in_task task_ABCD_D "$@"
+    ;;
+
+  train-calvin)
+    # Fine-tune on CALVIN ABCD->D (conf/config_calvin.yaml), all modalities.
+    # On success, chains straight into ./run.sh pipeline-calvin on the same GPUs.
+    # Set SKIP_PIPELINE=1 to skip. Two GPUs with the global batch kept at 32:
+    #   CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-calvin accumulate_grad_batches=2
+    run_train_calvin train-calvin calvin_abcd_d "$@"
+    [[ -n "${SKIP_PIPELINE:-}" ]] || PIPELINE_REEVAL= "$0" pipeline-calvin "$TRAIN_RUN_DIR"
+    ;;
+
+  train-calvin-dropout)
+    # train-calvin with train-dropout's modality-token dropout settings. The chained
+    # pipeline-calvin evaluates every modality combo (7, or 14 with model.use_proprio=True).
+    # Set SKIP_PIPELINE=1 to skip the chained pipeline.
+    run_train_calvin train-calvin calvin_abcd_d_dropout \
+        model.modality_dropout=True \
+        model.modality_dropout_keep_fraction=0.5 \
+        "model.modality_dropout_alphas=[1.0,1.0,1.0]" \
+        model.modality_dropout_proprio_keep_p=0.5 \
+        "$@"
+    [[ -n "${SKIP_PIPELINE:-}" ]] || PIPELINE_REEVAL= "$0" pipeline-calvin "$TRAIN_RUN_DIR"
+    ;;
+
+  eval-calvin)
+    #   ./run.sh eval-calvin train_folder=/saves/train_logs/calvin_abcd_d/<run> \
+    #       checkpoint=/saves/train_logs/calvin_abcd_d/<run>/seed_42/saved_models/last.ckpt
+    podman-compose -f "$COMPOSE" run --rm eval-calvin \
+        python flower/evaluation/flower_evaluate.py \
+        "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)" \
+        "$@"
+    ;;
+
+  pipeline-calvin)
+    # Post-training evaluation for one completed CALVIN training run: the 1000-chain
+    # long-horizon eval with all modalities (one per modality combo for a dropout run),
+    # sharded across CUDA_VISIBLE_DEVICES, then uploads result.csv to that run's W&B
+    # artifact. Trailing Hydra overrides reach both the planner and the eval it launches.
+    #   ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/2026-10-07_10-00-00
+    #   PIPELINE_REEVAL=1 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/<run>
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: ./run.sh pipeline-calvin <train_run_dir> [hydra_overrides...]" >&2
+        exit 1
+    fi
+    train_dir="$1"; shift
+    reeval_flag=()
+    [[ -n "${PIPELINE_REEVAL:-}" ]] && reeval_flag=(--reeval)
+
+    plan="$(podman-compose -f "$COMPOSE" run --rm -T shell-calvin \
+        python scripts/calvin_pipeline.py plan --train-folder "$train_dir" \
+        "${reeval_flag[@]}" -- "$@")"
+
+    # See ./run.sh pipeline's identical comment: read the whole plan into memory before
+    # launching anything, so no long-lived eval container can affect later iterations.
+    mapfile -t plan_lines <<< "$plan"
+
+    i=0
+    for line in "${plan_lines[@]}"; do
+        IFS=$'\t' read -r -a fields <<< "$line"
+        [[ ${#fields[@]} -eq 0 ]] && continue
+        svc="${fields[0]}"
+        overrides=("${fields[@]:1}")
+        i=$((i + 1))
+        podman-compose -f "$COMPOSE" run --rm -T "$svc" \
+            python flower/evaluation/flower_evaluate.py \
+            "${overrides[@]}" \
+            "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)_${i}"
+    done
+
+    podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \
+        python scripts/calvin_pipeline.py upload --train-folder "$train_dir" -- "$@"
+    ;;
+
   analyze)
     # Read the "evaluation" W&B artifact scripts/eval_pipeline.py's upload attached to
     # one or more training runs, and report PID + per-perturbation success rates.
@@ -635,6 +748,21 @@ case "$CMD" in
     echo "                     Post-training MimicGen eval (all modalities, every dataset) + W&B upload."
     echo "                     Example: ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/2026-.../"
     echo "                              PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/.../<run>"
+    echo ""
+    echo "  build-calvin       Build the CALVIN container image (flower-vla-calvin:latest)"
+    echo "  extract-calvin [-f]"
+    echo "                     One-time: extract rel_actions into CALVIN_DATA_DIR/task_ABCD_D/*/extracted/"
+    echo "  train-calvin [hydra_overrides...]"
+    echo "                     Fine-tune on CALVIN ABCD->D, all modalities. On success, auto-runs"
+    echo "                     ./run.sh pipeline-calvin on the same GPUs (SKIP_PIPELINE=1 to skip)."
+    echo "                     Example: CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-calvin accumulate_grad_batches=2"
+    echo "  train-calvin-dropout [hydra_overrides...]"
+    echo "                     Same, with modality-token dropout; the pipeline evaluates every modality combo"
+    echo "  eval-calvin train_folder=<run_dir> checkpoint=<ckpt> [hydra_overrides...]"
+    echo "                     CALVIN long-horizon eval (1000 chains), sharded across CUDA_VISIBLE_DEVICES"
+    echo "  pipeline-calvin <train_run_dir> [hydra_overrides...]"
+    echo "                     Post-training CALVIN eval (per modality combo for dropout runs) + W&B upload."
+    echo "                     Example: ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/2026-.../"
     if [[ "$CMD" != "help" ]]; then
         exit 1
     fi

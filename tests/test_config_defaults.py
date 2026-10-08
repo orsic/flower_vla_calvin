@@ -5,7 +5,8 @@ rollout_lh_skip_epochs).
 
 LIBERO rollout eval is disabled outright (skip_epochs == max_epochs, so
 on_validation_epoch_end's skip branch always fires); evaluation runs after training via
-./run.sh pipeline instead. CALVIN still evaluates at the final epoch.
+./run.sh pipeline instead. CALVIN likewise (./run.sh pipeline-calvin), and carries no
+rollout_lh callback at all.
 """
 
 import flower.training_libero  # noqa: F401 — registers the `sub` resolver
@@ -26,11 +27,11 @@ def test_libero_skip_epochs_tracks_max_epochs_override():
         assert cfg.rollout_lh_skip_epochs == 20
 
 
-def test_calvin_skip_epochs_is_final_epoch():
+def test_calvin_rollout_disabled():
     with initialize(config_path="../conf"):
         cfg = compose(config_name="config_calvin")
-        assert cfg.rollout_lh_skip_epochs == cfg.max_epochs - 1
-        assert cfg.callbacks.rollout_lh.skip_epochs == cfg.max_epochs - 1
+        assert cfg.rollout_lh_skip_epochs == cfg.max_epochs
+        assert "rollout_lh" not in cfg.callbacks
 
 
 def test_shipped_config_still_means_12_pretrained_plus_6_random_appended_one_lr():
