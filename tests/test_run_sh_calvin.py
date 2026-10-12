@@ -93,3 +93,18 @@ def test_train_calvin_baseline_skip_pipeline(tmp_path):
     assert len(lines) == 1
     assert "model.modality_dropout" not in lines[0]
     assert "hydra.run.dir=/saves/train_logs/calvin_abcd_d/" in lines[0]
+
+
+def test_open_loop_calvin_runs_the_scorer_in_eval_calvin(tmp_path):
+    lines = _run(tmp_path, ["open-loop-calvin", "/fake/train_dir", "--max-windows", "3"])
+
+    assert len(lines) == 1
+    assert " run --rm -T eval-calvin python scripts/open_loop_calvin.py --train-folder /fake/train_dir " in lines[0]
+    assert lines[0].endswith("--max-windows 3")
+
+
+def test_analyze_open_loop_runs_the_analysis(tmp_path):
+    lines = _run(tmp_path, ["analyze-open-loop", "--n-bins", "5"])
+
+    assert len(lines) == 1
+    assert " run --rm -T shell-calvin python scripts/open_loop_analysis.py --n-bins 5" in lines[0]

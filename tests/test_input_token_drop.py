@@ -120,6 +120,7 @@ class _ObsStub:
         modality_mask=None,
         eval_modality_mask=None,
         modality_dropout: bool = False,
+        modality_dropout_strategy: str = "dirichlet",
         training: bool = False,
         vlm: _FakeVLM = None,
         tokens_per_image: int = 4,
@@ -135,6 +136,7 @@ class _ObsStub:
         self.proprio_mask = None
         self.eval_proprio_mask = None
         self.modality_dropout = modality_dropout
+        self.modality_dropout_strategy = modality_dropout_strategy
         self.modality_dropout_alphas = (1.0, 1.0, 1.0)
         self.modality_dropout_keep_fraction = 0.5
         self.training = training
@@ -341,3 +343,20 @@ class TestOtherFixedMaskPaths:
 
         assert len(vlm.encode_image_batch_sizes) == 2
         assert stub.text_embed_calls == 1
+
+    def test_uniform_training_dropout_uses_the_uniform_sampler(self, monkeypatch):
+        """model.modality_dropout_strategy=uniform routes the training-dropout budget
+        through sample_uniform_counts instead of the Dirichlet sampler."""
+        import flower.models.networks.modality_dropout as md
+
+        calls = []
+        real = md.sample_uniform_counts
+        monkeypatch.setattr(md, "sample_uniform_counts", lambda a, k: calls.append(k) or real(a, k))
+        monkeypatch.setattr(md, "sample_token_budget", lambda *a: pytest.fail("Dirichlet sampler used"))
+        vlm = _FakeVLM(tokens_per_image=4, embed_dim=8)
+        stub = _ObsStub(modality_dropout=True, modality_dropout_strategy="uniform", training=True, vlm=vlm)
+        stub._tokens_per_image = vlm.tokens_per_image
+
+        stub.encode_observations(_batch())
+
+        assert calls == [0.5]

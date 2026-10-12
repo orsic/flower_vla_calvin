@@ -38,6 +38,8 @@
 #   ./run.sh train-calvin-dropout [...]   Same, with modality-token dropout; the pipeline evaluates every modality combo
 #   ./run.sh eval-calvin [...]            Run the CALVIN long-horizon evaluation (needs train_folder=, checkpoint=)
 #   ./run.sh pipeline-calvin <train_run_dir> [...]  Post-training CALVIN eval + W&B upload
+#   ./run.sh open-loop-calvin <train_run_dir> [...]  Open-loop per-timestep loss on the validation split, per combo
+#   ./run.sh analyze-open-loop [...]      Figures + summaries from every open-loop-calvin result
 #
 # Valid benchmarks: libero_10, libero_90, libero_spatial, libero_object, libero_goal
 #
@@ -627,6 +629,28 @@ case "$CMD" in
         python scripts/calvin_pipeline.py upload --train-folder "$train_dir" -- "$@"
     ;;
 
+  open-loop-calvin)
+    # Open-loop per-timestep loss of one CALVIN run on the held-out validation split, per
+    # modality combo (scripts/open_loop_calvin.py). One model per container; run several
+    # side by side on different GPUs (each needs ~16 GB host RAM while loading):
+    #   CUDA_VISIBLE_DEVICES=0 ./run.sh open-loop-calvin /saves/train_logs/calvin_abcd_d_dropout/<run>
+    #   ./run.sh open-loop-calvin /saves/train_logs/calvin_abcd_d_dropout/<run> --max-windows 3
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: ./run.sh open-loop-calvin <train_run_dir> [args...]" >&2
+        exit 1
+    fi
+    train_dir="$1"; shift
+    podman-compose -f "$COMPOSE" run --rm -T eval-calvin \
+        python scripts/open_loop_calvin.py --train-folder "$train_dir" "$@"
+    ;;
+
+  analyze-open-loop)
+    # Figures + summary CSVs from every open-loop-calvin result (scripts/open_loop_analysis.py),
+    # written to /saves/plots/open_loop.
+    podman-compose -f "$COMPOSE" run --rm -T shell-calvin \
+        python scripts/open_loop_analysis.py "$@"
+    ;;
+
   analyze)
     # Read the "evaluation" W&B artifact scripts/eval_pipeline.py's upload attached to
     # one or more training runs, and report PID + per-perturbation success rates.
@@ -763,6 +787,10 @@ case "$CMD" in
     echo "  pipeline-calvin <train_run_dir> [hydra_overrides...]"
     echo "                     Post-training CALVIN eval (per modality combo for dropout runs) + W&B upload."
     echo "                     Example: ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/2026-.../"
+    echo "  open-loop-calvin <train_run_dir> [--combos 0,3] [--max-windows N] [...]"
+    echo "                     Open-loop per-timestep loss on the CALVIN validation split, per modality combo"
+    echo "  analyze-open-loop [--csv ...] [--out-dir DIR]"
+    echo "                     Figures + summary CSVs from every open-loop-calvin result"
     if [[ "$CMD" != "help" ]]; then
         exit 1
     fi

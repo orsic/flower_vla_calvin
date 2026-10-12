@@ -32,7 +32,7 @@ from flower.models.networks.transformers import (
     zero_init_output_projections,
 )
 from flower.models.networks.modality_dropout import (
-    sample_token_budget,
+    sample_kept_counts,
     build_keep_indices,
     position_correct,
     deterministic_keep_counts,
@@ -145,6 +145,8 @@ class FLOWERVLA(pl.LightningModule):
         modality_dropout: bool = False,
         modality_dropout_keep_fraction: float = 0.5,
         modality_dropout_alphas: tuple = (1.0, 1.0, 1.0),
+        # "dirichlet" (per-group proportions above) or "uniform" (a random subset of all tokens).
+        modality_dropout_strategy: str = "dirichlet",
         # Proprioception isn't a token (see encode_proprio/dit_forward) so it can't join the
         # Dirichlet token budget above; it gets its own per-sample Bernoulli keep gate instead.
         modality_dropout_proprio_keep_p: float = 0.5,
@@ -175,6 +177,7 @@ class FLOWERVLA(pl.LightningModule):
             modality_dropout=modality_dropout,
             modality_dropout_keep_fraction=modality_dropout_keep_fraction,
             modality_dropout_alphas=modality_dropout_alphas,
+            modality_dropout_strategy=modality_dropout_strategy,
             modality_dropout_proprio_keep_p=modality_dropout_proprio_keep_p,
         )
         # Eval-time modality mask: None (default) = unchanged behavior. When set to a
@@ -1088,8 +1091,8 @@ class FLOWERVLA(pl.LightningModule):
                 alphas = torch.tensor(
                     list(self.modality_dropout_alphas), dtype=torch.float, device=device
                 )
-                kept_counts = sample_token_budget(
-                    avail, self.modality_dropout_keep_fraction, alphas
+                kept_counts = sample_kept_counts(
+                    self.modality_dropout_strategy, avail, self.modality_dropout_keep_fraction, alphas
                 )  # [B, 3]
                 lang_valid_len = text_mask.sum(dim=1).long()  # [B]
 

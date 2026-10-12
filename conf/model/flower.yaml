@@ -13,6 +13,9 @@ token_dropout: 0.1  # Post-encoder unstructured token dropout (existing regulari
 modality_dropout: False
 modality_dropout_keep_fraction: 0.5
 modality_dropout_alphas: [1.0, 1.0, 1.0]
+# dirichlet: per-sample group proportions from Dirichlet(alphas); uniform: keep a random
+# subset of all tokens regardless of group (alphas unused).
+modality_dropout_strategy: dirichlet
 # Proprio isn't a token (it's an AdaLN conditioning vector, not part of the Dirichlet budget
 # above) — its own per-sample Bernoulli keep probability while modality_dropout=True.
 modality_dropout_proprio_keep_p: 0.5

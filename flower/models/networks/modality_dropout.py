@@ -87,6 +87,55 @@ def sample_token_budget(
     return counts
 
 
+def sample_uniform_counts(avail: LongTensor, keep_fraction: float) -> LongTensor:
+    """
+    Group-agnostic alternative to `sample_token_budget`: keep a uniformly random subset
+    of n_keep tokens pooled across all groups, so every token is kept with the same
+    probability regardless of its group.
+
+    Draws the per-group counts (multivariate hypergeometric) by ranking per-row noise
+    over each sample's avail[b].sum() token slots; `build_keep_indices` then picks the
+    tokens within each group uniformly, which together is exactly a uniform subset.
+    Same budget and contract as `sample_token_budget`.
+
+    Args:
+        avail: [B, 3] available tokens per group.
+        keep_fraction: fraction of total available tokens to keep, in (0, 1].
+
+    Returns:
+        counts: [B, 3] int64 tensor, counts[b, g] ∈ [0, avail[b, g]].
+                counts[b].sum() == n_keep for every b.
+    """
+    B, G = avail.shape
+    device = avail.device
+    totals = avail.sum(dim=1)  # [B]
+    n_keep = max(1, round(keep_fraction * int(totals.min().item())))
+
+    max_total = int(totals.max().item())
+    slots = torch.arange(max_total, device=device).unsqueeze(0)  # [1, max_total]
+    noise = torch.rand(B, max_total, device=device)
+    noise = noise.masked_fill(slots >= totals.unsqueeze(1), 2.0)  # > max possible rand()
+    ranks = torch.argsort(torch.argsort(noise, dim=1), dim=1)
+    sel = (ranks < n_keep).long()  # [B, max_total]
+
+    # Slot j belongs to group g iff ends[g-1] <= j < ends[g].
+    ends = avail.cumsum(dim=1)  # [B, G]
+    group = (slots.unsqueeze(-1) >= ends.unsqueeze(1)).sum(dim=-1).clamp(max=G - 1)  # [B, max_total]
+    counts = torch.zeros(B, G, dtype=torch.long, device=device)
+    counts.scatter_add_(1, group, sel)
+    return counts
+
+
+def sample_kept_counts(strategy: str, avail: LongTensor, keep_fraction: float, alphas: Tensor) -> LongTensor:
+    """Training-dropout kept-token counts for model.modality_dropout_strategy:
+    "dirichlet" (`sample_token_budget`) or "uniform" (`sample_uniform_counts`)."""
+    if strategy == "dirichlet":
+        return sample_token_budget(avail, keep_fraction, alphas)
+    if strategy == "uniform":
+        return sample_uniform_counts(avail, keep_fraction)
+    raise ValueError(f"Unknown modality_dropout_strategy {strategy!r}: expected 'dirichlet' or 'uniform'")
+
+
 def deterministic_keep_counts(avail: LongTensor, keep_mask: Sequence[bool]) -> LongTensor:
     """
     Eval-time counterpart to `sample_token_budget`: keep a group entirely or drop it

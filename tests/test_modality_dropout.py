@@ -14,6 +14,9 @@ Tests:
                               masking the same positions in every batch element).
 6. compact_layout            — absolute-position bookkeeping for input-level modality skipping.
 7. Zero/one-token edge cases — a group with 0 or 1 available/kept tokens.
+8. Uniform strategy         — sample_uniform_counts keeps a uniform random subset of all
+                              tokens (group-agnostic), and sample_kept_counts dispatches
+                              on model.modality_dropout_strategy.
 """
 
 import pytest
@@ -21,6 +24,8 @@ import torch
 
 from flower.models.networks.modality_dropout import (
     sample_token_budget,
+    sample_uniform_counts,
+    sample_kept_counts,
     build_keep_indices,
     position_correct,
     deterministic_keep_counts,
@@ -606,3 +611,63 @@ class TestZeroAndOneTokenEdgeCases:
             # deterministic_keep_counts keeps the full group regardless (pad exclusion is
             # gather_attention_mask's job, not build_keep_indices'), so it's selected either way.
             assert sel == {0, 1}
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Uniform (group-agnostic) strategy
+# ---------------------------------------------------------------------------
+
+class TestUniformCounts:
+    def test_counts_within_avail_and_rectangular(self):
+        avail = make_avail()
+        avail[:, 2] = torch.tensor([20, 7, 13, 1])  # ragged non-pad language lengths
+        counts = sample_uniform_counts(avail, KEEP_FRAC)
+        assert counts.shape == (B, 3)
+        assert (counts >= 0).all() and (counts <= avail).all()
+        n_keep = round(KEEP_FRAC * int(avail.sum(dim=1).min()))
+        assert (counts.sum(dim=1) == n_keep).all()
+
+    def test_full_keep_returns_min_total(self):
+        avail = make_avail()
+        counts = sample_uniform_counts(avail, 1.0)
+        assert torch.equal(counts, avail)
+
+    def test_mean_matches_hypergeometric_and_never_drops_a_group(self):
+        """Each token is kept with the same probability regardless of its group: the
+        per-group mean is n_keep * avail_g / total, and at keep 0.5 a whole image group
+        is never dropped (unlike Dirichlet, which routinely starves a group)."""
+        torch.manual_seed(0)
+        avail = make_avail().repeat(500, 1)  # 2000 samples
+        counts = sample_uniform_counts(avail, KEEP_FRAC).float()
+        total = NS + NW + LT
+        n_keep = round(KEEP_FRAC * total)
+        expected = torch.tensor([NS, NW, LT]) * n_keep / total
+        assert torch.allclose(counts.mean(dim=0), expected, rtol=0.03)
+        assert (counts[:, :2] > 0).all()
+
+        dirichlet = sample_token_budget(avail, KEEP_FRAC, ALPHAS).float()
+        assert counts[:, 0].std() < 0.2 * dirichlet[:, 0].std()
+
+    def test_rows_differ(self):
+        torch.manual_seed(0)
+        avail = make_avail()
+        counts = sample_uniform_counts(avail, KEEP_FRAC)
+        indices = build_keep_indices(make_group_spans(), counts, make_lang_valid_len(), PROMPT_IDX)
+        assert len({tuple(row.tolist()) for row in indices}) == B
+
+
+class TestSampleKeptCounts:
+    def test_dispatches_on_strategy(self, monkeypatch):
+        import flower.models.networks.modality_dropout as md
+
+        calls = []
+        monkeypatch.setattr(md, "sample_uniform_counts", lambda a, k: calls.append("uniform") or a)
+        monkeypatch.setattr(md, "sample_token_budget", lambda a, k, al: calls.append("dirichlet") or a)
+        avail = make_avail()
+        md.sample_kept_counts("uniform", avail, KEEP_FRAC, ALPHAS)
+        md.sample_kept_counts("dirichlet", avail, KEEP_FRAC, ALPHAS)
+        assert calls == ["uniform", "dirichlet"]
+
+    def test_unknown_strategy_raises(self):
+        with pytest.raises(ValueError, match="modality_dropout_strategy"):
+            sample_kept_counts("beta", make_avail(), KEEP_FRAC, ALPHAS)

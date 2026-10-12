@@ -189,6 +189,13 @@ The position-correction step ensures every retained token's net positional embed
 its absolute position in the original sequence — removal is analytically equivalent to
 attention-masking with positions preserved (verified by a unit test against the masking oracle).
 
+With `model.modality_dropout_strategy=uniform`, no Dirichlet is drawn: each sample keeps
+the same fraction of tokens, chosen uniformly at random from all of its static, wrist and
+language tokens together. Every token is kept with equal probability, so group counts
+concentrate around their share of the budget (at keep 0.5 a whole camera is practically
+never removed), whereas Dirichlet proportions often starve or saturate a group.
+`modality_dropout_alphas` is unused in that mode.
+
 The `<Flow>` prompt token is always kept. Rollout evaluation during training is disabled
 (`rollout_lh_skip_epochs` defaults to `max_epochs` in `conf/config_libero.yaml`); evaluate a
 finished run with `./run.sh pipeline` instead (see [Evaluation](#evaluation)). Hyperparameters
@@ -199,6 +206,7 @@ finished run with `./run.sh pipeline` instead (see [Evaluation](#evaluation)). H
 | `modality_dropout` | `False` | Enable pre-encoder token removal |
 | `modality_dropout_keep_fraction` | `0.5` | Fraction of total tokens to keep per sample |
 | `modality_dropout_alphas` | `[1.0, 1.0, 1.0]` | Dirichlet α for [static, wrist, language] |
+| `modality_dropout_strategy` | `dirichlet` | `dirichlet`, or `uniform`: keep a random subset of all tokens, ignoring groups |
 | `modality_dropout_proprio_keep_p` | `0.5` | Proprio keep probability (Bernoulli, not part of the Dirichlet budget above — see below) |
 
 Proprioception isn't a token — see [Training with proprioception](#training-with-proprioception-modeluse_proprio)
@@ -453,6 +461,8 @@ FLOWER achieves strong performance across all LIBERO benchmarks:
 
 ## CALVIN (ABCD→D)
 
+Results of the runs below, closed and open loop, are in [docs/results.md](docs/results.md).
+
 Trains and evaluates on CALVIN ABCD→D in the container. The workflow matches MimicGen's: train with `flower/training_libero.py --config-name=config_calvin`, then a post-training pipeline runs the standard 1000-chain long-horizon eval and uploads it to the training run's W&B artifact.
 
 CALVIN runs on its own image, `flower-vla-calvin:latest` (`scripts/podman/Containerfile.calvin`). That image is `flower-vla-eval` plus `pybullet`, with the bind-mounted `calvin_env/` submodule put on `sys.path`. Set `CALVIN_DATA_DIR` in `vars.env` to the directory containing `task_ABCD_D/`. It is mounted read-only at `/calvin_data`.
@@ -469,6 +479,8 @@ CALVIN runs on its own image, `flower-vla-calvin:latest` (`scripts/podman/Contai
 ./run.sh train-calvin                       # 4 GPUs x batch 8
 CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-calvin batch_size=4 accumulate_grad_batches=4
 CUDA_VISIBLE_DEVICES=2,3 ./run.sh train-calvin-dropout batch_size=4 accumulate_grad_batches=4
+# Group-agnostic dropout (see "Modality-token dropout"), same global batch on 4 GPUs:
+./run.sh train-calvin-dropout batch_size=4 accumulate_grad_batches=2 model.modality_dropout_strategy=uniform
 ```
 
 `trainer.limit_train_batches` is `updates_per_epoch x accumulate_grad_batches`, so any batch/accumulation split keeps 35k optimizer updates (and with them the LR schedule and EMA). There is no in-training rollout, and every epoch writes `seed_42/saved_models/last.ckpt`, which the pipeline evaluates (EMA weights).
@@ -490,7 +502,62 @@ PIPELINE_REEVAL=1 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/<ts> 
 
 Results go to `<run>/eval_logs/last/calvin_ABCD_D/result.csv`, with one row per *attempted* subtask (`task_idx` = chain, `episode_idx` = position 0–4). A chain stops at its first failure, so a chain's length is the sum of its rows' `success`, and avg_seq_len is the total `success` divided by the number of chains. The eval also prints avg_seq_len, chain and per-task success rates, and writes them to `/saves/eval_logs/logs/<ts>/results.json`.
 
+### Open-loop validation per timestep
+
+The closed-loop eval gives one success rate per modality combo. The open-loop check instead scores each modality combo against held-out demonstrations at every timestep, to show *where in a subtask* a modality matters.
+
+**Data.** It uses CALVIN's `validation/` split: environment D demonstrations that no run trains on. Training only scores 4 batches of it and never takes gradients from it.
+- It has 1,087 annotated windows of 33–64 frames, each labelled with a task (34 task names, e.g. `open_drawer`) and an instruction.
+- Every observation frame of a window whose 10-step action chunk stays inside the window is one sample. That gives 53,923 samples, the same index `ExtendedDiskDataset` trains on.
+- MimicGen and LIBERO have no held-out demos and no subtask labels, so they are not supported.
+
+**Losses.** Each sample is scored with two losses, under each combo's eval-time mask:
+- `fm_t{0.1,0.3,0.5,0.7,0.9}` and their mean `fm_mean`: the training objective (the flow-matching loss), evaluated at five fixed noise levels instead of random ones.
+- `mse_k0..k9` and `mse_mean`: the squared error of the Euler-sampled action chunk (4 steps, the rollout path) against the demonstration, per chunk step.
+
+**Noise and batching.**
+- Noise is seeded from (`--seed`, frame), so every model and combo is scored on identical draws.
+- Batches never mix annotation windows. Language is padded to the longest instruction in a batch, and that padding changes the conditioning, so mixed batches would make a sample's loss depend on its neighbours.
+
+**Per-sample annotations.**
+- `task`, `ann_text`, `ann_idx`, `win_start`/`win_end`, `frame`.
+- `offset` (frames since the window start) and `progress` (offset over the last valid start, in [0, 1]).
+- `phase`, a heuristic from the gripper command over the window:
+  - `approach`: open, before the first close;
+  - `grasp`: within ±2 frames of an open→close switch;
+  - `hold`: closed;
+  - `release`: within ±2 frames of a close→open switch;
+  - `retreat`: open, after a close;
+  - `no_grasp`: the whole window when the gripper never closes, as in pushes, sliders and buttons.
+
+**Which combos are scored.** A dropout run is scored on all 7 combos, a baseline run on all inputs only. Each combo is saved to `<run>/open_loop/last/parts/<combo>.csv.gz`; a rerun skips combos already present, and `--combos` splits one model across processes. When every combo is present, the parts are merged into `<run>/open_loop/last/calvin_val.csv.gz`.
+
+```bash
+# One model per container. All 7 combos of a dropout run take a few hours on one GPU;
+# run models side by side on different GPUs.
+CUDA_VISIBLE_DEVICES=0 ./run.sh open-loop-calvin /saves/train_logs/calvin_abcd_d_dropout/<ts>
+CUDA_VISIBLE_DEVICES=1 ./run.sh open-loop-calvin /saves/train_logs/calvin_abcd_d/<ts>
+./run.sh open-loop-calvin /saves/train_logs/calvin_abcd_d_dropout/<ts> --max-windows 3   # smoke, to open_loop/last_smoke3
+
+# Figures + summary CSVs from every merged result, written to /saves/plots/open_loop
+./run.sh analyze-open-loop
+```
+
+`scripts/open_loop_analysis.py` plots the losses along the demonstrations. Its x-axis is the timestep within the annotated subtask: frames since the start of the language-annotated window, in 5-frame bins (`--bin-width`). About 77% of the windows are 65 frames long and the rest 34–49, so the last bins come from the long windows only; bins with fewer than 200 samples are not drawn. The figures show both metrics: "predicted-action MSE" (`mse_mean`) and "training (flow-matching) loss" (`fm_mean`). Every line plot has one legend, under its panels.
+
+| Output | Content |
+|---|---|
+| `loss_vs_timestep_<metric>.pdf` | One panel per model, one line per input combination (all inputs dashed), mean ± 95% CI. |
+| `delta_vs_timestep_<metric>.pdf` | The same as a paired per-sample increase over the model's own all-inputs loss; all inputs is the zero line. |
+| `combo_vs_timestep_<metric>.pdf` | One panel per input combination, models overlaid (including the no-dropout baseline on all inputs). |
+| `phase_<metric>.pdf`, `task_<metric>.pdf` | Mean loss per combination × gripper phase and per task × combination, one heatmap per model. |
+| `summary_by_{timestep,phase,task}.csv` | The numbers behind the figures, with the increase over all inputs where a run has more than one combination. |
+
+The confidence intervals treat samples as independent. Overlapping samples of one window are correlated, so the intervals are narrower than the true uncertainty.
+
 ## MimicGen
+
+Results of the MimicGen runs (with and without modality dropout, plus ablations) are in [docs/results.md](docs/results.md#mimicgen).
 
 [MimicGen](https://mimicgen.github.io/) generates large demonstration datasets for
 robosuite manipulation tasks from a handful of human demos. We train a single FLOWER
