@@ -19,6 +19,7 @@ import torch
 
 from flower.evaluation.open_loop import (
     annotation_batches,
+    assert_single_instruction,
     fm_loss_per_sample,
     gripper_phases,
     sample_noise,
@@ -169,6 +170,13 @@ def test_annotation_batches_never_mix_windows():
     ann_idx = [0] * 5 + [1] * 2 + [2] * 4
     batches = annotation_batches(ann_idx, batch_size=3)
     assert batches == [[0, 1, 2], [3, 4], [5, 6], [7, 8, 9], [10]]
+
+
+def test_assert_single_instruction_rejects_mixed_batch():
+    # A mixed batch would pad the shorter instruction and shift its loss.
+    assert_single_instruction(["open the drawer"] * 3)
+    with pytest.raises(ValueError, match="instruction"):
+        assert_single_instruction(["open the drawer", "lift the red block"])
 
 
 def test_combo_label():

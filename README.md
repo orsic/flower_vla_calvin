@@ -517,7 +517,9 @@ The closed-loop eval gives one success rate per modality combo. The open-loop ch
 
 **Noise and batching.**
 - Noise is seeded from (`--seed`, frame), so every model and combo is scored on identical draws.
-- Batches never mix annotation windows. Language is padded to the longest instruction in a batch, and that padding changes the conditioning, so mixed batches would make a sample's loss depend on its neighbours.
+- Batches never mix annotation windows. Language is padded to the longest instruction in a batch, and the DiT attends to pad-position features, so mixed batches would make a sample's loss depend on its neighbours.
+  - Within one window every sample has the same instruction, so no padding occurs, the same as in a rollout.
+  - `score_combo` enforces this with `assert_single_instruction`.
 
 **Per-sample annotations.**
 - `task`, `ann_text`, `ann_idx`, `win_start`/`win_end`, `frame`.

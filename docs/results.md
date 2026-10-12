@@ -98,7 +98,9 @@ Findings:
   - **predicted-action MSE:** the error of the action chunk the policy samples, as in a rollout;
   - **training loss:** the flow-matching objective at five fixed noise levels.
 - **Determinism:** noise is seeded per frame, so every model and combination sees the same draws.
-- **Batching:** batches never mix subtask windows. Language is padded to the batch's longest instruction, and that padding changed the loss by up to 0.18.
+- **Batching:** batches never mix subtask windows. Language is padded to the batch's longest instruction, and the action head attends to the padded positions, so in early test runs that mixed instructions the padding changed the loss by up to 0.18.
+  - Within one window every sample has the same instruction, so no padding occurs, the same as in a rollout. Combinations without language have no text tokens at all.
+  - Check: 202 samples (one per task × 10-frame bin) were re-scored per model and combination with batch size 1. No pad tokens appeared. The re-scored losses match the reported ones to within 5e-5, far below the 0.01–0.04 effects reported.
 
 **Annotations per sample.** Each sample records:
 - its subtask;

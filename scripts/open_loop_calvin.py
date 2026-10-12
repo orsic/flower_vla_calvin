@@ -44,6 +44,7 @@ from open_loop_analysis import combo_label  # noqa: E402
 from flower.evaluation.eval_records import checkpoint_name  # noqa: E402
 from flower.evaluation.open_loop import (  # noqa: E402
     annotation_batches,
+    assert_single_instruction,
     fm_loss_per_sample,
     sample_noise,
     sampled_mse_per_sample,
@@ -101,6 +102,7 @@ def score_combo(model, loader, index, combo, t_grid, seed, device) -> pd.DataFra
     out = []
     for batch in loader:
         idx = batch["idx"].numpy()
+        assert_single_instruction(batch["lang_text"])
         batch = to_device(batch, device)
         actions = batch["actions"]
         if actions.dim() == 4:

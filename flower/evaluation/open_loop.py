@@ -97,6 +97,14 @@ def annotation_batches(ann_idx: Sequence[int], batch_size: int) -> List[List[int
     return batches
 
 
+def assert_single_instruction(lang_texts: Sequence[str]) -> None:
+    """Raise if a batch mixes instructions -- the tokenizer would pad the shorter ones, and
+    the DiT cross-attends to pad-position features (it ignores the encoder's attention
+    mask), so the padding would shift those samples' losses."""
+    if len(set(lang_texts)) > 1:
+        raise ValueError(f"batch mixes {len(set(lang_texts))} instructions; language would be padded")
+
+
 def window_index(
     indx: Sequence[Tuple[int, int]],
     tasks: Sequence[str],
