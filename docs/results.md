@@ -149,6 +149,17 @@ Findings:
 - **Keep 0.25 is poor with all inputs in every seed** (1.59–1.72). Its seed-42 result that static+lang beats all inputs does not hold up: over the three seeds the two are equal (1.64 each), and static+lang swings from 1.09 to 2.20 between seeds (± 0.55, the largest spread in the table).
 - **Uniform's failure without the wrist camera is reproducible.** Static+lang is 0.29, 0.24 and 0.30 for its three seeds, against 3.76 for Dirichlet at the same keep fraction.
 - **Uniform is also worse with all inputs** (3.63 vs 4.19 for Dirichlet keep 0.5), in all three seeds. Its weakest subtask is `place_in_slider`, at 7.4%, 70.9% and 42.6% success for seeds 42, 5 and 100. Every seed of no dropout and of Dirichlet keep 0.75 and 0.5 gets 76–96% there. Seed 5's much better `place_in_slider` does not raise its total (3.57 vs 3.55 for seed 42), because it loses as much elsewhere: the three `push_*_block_left` subtasks are 23–40 points lower and `rotate_pink_block_right` 46 points lower than for seed 42 (see the [appendix](#calvin-per-subtask-success-all-inputs)).
+- **A repeat run shows uniform is also unstable between trainings of the same seed.** Seed 100 was trained a second time (`2026-10-17_11-02-27`, another host, same 2 GPUs × batch 8 × 2 accumulation). That run is not included in the means above.
+
+  | inputs | seed 100, `2026-10-14_09-58-42` (reported) | seed 100 repeat, `2026-10-17_11-02-27` |
+  |---|---|---|
+  | static+wrist+lang | 3.764 (56.9) | 2.881 (32.5) |
+  | static+lang | 0.299 | 0.380 |
+  | wrist+lang | 1.104 | 0.881 |
+
+  - With all inputs the repeat is 0.88 lower, far more than uniform's seed-to-seed spread (± 0.12). `place_in_slider` drops to 17.4%, against 42.6% in the reported run.
+  - The failure without the wrist camera is the same in both runs.
+  - Uniform's all-inputs mean of 3.63 is therefore less certain than its standard deviation suggests.
 
 #### No dropout with proprioception
 
@@ -251,13 +262,19 @@ Predicted-action MSE along the subtask, one panel per model:
 
 ![Predicted-action MSE along the subtask per model](results/loss_vs_timestep_mse_mean.png)
 
+Values: [appendix](#calvin-open-loop-values-behind-the-figures-seed-42).
+
 The same, as the increase over each model's own all-inputs error. All inputs is the dashed zero line.
 
 ![Increase in MSE from withholding inputs along the subtask](results/delta_vs_timestep_mse_mean.png)
 
+Values: [appendix](#calvin-open-loop-values-behind-the-figures-seed-42).
+
 One panel per input combination, models overlaid (the no-dropout model only has all inputs):
 
 ![MSE along the subtask per input combination](results/combo_vs_timestep_mse_mean.png)
+
+Values: [appendix](#calvin-open-loop-values-behind-the-figures-seed-42).
 
 **Cost of each modality over time.** The tables give the increase in predicted-action MSE over all inputs from removing one modality, or from keeping language only, in 10-frame bins. The all-inputs error itself is about 0.06–0.07.
 
@@ -295,6 +312,8 @@ Dirichlet keep 0.75 and 0.25 follow keep 0.5's pattern. One difference: keep 0.7
 Predicted-action MSE by gripper phase, one heatmap per model:
 
 ![MSE by gripper phase](results/phase_mse_mean.png)
+
+Values: [appendix](#calvin-open-loop-values-behind-the-figures-seed-42).
 
 **With all inputs, release is the hardest phase for every model**, even though it is only 2.8% of the samples. It is also the hardest for most reduced combinations; the exception is the uniform model without the wrist camera, which does worst while grasping and holding. All-inputs MSE by phase is 0.15–0.16 at release vs 0.04 during hold. Approach is 34% of the samples, grasp 8%, hold 48% and retreat 7%.
 
@@ -654,6 +673,7 @@ Training runs live under `$SAVES_DIR/train_logs/`, and closed-loop results in `<
 | CALVIN Dirichlet keep 0.75, seeds 5 / 100 | `calvin_abcd_d_dropout/2026-10-13_11-14-02` / `2026-10-13_11-14-03` |
 | CALVIN Dirichlet keep 0.5, seeds 5 / 100 | `calvin_abcd_d_dropout/2026-10-12_22-47-23` / `2026-10-12_22-47-28` |
 | CALVIN uniform keep 0.5, seeds 5 / 100 | `calvin_abcd_d_dropout/2026-10-21_03-14-30` / `2026-10-14_09-58-42` |
+| CALVIN uniform keep 0.5, seed 100 repeat (not in the means) | `calvin_abcd_d_dropout/2026-10-17_11-02-27` (trained on another host) |
 | CALVIN Dirichlet keep 0.25, seeds 5 / 100 | `calvin_abcd_d_dropout/2026-10-23_16-48-27` / `2026-10-27_02-46-45` |
 | CALVIN Dirichlet keep 0.5 + proprio | `calvin_abcd_d_dropout/2026-10-21_03-14-19` |
 | CALVIN no dropout + proprio, seeds 42 / 5 | `calvin_abcd_d/2026-10-14_13-37-34` / `2026-10-14_13-37-42` (W&B runs `calvin_abcd_d_2026-10-14_13-37-34` / `_13-37-42`; trained on another host) |
@@ -664,6 +684,11 @@ Training runs live under `$SAVES_DIR/train_logs/`, and closed-loop results in `<
 | MimicGen dropout, proprio keep 0.5 / 1.0, seed 5 | `mimicgen_dropout/2026-10-19_11-46-58` / `2026-10-25_11-13-31` |
 | MimicGen uniform keep 0.5, proprio keep 0.5 | `mimicgen_dropout/2026-10-25_11-13-39` |
 | MimicGen Dirichlet keep 0.75, proprio keep 0.5 | `mimicgen_dropout/2026-10-19_11-47-04` |
+
+**CALVIN and MimicGen runs on W&B (`multimodal_florence`) that are not reported:**
+- Smoke tests: `mimicgen_2026-10-01_18-57-09`, `mimicgen_dropout_2026-10-05_09-08-12` and `calvin_abcd_d_dropout_2026-10-10_10-56-08`.
+- Crashed at epoch 20 and restarted as the repeat run above: `calvin_abcd_d_dropout_2026-10-16_16-39-54`.
+- Stopped at epoch 0 when the disk filled, replaced by `2026-10-23_16-48-27`: `calvin_abcd_d_dropout_2026-10-21_22-12-27`.
 
 ```bash
 # CALVIN: train (auto-runs the closed-loop pipeline afterwards), open loop, figures
@@ -740,6 +765,224 @@ Success rate (%) of each attempted subtask in the 1000 closed-loop chains, avera
 | turn_on_led | 98.4 | 98.7 | 99.0 | 100.0 | 99.1 |
 | turn_on_lightbulb | 99.8 | 100.0 | 99.8 | 68.8 | 100.0 |
 | unstack_block | 99.5 | 99.0 | 99.5 | 98.6 | 99.5 |
+
+### CALVIN open loop: values behind the figures (seed 42)
+
+These tables give the values plotted in the four open-loop figures. Machine-readable versions are in [`results/open_loop_summary_by_timestep.csv`](results/open_loop_summary_by_timestep.csv) and [`results/open_loop_summary_by_phase.csv`](results/open_loop_summary_by_phase.csv).
+- **Source:** the summary files written by `scripts/open_loop_analysis.py` together with the figures. All values come from the seed-42 runs.
+- **Columns in the CSV files:** `mse_mean_*` is predicted-action MSE and `fm_mean_*` the flow-matching loss. Each comes as mean, std, count and 95% CI half-width, plus the same four for the increase over all inputs (`*_delta_*`).
+- **Bins:** frames since the start of the annotated window, in 5-frame bins. Each (model, inputs, bin) cell has at least 4,160 samples.
+- **Confidence intervals:** the 95% CI half-width is at most 0.007 for MSE, at most 0.008 for its increase over all inputs, and at most 0.013 for the per-phase means.
+
+#### Predicted-action MSE along the subtask
+
+The values in the [first](#open-loop-along-the-demonstrations) and third figures. Rows are bins, columns are the inputs given to the model.
+
+**no dropout**
+
+| frames | static+wrist+lang |
+|---|---|
+| 0–4 | 0.066 |
+| 5–9 | 0.066 |
+| 10–14 | 0.065 |
+| 15–19 | 0.061 |
+| 20–24 | 0.061 |
+| 25–29 | 0.064 |
+| 30–34 | 0.068 |
+| 35–39 | 0.062 |
+| 40–44 | 0.054 |
+| 45–49 | 0.047 |
+| 50–54 | 0.061 |
+
+**Dirichlet keep 0.75**
+
+| frames | static+wrist+lang | static+wrist | static+lang | wrist+lang | static | wrist | lang |
+|---|---|---|---|---|---|---|---|
+| 0–4 | 0.065 | 0.102 | 0.131 | 0.082 | 0.188 | 0.121 | 0.290 |
+| 5–9 | 0.068 | 0.099 | 0.122 | 0.080 | 0.180 | 0.116 | 0.282 |
+| 10–14 | 0.067 | 0.100 | 0.114 | 0.074 | 0.171 | 0.114 | 0.273 |
+| 15–19 | 0.063 | 0.100 | 0.111 | 0.073 | 0.166 | 0.114 | 0.262 |
+| 20–24 | 0.064 | 0.099 | 0.114 | 0.075 | 0.168 | 0.116 | 0.258 |
+| 25–29 | 0.064 | 0.091 | 0.120 | 0.078 | 0.168 | 0.116 | 0.256 |
+| 30–34 | 0.068 | 0.088 | 0.123 | 0.081 | 0.170 | 0.112 | 0.271 |
+| 35–39 | 0.063 | 0.081 | 0.112 | 0.069 | 0.157 | 0.107 | 0.298 |
+| 40–44 | 0.053 | 0.069 | 0.092 | 0.060 | 0.131 | 0.104 | 0.333 |
+| 45–49 | 0.047 | 0.069 | 0.079 | 0.071 | 0.121 | 0.116 | 0.369 |
+| 50–54 | 0.060 | 0.095 | 0.103 | 0.098 | 0.156 | 0.138 | 0.416 |
+
+**Dirichlet keep 0.5**
+
+| frames | static+wrist+lang | static+wrist | static+lang | wrist+lang | static | wrist | lang |
+|---|---|---|---|---|---|---|---|
+| 0–4 | 0.070 | 0.106 | 0.079 | 0.080 | 0.130 | 0.120 | 0.288 |
+| 5–9 | 0.069 | 0.100 | 0.076 | 0.078 | 0.122 | 0.114 | 0.280 |
+| 10–14 | 0.066 | 0.098 | 0.077 | 0.074 | 0.114 | 0.112 | 0.273 |
+| 15–19 | 0.063 | 0.099 | 0.072 | 0.070 | 0.106 | 0.111 | 0.266 |
+| 20–24 | 0.066 | 0.099 | 0.073 | 0.072 | 0.106 | 0.109 | 0.271 |
+| 25–29 | 0.069 | 0.094 | 0.076 | 0.075 | 0.106 | 0.103 | 0.282 |
+| 30–34 | 0.074 | 0.091 | 0.081 | 0.079 | 0.105 | 0.100 | 0.300 |
+| 35–39 | 0.067 | 0.085 | 0.073 | 0.070 | 0.095 | 0.094 | 0.315 |
+| 40–44 | 0.057 | 0.074 | 0.061 | 0.060 | 0.083 | 0.087 | 0.338 |
+| 45–49 | 0.049 | 0.068 | 0.056 | 0.057 | 0.084 | 0.088 | 0.361 |
+| 50–54 | 0.061 | 0.090 | 0.075 | 0.071 | 0.117 | 0.108 | 0.400 |
+
+**Dirichlet keep 0.25**
+
+| frames | static+wrist+lang | static+wrist | static+lang | wrist+lang | static | wrist | lang |
+|---|---|---|---|---|---|---|---|
+| 0–4 | 0.067 | 0.097 | 0.086 | 0.079 | 0.128 | 0.115 | 0.303 |
+| 5–9 | 0.068 | 0.094 | 0.082 | 0.077 | 0.122 | 0.109 | 0.275 |
+| 10–14 | 0.069 | 0.095 | 0.079 | 0.076 | 0.118 | 0.107 | 0.243 |
+| 15–19 | 0.068 | 0.095 | 0.076 | 0.076 | 0.114 | 0.104 | 0.215 |
+| 20–24 | 0.068 | 0.096 | 0.075 | 0.075 | 0.114 | 0.102 | 0.203 |
+| 25–29 | 0.067 | 0.090 | 0.076 | 0.078 | 0.109 | 0.099 | 0.204 |
+| 30–34 | 0.069 | 0.087 | 0.078 | 0.080 | 0.102 | 0.099 | 0.216 |
+| 35–39 | 0.063 | 0.081 | 0.071 | 0.073 | 0.094 | 0.095 | 0.229 |
+| 40–44 | 0.055 | 0.069 | 0.062 | 0.065 | 0.083 | 0.089 | 0.274 |
+| 45–49 | 0.051 | 0.067 | 0.058 | 0.066 | 0.083 | 0.092 | 0.331 |
+| 50–54 | 0.064 | 0.088 | 0.076 | 0.087 | 0.116 | 0.115 | 0.403 |
+
+**uniform keep 0.5**
+
+| frames | static+wrist+lang | static+wrist | static+lang | wrist+lang | static | wrist | lang |
+|---|---|---|---|---|---|---|---|
+| 0–4 | 0.067 | 0.102 | 0.166 | 0.089 | 0.215 | 0.137 | 0.255 |
+| 5–9 | 0.068 | 0.098 | 0.157 | 0.084 | 0.219 | 0.128 | 0.244 |
+| 10–14 | 0.067 | 0.098 | 0.150 | 0.081 | 0.218 | 0.127 | 0.243 |
+| 15–19 | 0.065 | 0.100 | 0.146 | 0.080 | 0.214 | 0.130 | 0.247 |
+| 20–24 | 0.066 | 0.100 | 0.155 | 0.083 | 0.222 | 0.135 | 0.263 |
+| 25–29 | 0.067 | 0.093 | 0.175 | 0.088 | 0.227 | 0.134 | 0.283 |
+| 30–34 | 0.069 | 0.089 | 0.192 | 0.091 | 0.233 | 0.127 | 0.306 |
+| 35–39 | 0.063 | 0.081 | 0.190 | 0.080 | 0.231 | 0.115 | 0.344 |
+| 40–44 | 0.054 | 0.072 | 0.189 | 0.071 | 0.224 | 0.108 | 0.401 |
+| 45–49 | 0.051 | 0.073 | 0.190 | 0.082 | 0.224 | 0.116 | 0.442 |
+| 50–54 | 0.064 | 0.095 | 0.214 | 0.112 | 0.244 | 0.135 | 0.473 |
+
+#### Increase in MSE over all inputs along the subtask
+
+The values in the second figure: the per-sample increase over the same model's all-inputs MSE, averaged per bin.
+
+**Dirichlet keep 0.75**
+
+| frames | static+wrist | static+lang | wrist+lang | static | wrist | lang |
+|---|---|---|---|---|---|---|
+| 0–4 | 0.037 | 0.066 | 0.017 | 0.123 | 0.056 | 0.226 |
+| 5–9 | 0.031 | 0.055 | 0.012 | 0.112 | 0.048 | 0.214 |
+| 10–14 | 0.033 | 0.047 | 0.007 | 0.104 | 0.047 | 0.206 |
+| 15–19 | 0.037 | 0.048 | 0.009 | 0.103 | 0.051 | 0.198 |
+| 20–24 | 0.035 | 0.050 | 0.011 | 0.105 | 0.053 | 0.194 |
+| 25–29 | 0.027 | 0.056 | 0.014 | 0.104 | 0.051 | 0.192 |
+| 30–34 | 0.019 | 0.055 | 0.012 | 0.102 | 0.043 | 0.203 |
+| 35–39 | 0.018 | 0.049 | 0.006 | 0.094 | 0.044 | 0.235 |
+| 40–44 | 0.016 | 0.039 | 0.007 | 0.078 | 0.052 | 0.280 |
+| 45–49 | 0.021 | 0.032 | 0.023 | 0.073 | 0.069 | 0.321 |
+| 50–54 | 0.035 | 0.042 | 0.038 | 0.096 | 0.078 | 0.355 |
+
+**Dirichlet keep 0.5**
+
+| frames | static+wrist | static+lang | wrist+lang | static | wrist | lang |
+|---|---|---|---|---|---|---|
+| 0–4 | 0.036 | 0.008 | 0.009 | 0.060 | 0.050 | 0.217 |
+| 5–9 | 0.031 | 0.008 | 0.009 | 0.053 | 0.045 | 0.211 |
+| 10–14 | 0.033 | 0.011 | 0.008 | 0.048 | 0.047 | 0.208 |
+| 15–19 | 0.036 | 0.009 | 0.007 | 0.043 | 0.048 | 0.203 |
+| 20–24 | 0.033 | 0.006 | 0.005 | 0.039 | 0.042 | 0.204 |
+| 25–29 | 0.025 | 0.007 | 0.006 | 0.038 | 0.035 | 0.213 |
+| 30–34 | 0.017 | 0.007 | 0.005 | 0.031 | 0.027 | 0.226 |
+| 35–39 | 0.018 | 0.006 | 0.003 | 0.028 | 0.027 | 0.248 |
+| 40–44 | 0.017 | 0.004 | 0.004 | 0.026 | 0.030 | 0.281 |
+| 45–49 | 0.019 | 0.006 | 0.008 | 0.035 | 0.039 | 0.312 |
+| 50–54 | 0.028 | 0.013 | 0.010 | 0.055 | 0.046 | 0.338 |
+
+**Dirichlet keep 0.25**
+
+| frames | static+wrist | static+lang | wrist+lang | static | wrist | lang |
+|---|---|---|---|---|---|---|
+| 0–4 | 0.030 | 0.019 | 0.011 | 0.060 | 0.048 | 0.236 |
+| 5–9 | 0.026 | 0.014 | 0.009 | 0.054 | 0.041 | 0.207 |
+| 10–14 | 0.025 | 0.009 | 0.007 | 0.049 | 0.038 | 0.174 |
+| 15–19 | 0.027 | 0.008 | 0.008 | 0.046 | 0.036 | 0.147 |
+| 20–24 | 0.028 | 0.007 | 0.007 | 0.046 | 0.034 | 0.135 |
+| 25–29 | 0.023 | 0.009 | 0.011 | 0.042 | 0.032 | 0.137 |
+| 30–34 | 0.018 | 0.009 | 0.012 | 0.033 | 0.031 | 0.148 |
+| 35–39 | 0.018 | 0.009 | 0.011 | 0.032 | 0.032 | 0.167 |
+| 40–44 | 0.014 | 0.007 | 0.010 | 0.028 | 0.034 | 0.219 |
+| 45–49 | 0.016 | 0.007 | 0.015 | 0.032 | 0.041 | 0.280 |
+| 50–54 | 0.024 | 0.011 | 0.022 | 0.051 | 0.050 | 0.338 |
+
+**uniform keep 0.5**
+
+| frames | static+wrist | static+lang | wrist+lang | static | wrist | lang |
+|---|---|---|---|---|---|---|
+| 0–4 | 0.034 | 0.098 | 0.022 | 0.148 | 0.069 | 0.188 |
+| 5–9 | 0.030 | 0.089 | 0.016 | 0.152 | 0.060 | 0.177 |
+| 10–14 | 0.031 | 0.083 | 0.013 | 0.151 | 0.059 | 0.175 |
+| 15–19 | 0.035 | 0.081 | 0.015 | 0.149 | 0.065 | 0.182 |
+| 20–24 | 0.034 | 0.089 | 0.017 | 0.156 | 0.070 | 0.197 |
+| 25–29 | 0.026 | 0.109 | 0.021 | 0.161 | 0.067 | 0.217 |
+| 30–34 | 0.020 | 0.123 | 0.022 | 0.164 | 0.058 | 0.237 |
+| 35–39 | 0.019 | 0.127 | 0.018 | 0.168 | 0.052 | 0.282 |
+| 40–44 | 0.018 | 0.134 | 0.016 | 0.170 | 0.054 | 0.346 |
+| 45–49 | 0.022 | 0.139 | 0.032 | 0.173 | 0.065 | 0.391 |
+| 50–54 | 0.031 | 0.150 | 0.048 | 0.180 | 0.071 | 0.409 |
+
+#### Predicted-action MSE by gripper phase
+
+The values in the heatmaps. Samples per phase (the same for every model and combination): approach 18,232 (33.8%), grasp 4,484 (8.3%), hold 26,003 (48.2%), release 1,525 (2.8%), retreat 3,679 (6.8%).
+
+**no dropout**
+
+| inputs | approach | grasp | hold | release | retreat |
+|---|---|---|---|---|---|
+| static+wrist+lang | 0.078 | 0.111 | 0.037 | 0.149 | 0.061 |
+
+**Dirichlet keep 0.75**
+
+| inputs | approach | grasp | hold | release | retreat |
+|---|---|---|---|---|---|
+| static+wrist+lang | 0.082 | 0.102 | 0.038 | 0.152 | 0.059 |
+| static+wrist | 0.101 | 0.141 | 0.068 | 0.225 | 0.092 |
+| static+lang | 0.153 | 0.141 | 0.064 | 0.270 | 0.154 |
+| wrist+lang | 0.086 | 0.127 | 0.050 | 0.262 | 0.073 |
+| static | 0.190 | 0.184 | 0.119 | 0.397 | 0.225 |
+| wrist | 0.102 | 0.188 | 0.104 | 0.282 | 0.107 |
+| lang | 0.298 | 0.367 | 0.269 | 0.456 | 0.328 |
+
+**Dirichlet keep 0.5**
+
+| inputs | approach | grasp | hold | release | retreat |
+|---|---|---|---|---|---|
+| static+wrist+lang | 0.082 | 0.109 | 0.040 | 0.161 | 0.063 |
+| static+wrist | 0.102 | 0.150 | 0.067 | 0.226 | 0.097 |
+| static+lang | 0.088 | 0.134 | 0.044 | 0.220 | 0.074 |
+| wrist+lang | 0.088 | 0.115 | 0.047 | 0.193 | 0.068 |
+| static | 0.113 | 0.174 | 0.076 | 0.346 | 0.118 |
+| wrist | 0.109 | 0.166 | 0.082 | 0.262 | 0.104 |
+| lang | 0.304 | 0.360 | 0.279 | 0.435 | 0.333 |
+
+**Dirichlet keep 0.25**
+
+| inputs | approach | grasp | hold | release | retreat |
+|---|---|---|---|---|---|
+| static+wrist+lang | 0.080 | 0.111 | 0.041 | 0.159 | 0.065 |
+| static+wrist | 0.098 | 0.142 | 0.063 | 0.218 | 0.097 |
+| static+lang | 0.084 | 0.147 | 0.045 | 0.237 | 0.089 |
+| wrist+lang | 0.087 | 0.121 | 0.052 | 0.211 | 0.076 |
+| static | 0.107 | 0.181 | 0.079 | 0.347 | 0.137 |
+| wrist | 0.109 | 0.155 | 0.079 | 0.282 | 0.104 |
+| lang | 0.267 | 0.308 | 0.233 | 0.444 | 0.281 |
+
+**uniform keep 0.5**
+
+| inputs | approach | grasp | hold | release | retreat |
+|---|---|---|---|---|---|
+| static+wrist+lang | 0.080 | 0.110 | 0.040 | 0.159 | 0.061 |
+| static+wrist | 0.105 | 0.145 | 0.064 | 0.221 | 0.110 |
+| static+lang | 0.157 | 0.255 | 0.173 | 0.198 | 0.137 |
+| wrist+lang | 0.088 | 0.147 | 0.063 | 0.275 | 0.077 |
+| static | 0.177 | 0.282 | 0.245 | 0.284 | 0.210 |
+| wrist | 0.116 | 0.201 | 0.114 | 0.275 | 0.123 |
+| lang | 0.214 | 0.432 | 0.361 | 0.355 | 0.248 |
 
 ### MimicGen per-dataset success, all inputs
 
