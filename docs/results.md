@@ -434,9 +434,10 @@ All evaluations use the last checkpoint, 4 sampling steps, all 10 predicted acti
   - Modified tasks: language (`lan`), object (`object`), swapped positions (`swap`) and task (`task`), 200 episodes each.
   - The `lan` and `task` perturbations are also paired episode by episode with the original LIBERO-10 episodes.
 
-**Which evaluations are used.** Results are taken from the runs' W&B evaluation artifacts.
+**Which runs and evaluations are used.** Results are taken from the runs' W&B evaluation artifacts.
+- Only runs trained with the code of commit `ffba3d2` (2026-09-14) or later are used. These are the runs in W&B project `multimodal_florence`. The dropout and proprioception training code changed several times before that commit.
 - Only evaluations made after commit `ca969a8` (2026-09-23) are used. Before it, the environment reset was not seeded, so five of the ten LIBERO-10 tasks got a random fixture layout in every episode.
-- Earlier evaluations are listed under [missing or unusable results](#missing-or-unusable-libero-results).
+- Excluded runs and evaluations are listed under [missing or unusable results](#missing-or-unusable-libero-results).
 - This leaves three valid seeds for four models, two for two models and one for proprio keep 0.25:
 
 | model | valid seeds | runs (group `libero_10…`) |
@@ -560,66 +561,6 @@ LIBERO-PRO was run for nine runs of five models. All inputs, 200 episodes per pe
   - The policies execute the trained motions rather than follow a new instruction.
 - **Replaced objects (`object`)** cost the dropout models with proprio keep 1.0 and 0.5 more (39–49% per seed) than the no-dropout model (54–57%). The no-dropout + proprio model (47–50%) and proprio keep 0.25 (50%) are in between.
 
-### Earlier experiments (old evaluation code)
-
-These runs (W&B project `multimodal_policies`, 2026-09-03 to 09-12) used batch 32 like the main study. Their evaluations predate every eval fix listed above, so they are only roughly comparable. The batch-size-8 runs before them are not reported (see [below](#missing-or-unusable-libero-results)).
-
-**Proprio-keep sweep and action-head variants.** Dirichlet keep 0.5 with proprioception unless noted. The 12-block head uses the first 12 pretrained blocks; the 24-block head adds 12 zero-initialized blocks, interleaved. Success (%) on LIBERO-10 with all inputs and without proprioception, and on LIBERO-Plus with all inputs:
-
-| run | model | seed | LIBERO-10 | LIBERO-10, no proprio | LIBERO-Plus |
-|---|---|---|---|---|---|
-| `libero_10_dropout/2026-09-09_13-41-45` | proprio keep 1.0 | 5 | 96.0 | 36.0 | 82.3 |
-| `libero_10_dropout/2026-09-09_13-53-25` | proprio keep 1.0 | 0 | 93.5 | 59.0 | 76.2 |
-| `libero_10_dropout/2026-09-11_15-19-28` | proprio keep 1.0 | 100 | 94.5 | 37.0 | 81.4 |
-| `libero_10_dropout/2026-09-11_14-58-49` | proprio keep 0.75 | 42 | 94.5 | 91.5 | 75.2 |
-| `libero_10_dropout/2026-09-11_15-04-42` | proprio keep 0.75 | 5 | 96.5 | 95.0 | 78.2 |
-| `libero_10_dropout/2026-09-12_10-38-53` | proprio keep 0.75 | 100 | 93.0 | 96.0 | 76.3 |
-| `libero_10_dropout/2026-09-07_17-26-01` | proprio keep 0.5 | 42 | 93.5 | 95.0 | 75.1 |
-| `libero_10_dropout/2026-09-09_13-55-28` | proprio keep 0.5 | 42 | 94.0 | 94.5 | 75.3 |
-| `libero_10_dropout/2026-09-09_13-55-47` | proprio keep 0.5 | 5 | 98.0 | 95.5 | 76.0 |
-| `libero_10_dropout/2026-09-11_15-11-37` | proprio keep 0.5 | 100 | 94.5 | 94.0 | 73.1 |
-| `libero_10_dropout/2026-09-11_15-06-55` | proprio keep 0.25 | 42 | 95.0 | 94.0 | 74.0 |
-| `libero_10_dropout/2026-09-11_15-07-27` | proprio keep 0.25 | 5 | 97.0 | 98.0 | 76.2 |
-| `libero_10_dropout/2026-09-11_15-08-07` | proprio keep 0 | 42 | 0.5 | 93.5 | 0.1* |
-| `libero_10_dropout/2026-09-11_15-10-27` | proprio keep 0 | 5 | 0.0 | 98.0 | 0.0* |
-| `libero_10/2026-09-04_17-36-21` | no dropout + proprio | 42 | 95.0 | n/a | 74.2 |
-| `libero_10_static+wrist+lang+proprio/2026-09-09_13-56-20` | no dropout + proprio | 42 | 93.0 | n/a | 74.8 |
-| `libero_10_static+wrist+lang+proprio/2026-09-09_13-56-15` | no dropout + proprio | 5 | 93.0 | n/a | 72.2 |
-| `libero_10_dropout/2026-09-11_16-03-00` | 12-block head, proprio keep 0.5 | 42 | 96.5 | 96.0 | 75.8 |
-| `libero_10_dropout/2026-09-12_10-42-30` | 12-block head, proprio keep 0.5 | 5 | 95.5 | 96.5 | 74.4 |
-| `libero_10_dropout/2026-09-12_11-05-01` | 12-block head, proprio keep 1.0 | 42 | 93.5 | 48.5 | 80.0 |
-| `libero_10_dropout/2026-09-12_11-05-37` | 12-block head, proprio keep 1.0 | 5 | 95.0 | 59.5 | 79.5 |
-| `libero_10_dropout/2026-09-11_16-06-56` | 24-block head, proprio keep 0.5 | 42 | 95.0 | 94.5 | 72.8 |
-| `libero_10_dropout/2026-09-12_11-02-05` | 24-block head, proprio keep 0.5 | 5 | 96.5 | 95.5 | 75.3 |
-| `libero_10_dropout/2026-09-12_11-03-33` | 24-block head, proprio keep 1.0 | 42 | 93.5 | 36.0 | 79.9 |
-| `libero_10_dropout/2026-09-12_11-04-37` | 24-block head, proprio keep 1.0 | 5 | 95.0 | 50.5 | 78.5 |
-| `libero_10_dropout/2026-09-12_10-56-45` | 18-block head (12 pretrained + 6 appended), proprio keep 0.25 | 100 | 96.5 | 95.0 | 75.7 |
-
-\* LIBERO-Plus was run with proprioception on, which the proprio keep 0 models never saw.
-
-- **These earlier runs show the same pattern as the main study.**
-  - Proprio keep 1.0 gives the best LIBERO-Plus results (76–82%) but collapses without proprioception (36–60%).
-  - Every keep below 1 is indifferent to proprioception.
-  - Keep 0 never learned to use it: proprio on at evaluation gives 0%.
-- **Shrinking or deepening the action head changes little** (72.8–80.0% on LIBERO-Plus).
-
-**Fixed-modality training and other suites** (seed 42, no evaluation artifact). These show only the success rate of the in-training rollout on the unperturbed suite, at the end of training:
-
-| run | inputs during training and rollout | in-training success |
-|---|---|---|
-| `libero_10_static/2026-09-03_13-35-06` | wrist + language | 87.0 |
-| `libero_10_wrist/2026-09-03_13-35-05` | static + language | 87.2 |
-| `libero_10_lang/2026-09-03_13-35-02` | static + wrist | 81.4 |
-| `libero_10_static+lang/2026-09-03_13-33-48` | wrist | 81.6 |
-| `libero_10_wrist+lang/2026-09-03_13-33-47` | static | 76.8 |
-| `libero_10_static+wrist/2026-09-03_13-35-04` | language | 0.0 |
-| `libero_10_dropout/2026-09-03_10-51-36` | Dirichlet keep 0.5, no proprio, LIBERO-10 | 92.4 |
-| `libero_goal_dropout/2026-09-03_11-44-38` | the same, LIBERO-Goal | 96.0 |
-| `libero_spatial_dropout/2026-09-03_11-48-13` | the same, LIBERO-Spatial | 97.2 |
-| `libero_10_dropout/2026-09-04_17-20-02` | Dirichlet keep 0.5, proprio always kept | 95.6 |
-
-The group names of the fixed-modality runs list the inputs that were *removed*.
-
 ### Missing or unusable LIBERO results
 
 Run folders are under `train_logs/<group>/<run>`. "W&B host" is where the run trained. Everything that is on disk here lives on goldberry (`/mnt/goldberry_sdb1/morsic/flower_vla_calvin/train_logs`).
@@ -639,12 +580,12 @@ Run folders are under `train_logs/<group>/<run>`. "W&B host" is where the run tr
   - So it is missing entirely for proprio keep 0.75 and for dropout without proprio. Run it with `PIPELINE_RESUME=1 ./run.sh pipeline …`, which skips the completed stages.
 - The three runs re-evaluated on primrose (`16-11-38`, `16-47-49`, `16-48-01`) have an empty `eval_timestamp` column. Multi-GPU evaluation writes the rank shards without one, and the merge does not fill it in. Their validity rests on the file modification times instead (2026-10-28 to 10-30, with `PIPELINE_REEVAL=1`).
 
-**Earlier phase:**
-- **No evaluation artifact:** the six fixed-modality runs above (checkpoints on goldberry), the three 2026-09-03 dropout runs (`libero_10_dropout/2026-09-03_10-51-36`, `libero_goal_dropout/2026-09-03_11-44-38`, `libero_spatial_dropout/2026-09-03_11-48-13`; not on disk here) and `libero_10_dropout/2026-09-04_17-20-02`.
-- **Unusable LIBERO-Plus result:** proprio keep 0 (`libero_10_dropout/2026-09-11_15-08-07`, daisy; `2026-09-11_15-10-27`, primrose). It was evaluated with proprioception on.
-- **Debug or smoke-test runs, not reported:** `libero_10/2026-09-09_12-16-14` (1 epoch, 2 batches).
-- **Invalid, batch size 8:** `libero_10_frozen/2026-08-27_12-15-55` (frozen VLM; crashed, no checkpoint), `train_logs_libero_10`, `libero_10_dropout/2026-08-28_15-45-43`, `2026-08-30_09-26-46`, `2026-08-30_13-10-49`, `2026-09-02_11-37-06`, `libero_goal_dropout/2026-09-02_10-58-48`, `libero_object_dropout/2026-09-02_10-58-43`, `libero_spatial_dropout/2026-09-02_10-58-38`.
-- **LIBERO-Object** was only trained in that invalid batch-8 phase. No valid LIBERO-Goal, -Spatial or -Object result has been evaluated.
+**Excluded runs.** Every run in W&B project `multimodal_policies` (2026-08-27 to 09-12) is excluded:
+- the batch-8 runs, the fixed-modality runs and the LIBERO-Goal, -Spatial and -Object runs;
+- the earlier proprio-keep sweep (keep 0 to 1.0) and the 12-, 18- and 24-block action-head variants;
+- the earlier no-dropout + proprio runs and a 1-epoch debug run.
+
+They were trained before `ffba3d2` and evaluated before `ca969a8`. Their run folders are on goldberry. No valid LIBERO-Goal, -Spatial or -Object run exists.
 
 ## Across the benchmarks
 
