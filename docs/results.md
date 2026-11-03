@@ -31,14 +31,15 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
   - Removing less (Dirichlet keep 0.75) does not close the gap (46.4%), and it gives up almost all robustness: 2–4% without either camera.
   - Both cameras matter. Without the wrist camera success falls to about 18%, without the static camera to about 10%.
   - Proprioception has to be dropped in training too: a model that always saw it falls from 47.0% to 15.2% without it (2 seeds).
-- **On LIBERO-10, dropout costs nothing on the original tasks and makes the model much more robust to perturbations** (1–3 valid seeds per model).
+- **On LIBERO-10, dropout costs nothing on the original tasks and makes the model more robust to perturbations** (1–3 valid seeds per model).
   - With all inputs every model scores 91.5–95.3% on LIBERO-10.
-  - On the 2519 perturbed LIBERO-Plus tasks every dropout seed (75.7–82.3%) beats every no-dropout seed (64.6–75.4%).
-  - The largest gains are for camera viewpoints, reworded instructions and robot initial pose.
+  - On the 2519 perturbed LIBERO-Plus tasks the dropout models average 74.5–79.6%, against 68.3–72.2% without dropout. One dropout seed (70.7%) falls inside the no-dropout range (64.6–75.4%).
+  - The gain grows with the size of the perturbation, e.g. 11–18 points at the largest robot initial-pose offset.
+  - The largest gains are for camera viewpoints and the robot initial pose, then reworded instructions.
   - Proprio keep 1.0 is the most robust (79.6%) but, as on MimicGen, collapses without proprioception.
   - Without dropout, withholding language or the wrist camera gives 0%. The dropout models keep 62–73% on LIBERO-Plus without language or the static camera.
   - No model survives a changed task on LIBERO-PRO (0–12%).
-  - Two LIBERO runs still need evaluation, and LIBERO-PRO is missing for eight; see [missing or unusable results](#missing-or-unusable-libero-results).
+  - Three LIBERO runs still need evaluation, and LIBERO-PRO is missing for one; see [missing or unusable results](#missing-or-unusable-libero-results).
 
 ## Setup
 
@@ -438,13 +439,13 @@ All evaluations use the last checkpoint, 4 sampling steps, all 10 predicted acti
 - Only runs trained with the code of commit `ffba3d2` (2026-09-14) or later are used. These are the runs in W&B project `multimodal_florence`. The dropout and proprioception training code changed several times before that commit.
 - Only evaluations made after commit `ca969a8` (2026-09-23) are used. Before it, the environment reset was not seeded, so five of the ten LIBERO-10 tasks got a random fixture layout in every episode.
 - Excluded runs and evaluations are listed under [missing or unusable results](#missing-or-unusable-libero-results).
-- This leaves three valid seeds for four models, two for two models and one for proprio keep 0.25:
+- This leaves three valid seeds for five models, two for proprio keep 0.75 and one for proprio keep 0.25:
 
 | model | valid seeds | runs (group `libero_10…`) |
 |---|---|---|
 | no dropout | 42, 5, 100 | `libero_10/2026-09-18_16-47-38`, `16-47-48`, `16-48-01` |
 | no dropout + proprio | 42, 5, 100 | `libero_10_static+wrist+lang+proprio/2026-09-18_16-47-17`, `16-47-22`, `16-47-49` |
-| Dirichlet keep 0.5, no proprio | 42, 5 | `libero_10_dropout/2026-09-14_17-14-47`, `17-15-19` |
+| Dirichlet keep 0.5, no proprio | 42, 5, 100 | `libero_10_dropout/2026-09-14_17-14-47`, `17-15-19`, `2026-11-02_12-18-49` |
 | Dirichlet keep 0.5, proprio keep 1.0 | 42, 5, 100 | `libero_10_dropout/2026-09-14_17-00-43`, `17-07-42`, `17-08-28` |
 | Dirichlet keep 0.5, proprio keep 0.75 | 42, 100 | `libero_10_dropout/2026-09-14_17-12-09`, `17-12-40` |
 | Dirichlet keep 0.5, proprio keep 0.5 | 42, 5, 100 | `libero_10_dropout/2026-09-14_17-00-58`, `17-07-23`, `17-08-24` |
@@ -458,14 +459,16 @@ Values below are mean ± sd over the valid seeds, in %. Proprio keep 0.25 has on
 |---|---|---|---|---|
 | no dropout | 94.5 / 92.5 / 91.0 | 92.7 ± 1.8 | 70.9 / 64.6 / 69.5 | 68.3 ± 3.3 |
 | no dropout + proprio | 94.5 / 88.5 / 91.5 | 91.5 ± 3.0 | 68.6 / 72.4 / 75.4 | 72.2 ± 3.4 |
-| dropout, no proprio | 94.5 / 96.0 | 95.2 ± 1.1 | 75.7 / 77.3 | 76.5 ± 1.1 |
+| dropout, no proprio | 94.5 / 96.0 / 92.5 | 94.3 ± 1.8 | 75.7 / 77.3 / 70.7 | 74.5 ± 3.4 |
 | dropout, proprio keep 1.0 | 96.0 / 93.5 / 93.5 | 94.3 ± 1.4 | 76.9 / 79.5 / 82.3 | **79.6 ± 2.7** |
 | dropout, proprio keep 0.75 | 92.5 / 92.5 | 92.5 ± 0.0 | 80.2 / 77.1 | 78.6 ± 2.2 |
 | dropout, proprio keep 0.5 | 96.5 / 93.0 / 96.5 | 95.3 ± 2.0 | 76.7 / 76.5 / 78.2 | 77.2 ± 0.9 |
 | dropout, proprio keep 0.25 | 92.0 | 92.0 | 76.2 | 76.2 |
 
 - **On LIBERO-10 itself all models are equal** (91.5–95.3%), within the seed spread and the ±3–7-point sampling interval.
-- **Dropout makes the model more robust to perturbations.** On LIBERO-Plus every dropout seed (75.7–82.3%) beats every no-dropout seed (64.6–75.4%), about 7 points on average.
+- **Dropout makes the model more robust to perturbations.** On LIBERO-Plus the dropout models average 74.5–79.6%, against 68.3–72.2% without dropout, about 7 points more on average.
+  - The seeds overlap at the edges: dropout without proprio, seed 100, scores 70.7%, below two no-dropout seeds (72.4% and 75.4%).
+  - Every other dropout seed (75.7–82.3%) beats every no-dropout seed except the best one (75.4%).
 - **Proprio keep 1.0 is the most robust** (79.6%), mainly through camera viewpoints (below).
 
 ### Modality combinations on LIBERO-10
@@ -473,23 +476,23 @@ Values below are mean ± sd over the valid seeds, in %. Proprio keep 0.25 has on
 | inputs | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 |
 |---|---|---|---|---|---|---|---|
 | static+wrist+lang+proprio | n/a | 91.5 ± 3.0 | n/a | 94.3 ± 1.4 | 92.5 ± 0.0 | 95.3 ± 2.0 | 92.0 |
-| static+wrist+lang | 92.7 ± 1.8 | n/a | 95.2 ± 1.1 | 39.7 ± 12.7 | 95.0 ± 0.7 | 95.5 ± 1.8 | 93.0 |
+| static+wrist+lang | 92.7 ± 1.8 | n/a | 94.3 ± 1.8 | 39.7 ± 12.7 | 95.0 ± 0.7 | 95.5 ± 1.8 | 93.0 |
 | static+wrist+proprio | n/a | n/a | n/a | 82.0 ± 1.3 | 85.0 ± 1.4 | 84.7 ± 1.9 | 83.0 |
-| static+wrist | n/a | n/a | 83.2 ± 2.5 | 34.2 ± 9.6 | 84.2 ± 0.4 | 85.5 ± 1.5 | 80.5 |
+| static+wrist | n/a | n/a | 83.7 ± 1.9 | 34.2 ± 9.6 | 84.2 ± 0.4 | 85.5 ± 1.5 | 80.5 |
 | static+lang+proprio | n/a | n/a | n/a | 43.3 ± 8.4 | 40.2 ± 2.5 | 44.8 ± 5.3 | 36.0 |
-| static+lang | n/a | n/a | 44.8 ± 6.0 | 3.7 ± 0.8 | 38.8 ± 4.6 | 43.8 ± 5.7 | 37.0 |
+| static+lang | n/a | n/a | 44.5 ± 4.3 | 3.7 ± 0.8 | 38.8 ± 4.6 | 43.8 ± 5.7 | 37.0 |
 | wrist+lang+proprio | n/a | n/a | n/a | 87.3 ± 2.8 | 85.0 ± 2.1 | 82.7 ± 1.8 | 84.5 |
-| wrist+lang | n/a | n/a | 83.2 ± 4.6 | 18.8 ± 6.9 | 80.8 ± 4.6 | 82.8 ± 2.4 | 83.0 |
+| wrist+lang | n/a | n/a | 81.8 ± 4.1 | 18.8 ± 6.9 | 80.8 ± 4.6 | 82.8 ± 2.4 | 83.0 |
 | static+proprio | n/a | n/a | n/a | 38.8 ± 12.9 | 35.8 ± 5.3 | 36.7 ± 7.8 | 35.5 |
-| static | n/a | n/a | 39.0 ± 4.9 | 2.8 ± 1.0 | 32.5 ± 1.4 | 33.5 ± 8.4 | 31.5 |
+| static | n/a | n/a | 39.7 ± 3.7 | 2.8 ± 1.0 | 32.5 ± 1.4 | 33.5 ± 8.4 | 31.5 |
 | wrist+proprio | n/a | n/a | n/a | 75.2 ± 2.1 | 71.0 ± 0.7 | 69.8 ± 2.4 | 62.5 |
-| wrist | n/a | n/a | 65.0 ± 0.7 | 15.0 ± 6.3 | 66.5 ± 2.8 | 65.8 ± 1.6 | 61.5 |
+| wrist | n/a | n/a | 63.8 ± 2.1 | 15.0 ± 6.3 | 66.5 ± 2.8 | 65.8 ± 1.6 | 61.5 |
 | lang (± proprio) | n/a | n/a | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
 
 - **The wrist camera is the important view on LIBERO**, unlike CALVIN.
-  - Without the static camera the dropout models keep 83–87% (with proprioception, where they were trained with it).
+  - Without the static camera the dropout models keep 82–87% (with proprioception, where they were trained with it).
   - Without the wrist camera they fall to 36–45%.
-  - The wrist camera alone gives 62–75%; the static camera alone gives 36–39%.
+  - The wrist camera alone gives 62–75%; the static camera alone gives 36–40%.
 - **Language matters much less than on CALVIN.** Without it the dropout models still reach 82–85% (static+wrist, with or without proprio). With all inputs they reach 92–96%.
 - **Proprioception must be dropped in training, as on MimicGen.** With proprio keep 1.0, every combination without proprioception collapses: 39.7% with both cameras and language, 3–34% otherwise. With keep 0.75, 0.5 and 0.25 the model is indifferent to it.
 
@@ -497,14 +500,14 @@ Values below are mean ± sd over the valid seeds, in %. Proprio keep 0.25 has on
 
 | category | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 |
 |---|---|---|---|---|---|---|---|
-| Camera Viewpoints | 39.1 ± 6.8 | 43.3 ± 9.2 | 51.6 ± 7.4 | **65.0 ± 6.9** | 55.7 ± 4.9 | 49.2 ± 4.6 | 53.9 |
-| Robot Initial States | 62.5 ± 2.9 | 64.2 ± 1.8 | 73.2 ± 1.3 | 70.3 ± 2.2 | 71.0 ± 4.0 | 73.0 ± 1.2 | 68.4 |
-| Language Instructions | 83.9 ± 1.1 | 86.5 ± 1.9 | 94.0 ± 0.7 | 93.8 ± 1.9 | 94.8 ± 0.7 | 94.4 ± 4.7 | 91.4 |
-| Light Conditions | 71.2 ± 10.5 | 75.5 ± 4.6 | 80.8 ± 3.9 | 73.0 ± 2.5 | 83.0 ± 3.9 | 80.9 ± 1.1 | 82.1 |
-| Background Textures | 82.8 ± 7.1 | 80.2 ± 2.2 | 77.3 ± 2.2 | 83.9 ± 2.8 | 74.7 ± 13.2 | 81.7 ± 3.5 | 72.0 |
-| Sensor Noise | 70.4 ± 3.2 | 80.8 ± 5.9 | 80.4 ± 2.2 | 84.6 ± 3.3 | 87.4 ± 1.1 | 82.3 ± 4.4 | 85.1 |
-| Objects Layout | 77.0 ± 2.1 | 80.4 ± 3.1 | 82.2 ± 1.6 | 87.8 ± 2.8 | 86.1 ± 2.9 | 83.8 ± 1.4 | 83.3 |
-| all | 68.3 ± 3.3 | 72.2 ± 3.4 | 76.5 ± 1.1 | 79.6 ± 2.7 | 78.6 ± 2.2 | 77.2 ± 0.9 | 76.2 |
+| Camera Viewpoints | 39.1 ± 6.8 | 43.3 ± 9.2 | 48.9 ± 6.9 | **65.0 ± 6.9** | 55.7 ± 4.9 | 49.2 ± 4.6 | 53.9 |
+| Robot Initial States | 62.5 ± 2.9 | 64.2 ± 1.8 | 72.3 ± 1.7 | 70.3 ± 2.2 | 71.0 ± 4.0 | 73.0 ± 1.2 | 68.4 |
+| Language Instructions | 83.9 ± 1.1 | 86.5 ± 1.9 | 88.8 ± 9.1 | 93.8 ± 1.9 | 94.8 ± 0.7 | 94.4 ± 4.7 | 91.4 |
+| Light Conditions | 71.2 ± 10.5 | 75.5 ± 4.6 | 79.9 ± 3.2 | 73.0 ± 2.5 | 83.0 ± 3.9 | 80.9 ± 1.1 | 82.1 |
+| Background Textures | 82.8 ± 7.1 | 80.2 ± 2.2 | 78.3 ± 2.3 | 83.9 ± 2.8 | 74.7 ± 13.2 | 81.7 ± 3.5 | 72.0 |
+| Sensor Noise | 70.4 ± 3.2 | 80.8 ± 5.9 | 77.4 ± 5.4 | 84.6 ± 3.3 | 87.4 ± 1.1 | 82.3 ± 4.4 | 85.1 |
+| Objects Layout | 77.0 ± 2.1 | 80.4 ± 3.1 | 81.7 ± 1.4 | 87.8 ± 2.8 | 86.1 ± 2.9 | 83.8 ± 1.4 | 83.3 |
+| all | 68.3 ± 3.3 | 72.2 ± 3.4 | 74.5 ± 3.4 | 79.6 ± 2.7 | 78.6 ± 2.2 | 77.2 ± 0.9 | 76.2 |
 
 By difficulty level (number of tasks: 357 / 450 / 484 / 523 / 705):
 
@@ -512,17 +515,131 @@ By difficulty level (number of tasks: 357 / 450 / 484 / 523 / 705):
 |---|---|---|---|---|---|
 | no dropout | 84.7 ± 3.0 | 83.3 ± 2.3 | 78.7 ± 3.0 | 66.7 ± 5.0 | 44.6 ± 3.5 |
 | no dropout + proprio | 86.6 ± 3.2 | 86.0 ± 2.9 | 82.2 ± 1.3 | 71.8 ± 4.2 | 49.4 ± 6.0 |
-| dropout, no proprio | 88.8 ± 1.2 | 88.9 ± 2.5 | 85.5 ± 0.9 | 78.9 ± 2.8 | 54.3 ± 2.3 |
+| dropout, no proprio | 86.7 ± 3.7 | 86.1 ± 5.2 | 83.7 ± 3.2 | 77.0 ± 3.8 | 52.8 ± 3.0 |
 | dropout, proprio keep 1.0 | 91.1 ± 1.9 | 90.7 ± 3.1 | 87.5 ± 2.5 | 80.3 ± 3.8 | 60.6 ± 2.1 |
 | dropout, proprio keep 0.75 | 89.8 ± 1.4 | 90.7 ± 0.3 | 87.4 ± 2.6 | 80.7 ± 5.1 | 57.7 ± 1.3 |
 | dropout, proprio keep 0.5 | 89.8 ± 1.5 | 89.9 ± 1.3 | 86.5 ± 1.4 | 80.1 ± 1.7 | 54.1 ± 2.5 |
 | dropout, proprio keep 0.25 | 87.4 | 87.3 | 84.9 | 76.7 | 57.2 |
 
-- **Dropout helps most against camera viewpoints** (+6 to +26 points over the no-dropout models), language instructions (+5 to +11), robot initial states (+4 to +11) and object layout (+2 to +11). Sensor noise gains 0 to +17 points. Light conditions and background textures show no consistent gain.
-- **Dropout's gain grows with difficulty:** 1–6 points at level 1, 5–16 at level 5.
-- **Dropout models ignore language perturbations.** They score 91–95% on reworded instructions, about the same as with no instruction at all (89–95%, see the [appendix](#libero-plus-per-category-with-one-modality-withheld)). The no-dropout models lose 5–9 points to rewording, compared with LIBERO-10.
-- **Camera viewpoints are the hardest category** and the one where proprio keep 1.0 stands out (65.0% vs 49–56% for the other dropout models). Pooled over its three seeds, it still succeeds 39–50% of the time at camera rotations of 45–90°, where every other model gets 0–27%.
-- **Perturbation size matters most for the robot's initial pose.** Success falls from 89–97% at 0.1 rad to 39–58% at 0.5 rad, and every dropout model is 10–19 points above the no-dropout models at 0.5 rad.
+- **Dropout helps most against camera viewpoints** (+6 to +26 points over the no-dropout models), robot initial states (+4 to +11), language instructions (+2 to +11) and object layout (+1 to +11). Sensor noise gains −3 to +17 points. Light conditions and background textures show no consistent gain.
+- **Dropout's gain grows with difficulty:** 0–6 points at level 1, 3–16 at level 5.
+- **Dropout models ignore language perturbations.** They score about the same on reworded instructions as with no instruction at all (see the [appendix](#libero-plus-per-category-with-one-modality-withheld)).
+  - Models with proprioception: 91–95% reworded, 89–95% without an instruction.
+  - Without proprio, seeds 42 and 5: 93.5% and 94.5% reworded, 94.5% without an instruction.
+  - Without proprio, seed 100 is weaker on these ten base tasks: 78.3% reworded, 74.7% without an instruction.
+  - The no-dropout models lose 5–9 points to rewording, compared with LIBERO-10.
+- **Camera viewpoints are the hardest category** and the one where proprio keep 1.0 stands out (65.0% vs 49–56% for the other dropout models). See [perturbation size](#libero-plus-by-perturbation-size) for the breakdown by camera rotation.
+
+### LIBERO-Plus by perturbation size
+
+Success (%) with all inputs, by the physical size of the perturbation, mean ± sd over the valid seeds. The sizes are measured from each task's BDDL and scene files (`scripts/perturbation_severity.py`), not taken from LIBERO-Plus's `difficulty_level`.
+- "tasks" is the number of LIBERO-Plus tasks in the bin, one episode each per run.
+- "orig, paired" is the success of the matching original LIBERO-10 episodes (same base task and initial state), pooled over all 18 runs. It is 83–100% in every bin, so the drops come from the perturbation, not from harder base tasks.
+- Small bins (under about 20 tasks) swing by tens of points between seeds.
+- Background Textures and Language Instructions have no size axis.
+
+**Camera Viewpoints: rotation** (342 of 419 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| rot~0-15deg | 91 | 78.8 ± 2.8 | 83.9 ± 9.5 | 94.9 ± 6.1 | 96.3 ± 2.8 | 96.7 ± 0.0 | 93.4 ± 5.5 | 96.7 | 93 |
+| rot~15-30deg | 71 | 49.8 ± 12.1 | 47.9 ± 13.4 | 43.2 ± 14.4 | 54.5 ± 19.1 | 51.4 ± 11.0 | 57.3 ± 17.8 | 57.7 | 93 |
+| rot~30-45deg | 60 | 22.2 ± 6.9 | 26.7 ± 18.0 | 50.0 ± 8.7 | 72.2 ± 4.2 | 65.0 ± 18.9 | 52.8 ± 15.0 | 70.0 | 96 |
+| rot~45-60deg | 61 | 4.4 ± 4.1 | 9.8 ± 3.3 | 3.8 ± 3.4 | 39.3 ± 11.5 | 22.1 ± 17.4 | 8.7 ± 9.6 | 18.0 | 94 |
+| rot~60-75deg | 53 | 10.7 ± 9.7 | 21.4 ± 17.0 | 18.9 ± 23.2 | 39.6 ± 11.8 | 13.2 ± 13.3 | 6.3 ± 4.7 | 9.4 | 90 |
+| rot~75-90deg | 6 | 0.0 ± 0.0 | 16.7 ± 28.9 | 11.1 ± 19.2 | 50.0 ± 28.9 | 8.3 ± 11.8 | 0.0 ± 0.0 | 0.0 | 92 |
+
+**Camera Viewpoints: distance scale** (the other 77 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| scale~1.2x | 6 | 83.3 ± 16.7 | 94.4 ± 9.6 | 72.2 ± 48.1 | 83.3 ± 0.0 | 100.0 ± 0.0 | 94.4 ± 9.6 | 83.3 | 100 |
+| scale~1.3x | 9 | 51.9 ± 23.1 | 59.3 ± 35.7 | 66.7 ± 22.2 | 85.2 ± 6.4 | 61.1 ± 7.9 | 77.8 ± 22.2 | 100.0 | 97 |
+| scale~1.4x | 9 | 33.3 ± 19.2 | 63.0 ± 23.1 | 55.6 ± 11.1 | 66.7 ± 19.2 | 61.1 ± 23.6 | 63.0 ± 23.1 | 100.0 | 97 |
+| scale~1.5x | 9 | 59.3 ± 52.5 | 33.3 ± 22.2 | 77.8 ± 11.1 | 77.8 ± 29.4 | 77.8 ± 31.4 | 48.1 ± 50.1 | 66.7 | 92 |
+| scale~1.6x | 11 | 63.6 ± 18.2 | 33.3 ± 5.2 | 87.9 ± 10.5 | 78.8 ± 22.9 | 95.5 ± 6.4 | 72.7 ± 47.2 | 18.2 | 83 |
+| scale~1.7x | 8 | 62.5 ± 33.1 | 54.2 ± 31.5 | 45.8 ± 14.4 | 75.0 ± 25.0 | 81.2 ± 26.5 | 66.7 ± 19.1 | 37.5 | 92 |
+| scale~1.8x | 10 | 50.0 ± 17.3 | 50.0 ± 17.3 | 26.7 ± 25.2 | 63.3 ± 5.8 | 60.0 ± 0.0 | 26.7 ± 30.6 | 40.0 | 92 |
+| scale~1.9x | 10 | 0.0 ± 0.0 | 20.0 ± 10.0 | 33.3 ± 28.9 | 46.7 ± 25.2 | 20.0 ± 14.1 | 13.3 ± 23.1 | 10.0 | 89 |
+| scale~2.0x | 5 | 0.0 ± 0.0 | 40.0 ± 20.0 | 66.7 ± 57.7 | 66.7 ± 30.6 | 0.0 ± 0.0 | 6.7 ± 11.5 | 0.0 | 94 |
+
+**Robot Initial States: initial joint offset** (393 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.1rad | 45 | 88.9 ± 3.8 | 94.8 ± 2.6 | 94.1 ± 5.6 | 95.6 ± 2.2 | 94.4 ± 1.6 | 94.8 ± 3.4 | 91.1 | 94 |
+| 0.2rad | 73 | 79.9 ± 4.4 | 80.8 ± 2.4 | 88.1 ± 2.9 | 89.5 ± 0.8 | 86.3 ± 3.9 | 91.8 ± 2.4 | 82.2 | 93 |
+| 0.3rad | 87 | 69.7 ± 3.5 | 62.1 ± 6.0 | 76.2 ± 1.8 | 69.7 ± 4.0 | 73.6 ± 0.0 | 75.1 ± 1.8 | 73.6 | 93 |
+| 0.4rad | 98 | 52.7 ± 4.1 | 59.5 ± 4.2 | 61.9 ± 2.6 | 59.9 ± 3.6 | 59.2 ± 7.2 | 62.9 ± 1.2 | 57.1 | 93 |
+| 0.5rad | 90 | 38.9 ± 3.3 | 42.6 ± 0.6 | 56.3 ± 3.9 | 54.1 ± 5.1 | 57.2 ± 5.5 | 55.9 ± 2.3 | 53.3 | 93 |
+
+**Light Conditions: light severity** (274 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| severity~0.1 | 5 | 80.0 ± 20.0 | 86.7 ± 11.5 | 93.3 ± 11.5 | 80.0 ± 20.0 | 90.0 ± 14.1 | 93.3 ± 11.5 | 80.0 | 89 |
+| severity~0.2 | 18 | 88.9 ± 9.6 | 98.1 ± 3.2 | 92.6 ± 6.4 | 90.7 ± 16.0 | 97.2 ± 3.9 | 96.3 ± 3.2 | 88.9 | 92 |
+| severity~0.3 | 36 | 88.9 ± 7.3 | 85.2 ± 4.2 | 87.0 ± 1.6 | 80.6 ± 11.1 | 94.4 ± 0.0 | 89.8 ± 3.2 | 86.1 | 93 |
+| severity~0.4 | 44 | 68.2 ± 17.2 | 74.2 ± 9.2 | 75.8 ± 1.3 | 70.5 ± 2.3 | 79.5 ± 6.4 | 78.8 ± 2.6 | 84.1 | 93 |
+| severity~0.5 | 69 | 66.7 ± 8.8 | 71.5 ± 0.8 | 73.9 ± 2.5 | 68.6 ± 1.7 | 75.4 ± 4.1 | 71.5 ± 4.2 | 72.5 | 93 |
+| severity~0.6 | 47 | 61.0 ± 10.5 | 68.1 ± 4.3 | 70.2 ± 5.6 | 63.1 ± 8.1 | 72.3 ± 12.0 | 74.5 ± 7.7 | 76.6 | 92 |
+| severity~0.7 | 36 | 73.1 ± 12.5 | 73.1 ± 10.5 | 88.9 ± 4.8 | 80.6 ± 5.6 | 91.7 ± 3.9 | 87.0 ± 4.2 | 97.2 | 94 |
+| severity~0.8 | 17 | 62.7 ± 9.0 | 74.5 ± 13.6 | 88.2 ± 0.0 | 72.5 ± 12.2 | 91.2 ± 4.2 | 90.2 ± 3.4 | 82.4 | 92 |
+| severity~0.9 | 2 | 66.7 ± 57.7 | 66.7 ± 28.9 | 100.0 ± 0.0 | 66.7 ± 28.9 | 100.0 ± 0.0 | 83.3 ± 28.9 | 100.0 | 92 |
+
+**Sensor Noise: level 1–10, pooled over the five noise types** (449 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| level 1 | 41 | 87.0 ± 2.8 | 95.1 ± 2.4 | 91.1 ± 9.9 | 97.6 ± 2.4 | 98.8 ± 1.7 | 97.6 ± 2.4 | 95.1 | 93 |
+| level 2 | 39 | 88.0 ± 3.0 | 98.3 ± 3.0 | 90.6 ± 9.7 | 94.9 ± 5.1 | 100.0 ± 0.0 | 95.7 ± 3.9 | 100.0 | 92 |
+| level 3 | 43 | 86.8 ± 3.6 | 89.9 ± 5.9 | 89.1 ± 7.1 | 93.8 ± 3.6 | 96.5 ± 4.9 | 93.0 ± 6.2 | 95.3 | 93 |
+| level 4 | 45 | 83.7 ± 4.6 | 95.6 ± 2.2 | 94.1 ± 8.4 | 93.3 ± 2.2 | 98.9 ± 1.6 | 94.1 ± 3.4 | 93.3 | 93 |
+| level 5 | 49 | 84.4 ± 4.2 | 85.7 ± 3.5 | 90.5 ± 5.1 | 92.5 ± 3.1 | 94.9 ± 1.4 | 89.1 ± 1.2 | 91.8 | 93 |
+| level 6 | 44 | 75.8 ± 1.3 | 85.6 ± 6.9 | 87.1 ± 3.5 | 89.4 ± 5.7 | 93.2 ± 0.0 | 89.4 ± 4.7 | 93.2 | 94 |
+| level 7 | 47 | 66.0 ± 2.1 | 78.0 ± 9.6 | 73.0 ± 6.5 | 85.1 ± 5.6 | 84.0 ± 1.5 | 77.3 ± 6.8 | 83.0 | 93 |
+| level 8 | 46 | 55.8 ± 10.9 | 68.1 ± 16.6 | 69.6 ± 5.8 | 78.3 ± 11.5 | 79.3 ± 10.8 | 76.1 ± 12.1 | 78.3 | 94 |
+| level 9 | 49 | 46.3 ± 8.2 | 62.6 ± 10.1 | 51.0 ± 7.4 | 67.3 ± 14.7 | 74.5 ± 4.3 | 62.6 ± 10.1 | 65.3 | 93 |
+| level 10 | 46 | 37.0 ± 7.5 | 55.8 ± 9.8 | 44.2 ± 1.3 | 58.7 ± 9.5 | 58.7 ± 0.0 | 54.3 ± 10.0 | 60.9 | 93 |
+
+**Sensor Noise: noise type, pooled over the ten levels**
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| fog | 89 | 67.4 ± 4.5 | 77.5 ± 4.1 | 68.2 ± 5.7 | 78.7 ± 7.8 | 87.1 ± 2.4 | 78.7 ± 4.9 | 86.5 | 93 |
+| gaussian_blur | 89 | 57.7 ± 2.6 | 70.8 ± 7.9 | 68.9 ± 10.6 | 79.4 ± 6.6 | 82.6 ± 5.6 | 76.8 ± 10.2 | 84.3 | 94 |
+| glass_blur | 93 | 78.5 ± 4.9 | 93.5 ± 6.5 | 87.1 ± 7.4 | 92.5 ± 3.7 | 97.8 ± 1.5 | 94.6 ± 4.3 | 89.2 | 93 |
+| motion_blur | 90 | 87.0 ± 5.0 | 92.6 ± 5.3 | 81.9 ± 6.8 | 92.6 ± 0.6 | 92.8 ± 0.8 | 86.7 ± 2.2 | 90.0 | 93 |
+| zoom_blur | 88 | 60.6 ± 10.3 | 68.9 ± 10.3 | 80.7 ± 1.1 | 79.5 ± 5.9 | 76.1 ± 11.2 | 74.2 ± 4.3 | 75.0 | 93 |
+
+**Objects Layout: target displacement** (139 of 312 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| displacement_1 | 18 | 88.9 ± 9.6 | 98.1 ± 3.2 | 94.4 ± 5.6 | 98.1 ± 3.2 | 100.0 ± 0.0 | 92.6 ± 8.5 | 88.9 | 91 |
+| displacement_2 | 20 | 91.7 ± 7.6 | 96.7 ± 5.8 | 96.7 ± 5.8 | 91.7 ± 5.8 | 97.5 ± 3.5 | 100.0 ± 0.0 | 100.0 | 94 |
+| displacement_3 | 33 | 88.9 ± 4.6 | 93.9 ± 3.0 | 93.9 ± 6.1 | 94.9 ± 1.7 | 100.0 ± 0.0 | 94.9 ± 1.7 | 93.9 | 93 |
+| displacement_4 | 36 | 76.9 ± 5.8 | 81.5 ± 1.6 | 83.3 ± 5.6 | 84.3 ± 1.6 | 80.6 ± 7.9 | 80.6 ± 2.8 | 72.2 | 93 |
+| displacement_5 | 32 | 80.2 ± 7.2 | 79.2 ± 4.8 | 86.5 ± 1.8 | 86.5 ± 7.9 | 81.2 ± 8.8 | 82.3 ± 4.8 | 84.4 | 93 |
+
+**Objects Layout: number of distractors** (the other 173 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| distractors_1 | 16 | 87.5 ± 6.2 | 93.8 ± 6.2 | 91.7 ± 3.6 | 95.8 ± 3.6 | 93.8 ± 8.8 | 95.8 ± 3.6 | 87.5 | 93 |
+| distractors_2 | 29 | 82.8 ± 3.4 | 83.9 ± 8.7 | 88.5 ± 2.0 | 92.0 ± 2.0 | 86.2 ± 4.9 | 87.4 ± 5.3 | 86.2 | 93 |
+| distractors_3 | 40 | 78.3 ± 3.8 | 76.7 ± 11.3 | 78.3 ± 7.6 | 89.2 ± 3.8 | 90.0 ± 3.5 | 83.3 ± 3.8 | 77.5 | 93 |
+| distractors_4 | 42 | 67.5 ± 5.5 | 66.7 ± 7.1 | 69.0 ± 6.3 | 83.3 ± 4.1 | 73.8 ± 3.4 | 74.6 ± 9.9 | 83.3 | 93 |
+| distractors_5 | 46 | 55.8 ± 5.5 | 65.9 ± 5.5 | 63.8 ± 7.0 | 78.3 ± 15.1 | 78.3 ± 6.1 | 71.0 ± 5.5 | 76.1 | 93 |
+
+- **The robot's initial pose has the clearest size effect.** Success falls from 89–96% at 0.1 rad to 39–57% at 0.5 rad. At 0.5 rad every dropout model is 11–18 points above the no-dropout models.
+- **Camera rotation is where proprio keep 1.0 stands out.**
+  - Every model is at 79–97% below 15° and at 43–58% at 15–30°.
+  - From 45° on, proprio keep 1.0 keeps 39–50%. Every other model gets 0–22% there.
+  - At 30–45° all the dropout models (50–72%) are well above the no-dropout models (22–27%).
+- **Sensor noise only hurts from level 7 on.** Up to level 6 every model is at 76–100%. At level 10 no dropout falls to 37%, dropout without proprio to 44%, and the models with proprioception to 54–61% (no dropout + proprio 56%). Gaussian blur, zoom blur and fog hurt most; motion and glass blur least.
+- **More distractors cost every model** (from 88–96% with one distractor to 56–78% with five, the no-dropout model lowest). Target displacement costs less: from 89–100% at the smallest to 79–87% at the largest.
+- **Light severity has no monotone effect.** Success is lowest at severity 0.4–0.6 and recovers at 0.7–0.9.
 
 ### LIBERO-Plus with one modality withheld
 
@@ -532,53 +649,55 @@ Success on all 2519 LIBERO-Plus tasks with one input removed at evaluation. In b
 |---|---|---|---|---|---|
 | no dropout | 68.3 ± 3.3 | 0.0 | 21.8 ± 6.7 | 0.0 | n/a |
 | no dropout + proprio | 72.2 ± 3.4 | 1.0 ± 1.2 | 31.6 ± 3.9 | 0.0 | 39.7 ± 3.7 |
-| dropout, no proprio | 76.5 ± 1.1 | 68.2 ± 0.1 (83.2 ± 2.5) | 61.6 ± 8.9 (83.2 ± 4.6) | 21.0 ± 2.1 (44.8 ± 6.0) | n/a |
+| dropout, no proprio | 74.5 ± 3.4 | 65.3 ± 5.0 (83.7 ± 1.9) | 61.7 ± 6.3 (81.8 ± 4.1) | 21.0 ± 1.5 (44.5 ± 4.3) | n/a |
 | dropout, proprio keep 1.0 | 79.6 ± 2.7 | 73.0 ± 0.7 (82.0 ± 1.3) | 70.9 ± 4.3 (87.3 ± 2.8) | 20.2 ± 6.8 (43.3 ± 8.4) | 30.4 ± 6.7 (39.7 ± 12.7) |
 | dropout, proprio keep 0.75 | 78.6 ± 2.2 | 69.7 ± 6.0 (85.0 ± 1.4) | 69.7 ± 5.0 (85.0 ± 2.1) | 19.8 ± 0.2 (40.2 ± 2.5) | 76.3 ± 0.8 (95.0 ± 0.7) |
 | dropout, proprio keep 0.5 | 77.2 ± 0.9 | 70.7 ± 0.9 (84.7 ± 1.9) | 62.7 ± 5.7 (82.7 ± 1.8) | 22.6 ± 5.7 (44.8 ± 5.3) | 75.8 ± 1.5 (95.5 ± 1.8) |
 | dropout, proprio keep 0.25 | 76.2 | 67.6 (83.0) | 67.4 (84.5) | 16.5 (36.0) | 76.3 (93.0) |
 
 - **Without dropout, a missing input is fatal.** The no-dropout models fail completely without language or the wrist camera, and keep 22–32% without the static camera.
-- **The dropout models lose 7–15 points without language or the static camera**, and 55–60 points without the wrist camera.
-- **Removing the static camera helps under camera-viewpoint perturbations.** The dropout models score 74–90% there without it, against 49–65% with it, because the perturbation moves the static camera (see the [appendix](#libero-plus-per-category-with-one-modality-withheld)).
+- **The dropout models lose 7–15 points without language or the static camera**, and 54–60 points without the wrist camera.
+- **Removing the static camera helps under camera-viewpoint perturbations.** The dropout models score 75–90% there without it, against 49–65% with it, because the perturbation moves the static camera (see the [appendix](#libero-plus-per-category-with-one-modality-withheld)).
 
 ### LIBERO-PRO
 
-LIBERO-PRO was run for nine runs of five models. All inputs, 200 episodes per perturbation, mean over seeds with the per-seed values in brackets:
+LIBERO-PRO was run for 17 runs of all seven models; proprio keep 0.75 seed 42 is still missing. All inputs, 200 episodes per perturbation, mean over seeds with the per-seed values in brackets:
 
 | model | seeds | lan | object | swap | task |
 |---|---|---|---|---|---|
-| no dropout | 5, 100 | 91.8 (92.0 / 91.5) | 55.5 (57.0 / 54.0) | 0.0 | 9.5 (9.0 / 10.0) |
-| no dropout + proprio | 5, 100 | 92.0 (90.0 / 94.0) | 48.2 (50.0 / 46.5) | 0.2 (0.5 / 0.0) | 8.5 (7.5 / 9.5) |
-| dropout, proprio keep 1.0 | 42, 5 | 93.0 (94.0 / 92.0) | 44.0 (39.5 / 48.5) | 0.0 | 9.8 (8.0 / 11.5) |
-| dropout, proprio keep 0.5 | 42, 5 | 93.5 (94.0 / 93.0) | 40.8 (43.0 / 38.5) | 0.2 (0.5 / 0.0) | 9.8 (9.5 / 10.0) |
+| no dropout | 42, 5, 100 | 91.7 (91.5 / 92.0 / 91.5) | 52.5 (46.5 / 57.0 / 54.0) | 0.0 | 9.3 (9.0 / 9.0 / 10.0) |
+| no dropout + proprio | 42, 5, 100 | 90.2 (86.5 / 90.0 / 94.0) | 48.8 (50.0 / 50.0 / 46.5) | 0.2 (0.0 / 0.5 / 0.0) | 9.2 (10.5 / 7.5 / 9.5) |
+| dropout, no proprio | 42, 5, 100 | 92.2 (95.0 / 91.5 / 90.0) | 42.3 (51.5 / 41.0 / 34.5) | 0.2 (0.0 / 0.0 / 0.5) | 9.2 (9.5 / 9.5 / 8.5) |
+| dropout, proprio keep 1.0 | 42, 5, 100 | 93.5 (94.0 / 92.0 / 94.5) | 42.3 (39.5 / 48.5 / 39.0) | 0.0 | 9.3 (8.0 / 11.5 / 8.5) |
+| dropout, proprio keep 0.75 | 100 | 94.0 | 41.0 | 0.0 | 10.5 |
+| dropout, proprio keep 0.5 | 42, 5, 100 | 94.7 (94.0 / 93.0 / 97.0) | 37.0 (43.0 / 38.5 / 29.5) | 0.2 (0.5 / 0.0 / 0.0) | 10.0 (9.5 / 10.0 / 10.5) |
 | dropout, proprio keep 0.25 | 5 | 95.0 | 50.0 | 0.5 | 9.5 |
 
-- **Reworded instructions (`lan`) cost nothing.** Paired with the same LIBERO-10 episodes, every run is within 3 points of its LIBERO-10 result (exact McNemar p ≥ 0.12).
+- **Reworded instructions (`lan`) cost almost nothing with all inputs.** Paired with the same LIBERO-10 episodes, 16 of the 17 runs are within 3 points of their LIBERO-10 result (exact McNemar p ≥ 0.12).
+  - The exception is no dropout + proprio, seed 42: 87.0% vs 94.5% (p = 0.003).
+- **Without the static camera, rewording costs the dropout models more.**
+  - With wrist camera + language (± proprio), 7 of the 19 paired comparisons drop 7–11 points (p 0.001–0.03, uncorrected), spread over six runs.
+  - Over all 122 paired `lan` comparisons with a reduced input set, 8 reach p < 0.05, so a few of these are chance.
 - **A changed task (`task`) or swapped object positions (`swap`) defeats every model** (0–12%).
-  - The paired `task` drop is 80–88 points (p < 1e-37).
-  - The dropout models drop as much with any subset of inputs.
+  - The paired `task` drop is 80–88 points with all inputs (p < 1e-37).
+  - With any subset of inputs the models still succeed at most 12.5% of the time.
   - The policies execute the trained motions rather than follow a new instruction.
-- **Replaced objects (`object`)** cost the dropout models with proprio keep 1.0 and 0.5 more (39–49% per seed) than the no-dropout model (54–57%). The no-dropout + proprio model (47–50%) and proprio keep 0.25 (50%) are in between.
+- **Replaced objects (`object`) cost the dropout models more:** 37.0–42.3% for the dropout models with three seeds, against 52.5% and 48.8% without dropout. The seeds overlap widely, though: 29.5–51.5% with dropout, 46.5–57.0% without.
 
 ### Missing or unusable LIBERO results
 
 Run folders are under `train_logs/<group>/<run>`. "W&B host" is where the run trained. Everything that is on disk here lives on goldberry (`/mnt/goldberry_sdb1/morsic/flower_vla_calvin/train_logs`).
 
-**Main study, still incomplete** (as of 2026-11-02):
+**Main study, still incomplete** (as of 2026-11-03):
 
 | run | model, seed | W&B host | what is missing |
 |---|---|---|---|
 | `libero_10_dropout/2026-09-14_17-03-21` | proprio keep 0.75, seed 5 | glaurung | Only an evaluation from before the fix (2026-09-22). Re-evaluate with `PIPELINE_REEVAL=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-14_17-03-21`. |
 | `libero_10_dropout/2026-09-15_16-05-08` | proprio keep 0.25, seed 42 | tom | Trained, never evaluated. Not on disk here. |
+| `libero_10_dropout/2026-11-02_12-18-36` | proprio keep 0.25, seed 100 | goldberry | Trained 2026-11-02; no evaluation artifact on W&B yet. |
+| `libero_10_dropout/2026-09-14_17-12-09` | proprio keep 0.75, seed 42 | tom | LIBERO-PRO only. Run `PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-14_17-12-09`, which skips the completed stages. |
 
-- **Never trained:** proprio keep 0.25 with seed 100, and Dirichlet dropout without proprio with seed 100.
-- **LIBERO-PRO was never run** for these runs, all of which have every other evaluation:
-  - `libero_10/2026-09-18_16-47-38`
-  - `libero_10_static+wrist+lang+proprio/2026-09-18_16-47-17`
-  - `libero_10_dropout/2026-09-14_17-08-24`, `17-08-28`, `17-12-09`, `17-12-40`, `17-14-47` and `17-15-19`
-  - So it is missing entirely for proprio keep 0.75 and for dropout without proprio. Run it with `PIPELINE_RESUME=1 ./run.sh pipeline …`, which skips the completed stages.
-- The three runs re-evaluated on primrose (`16-11-38`, `16-47-49`, `16-48-01`) have an empty `eval_timestamp` column. Multi-GPU evaluation writes the rank shards without one, and the merge does not fill it in. Their validity rests on the file modification times instead (2026-10-28 to 10-30, with `PIPELINE_REEVAL=1`).
+- Four runs have an empty `eval_timestamp` column: the three re-evaluated on primrose (`16-11-38`, `16-47-49`, `16-48-01`) and `2026-11-02_12-18-49`, which was trained and evaluated on goldberry on 2026-11-02/03. Multi-GPU evaluation writes the rank shards without one, and the merge does not fill it in. For the primrose runs, validity rests on the file modification times instead (2026-10-28 to 10-30, with `PIPELINE_REEVAL=1`); `12-18-49` was trained after both cutoffs.
 
 **Excluded runs.** Every run in W&B project `multimodal_policies` (2026-08-27 to 09-12) is excluded:
 - the batch-8 runs, the fixed-modality runs and the LIBERO-Goal, -Spatial and -Object runs;
@@ -592,12 +711,12 @@ They were trained before `ffba3d2` and evaluated before `ca969a8`. Their run fol
 - **Language matters only when the scene is ambiguous.** CALVIN needs it to know which of several tasks to do. MimicGen does not. On LIBERO-10, dropout models lose about 10 points without it (82–85% vs 92–96%).
 - **Which camera matters most depends on the benchmark.**
   - The static camera is the stronger single view on CALVIN and MimicGen.
-  - On LIBERO-10 it is the wrist camera (62–75% alone vs 36–39% for the static camera).
+  - On LIBERO-10 it is the wrist camera (62–75% alone vs 36–40% for the static camera).
   - How well one camera substitutes for the other also depends on the task: well on CALVIN's coarse tabletop tasks and LIBERO, poorly on MimicGen's precise assembly and insertion tasks.
 - **How dropout is applied matters as much as how much is applied.**
   - Dropout makes a model work without some inputs only if training removed *whole* modalities often enough: Dirichlet rather than uniform (on CALVIN and MimicGen), a keep fraction of 0.5 rather than 0.75, and proprioception keep below 1 (on MimicGen and LIBERO).
   - Heavy dropout (keep 0.25, CALVIN) moves the training inputs so far from the full input that the full input is no better than static camera + language.
-- **Dropout costs nothing on unperturbed tasks on CALVIN (keep 0.75) and LIBERO, but 4–6 points on MimicGen.** Only LIBERO tested perturbed scenes. There it raised success by about 7 points (LIBERO-Plus 76–80% vs 68–72%).
+- **Dropout costs nothing on unperturbed tasks on CALVIN (keep 0.75) and LIBERO, but 4–6 points on MimicGen.** Only LIBERO tested perturbed scenes. There it raised success by about 7 points (LIBERO-Plus 75–80% vs 68–72%).
 
 ## Reproduction
 
@@ -966,37 +1085,37 @@ Success rate (%) per LIBERO-Plus perturbation category with one input removed at
 
 | category | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 |
 |---|---|---|---|---|---|---|---|
-| Camera Viewpoints | 0.0 ± 0.0 | 0.6 ± 0.8 | 41.3 ± 5.1 | 58.5 ± 3.8 | 50.0 ± 3.5 | 41.4 ± 1.7 | 43.7 |
-| Robot Initial States | 0.0 ± 0.0 | 0.3 ± 0.6 | 68.2 ± 1.8 | 66.6 ± 1.1 | 67.0 ± 5.2 | 68.9 ± 1.0 | 65.9 |
-| Language Instructions | 0.0 ± 0.0 | 2.7 ± 4.0 | 94.5 ± 0.0 | 94.5 ± 0.0 | 88.6 ± 8.3 | 94.5 ± 0.0 | 94.5 |
-| Light Conditions | 0.0 ± 0.0 | 0.6 ± 1.1 | 68.4 ± 2.3 | 71.8 ± 3.4 | 74.3 ± 6.5 | 71.3 ± 4.6 | 66.8 |
-| Background Textures | 0.0 ± 0.0 | 0.5 ± 0.8 | 66.4 ± 1.5 | 69.1 ± 3.7 | 63.8 ± 8.6 | 69.7 ± 4.8 | 56.4 |
-| Sensor Noise | 0.0 ± 0.0 | 0.7 ± 0.7 | 70.3 ± 2.4 | 75.1 ± 2.0 | 74.9 ± 5.8 | 78.0 ± 2.3 | 71.9 |
-| Objects Layout | 0.1 ± 0.2 | 1.5 ± 2.6 | 70.7 ± 1.1 | 75.9 ± 0.9 | 70.2 ± 4.5 | 72.9 ± 3.6 | 73.7 |
+| Camera Viewpoints | 0.0 ± 0.0 | 0.6 ± 0.8 | 38.5 ± 6.0 | 58.5 ± 3.8 | 50.0 ± 3.5 | 41.4 ± 1.7 | 43.7 |
+| Robot Initial States | 0.0 ± 0.0 | 0.3 ± 0.6 | 67.5 ± 1.7 | 66.6 ± 1.1 | 67.0 ± 5.2 | 68.9 ± 1.0 | 65.9 |
+| Language Instructions | 0.0 ± 0.0 | 2.7 ± 4.0 | 87.9 ± 11.5 | 94.5 ± 0.0 | 88.6 ± 8.3 | 94.5 ± 0.0 | 94.5 |
+| Light Conditions | 0.0 ± 0.0 | 0.6 ± 1.1 | 64.5 ± 7.0 | 71.8 ± 3.4 | 74.3 ± 6.5 | 71.3 ± 4.6 | 66.8 |
+| Background Textures | 0.0 ± 0.0 | 0.5 ± 0.8 | 63.1 ± 5.9 | 69.1 ± 3.7 | 63.8 ± 8.6 | 69.7 ± 4.8 | 56.4 |
+| Sensor Noise | 0.0 ± 0.0 | 0.7 ± 0.7 | 67.8 ± 4.6 | 75.1 ± 2.0 | 74.9 ± 5.8 | 78.0 ± 2.3 | 71.9 |
+| Objects Layout | 0.1 ± 0.2 | 1.5 ± 2.6 | 70.1 ± 1.3 | 75.9 ± 0.9 | 70.2 ± 4.5 | 72.9 ± 3.6 | 73.7 |
 
 **No static camera**
 
 | category | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 |
 |---|---|---|---|---|---|---|---|
-| Camera Viewpoints | 17.0 ± 14.4 | 38.3 ± 5.7 | 73.5 ± 23.0 | 82.4 ± 15.2 | 88.9 ± 15.7 | 75.7 ± 15.6 | 89.7 |
-| Robot Initial States | 18.5 ± 3.0 | 22.2 ± 3.1 | 50.9 ± 1.8 | 58.2 ± 1.5 | 49.7 ± 2.3 | 51.1 ± 2.3 | 50.1 |
-| Language Instructions | 35.3 ± 2.8 | 36.1 ± 2.1 | 77.5 ± 5.9 | 78.0 ± 1.0 | 78.6 ± 7.8 | 75.9 ± 6.0 | 76.2 |
-| Light Conditions | 25.2 ± 8.6 | 32.1 ± 10.3 | 47.6 ± 3.4 | 56.2 ± 8.2 | 65.3 ± 9.3 | 45.1 ± 7.2 | 54.4 |
-| Background Textures | 16.8 ± 3.5 | 23.6 ± 6.2 | 46.4 ± 1.0 | 61.1 ± 6.0 | 32.9 ± 2.9 | 44.5 ± 6.4 | 37.7 |
-| Sensor Noise | 19.8 ± 11.4 | 40.2 ± 8.8 | 75.1 ± 20.8 | 82.8 ± 14.8 | 89.8 ± 14.5 | 77.7 ± 14.6 | 89.8 |
-| Objects Layout | 20.0 ± 5.2 | 23.8 ± 4.0 | 46.3 ± 0.7 | 67.5 ± 4.2 | 66.8 ± 2.5 | 54.6 ± 4.4 | 55.4 |
+| Camera Viewpoints | 17.0 ± 14.4 | 38.3 ± 5.7 | 75.0 ± 16.4 | 82.4 ± 15.2 | 88.9 ± 15.7 | 75.7 ± 15.6 | 89.7 |
+| Robot Initial States | 18.5 ± 3.0 | 22.2 ± 3.1 | 47.9 ± 5.3 | 58.2 ± 1.5 | 49.7 ± 2.3 | 51.1 ± 2.3 | 50.1 |
+| Language Instructions | 35.3 ± 2.8 | 36.1 ± 2.1 | 78.5 ± 4.5 | 78.0 ± 1.0 | 78.6 ± 7.8 | 75.9 ± 6.0 | 76.2 |
+| Light Conditions | 25.2 ± 8.6 | 32.1 ± 10.3 | 50.0 ± 4.7 | 56.2 ± 8.2 | 65.3 ± 9.3 | 45.1 ± 7.2 | 54.4 |
+| Background Textures | 16.8 ± 3.5 | 23.6 ± 6.2 | 42.8 ± 6.2 | 61.1 ± 6.0 | 32.9 ± 2.9 | 44.5 ± 6.4 | 37.7 |
+| Sensor Noise | 19.8 ± 11.4 | 40.2 ± 8.8 | 76.7 ± 15.0 | 82.8 ± 14.8 | 89.8 ± 14.5 | 77.7 ± 14.6 | 89.8 |
+| Objects Layout | 20.0 ± 5.2 | 23.8 ± 4.0 | 46.9 ± 1.1 | 67.5 ± 4.2 | 66.8 ± 2.5 | 54.6 ± 4.4 | 55.4 |
 
 **No wrist camera**
 
 | category | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 |
 |---|---|---|---|---|---|---|---|
-| Camera Viewpoints | 0.0 ± 0.0 | 0.0 ± 0.0 | 4.4 ± 0.8 | 4.3 ± 2.1 | 3.6 ± 0.3 | 3.5 ± 1.0 | 2.4 |
-| Robot Initial States | 0.0 ± 0.0 | 0.0 ± 0.0 | 24.9 ± 4.7 | 22.6 ± 7.2 | 22.1 ± 2.5 | 25.4 ± 6.2 | 21.6 |
-| Language Instructions | 0.0 ± 0.0 | 0.0 ± 0.0 | 43.1 ± 1.1 | 32.1 ± 18.8 | 37.2 ± 5.0 | 47.0 ± 11.4 | 30.0 |
-| Light Conditions | 0.0 ± 0.0 | 0.0 ± 0.0 | 17.0 ± 1.3 | 24.0 ± 8.1 | 15.5 ± 1.8 | 17.3 ± 11.1 | 1.1 |
-| Background Textures | 0.0 ± 0.0 | 0.0 ± 0.0 | 23.7 ± 2.7 | 20.2 ± 7.9 | 22.3 ± 1.7 | 28.0 ± 7.0 | 15.9 |
-| Sensor Noise | 0.0 ± 0.0 | 0.0 ± 0.0 | 8.4 ± 1.1 | 13.1 ± 4.5 | 12.0 ± 0.3 | 13.0 ± 4.8 | 15.1 |
-| Objects Layout | 0.0 ± 0.0 | 0.0 ± 0.0 | 30.4 ± 6.3 | 30.6 ± 9.8 | 29.6 ± 2.0 | 28.5 ± 5.8 | 28.5 |
+| Camera Viewpoints | 0.0 ± 0.0 | 0.0 ± 0.0 | 4.1 ± 0.8 | 4.3 ± 2.1 | 3.6 ± 0.3 | 3.5 ± 1.0 | 2.4 |
+| Robot Initial States | 0.0 ± 0.0 | 0.0 ± 0.0 | 23.7 ± 3.9 | 22.6 ± 7.2 | 22.1 ± 2.5 | 25.4 ± 6.2 | 21.6 |
+| Language Instructions | 0.0 ± 0.0 | 0.0 ± 0.0 | 42.9 ± 0.8 | 32.1 ± 18.8 | 37.2 ± 5.0 | 47.0 ± 11.4 | 30.0 |
+| Light Conditions | 0.0 ± 0.0 | 0.0 ± 0.0 | 18.0 ± 2.0 | 24.0 ± 8.1 | 15.5 ± 1.8 | 17.3 ± 11.1 | 1.1 |
+| Background Textures | 0.0 ± 0.0 | 0.0 ± 0.0 | 23.1 ± 2.2 | 20.2 ± 7.9 | 22.3 ± 1.7 | 28.0 ± 7.0 | 15.9 |
+| Sensor Noise | 0.0 ± 0.0 | 0.0 ± 0.0 | 9.7 ± 2.5 | 13.1 ± 4.5 | 12.0 ± 0.3 | 13.0 ± 4.8 | 15.1 |
+| Objects Layout | 0.0 ± 0.0 | 0.0 ± 0.0 | 30.4 ± 4.5 | 30.6 ± 9.8 | 29.6 ± 2.0 | 28.5 ± 5.8 | 28.5 |
 
 **No proprioception**
 
