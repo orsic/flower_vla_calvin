@@ -19,6 +19,7 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
   - Removing 75% hurts every combination, including all inputs (1.64 ± 0.07).
 - **Removing whole modalities in training matters, not just removing tokens.** The *uniform* variant drops a random 50% of all tokens and rarely removes a whole camera. Over three seeds it does worse with all inputs (3.63 vs 4.19 for Dirichlet) and collapses without the wrist camera (0.28 vs 3.76). On MimicGen (1 seed) it matches Dirichlet with all inputs but gets 0–3% with either camera missing.
 - **On CALVIN, Dirichlet keep 0.5 trained with proprioception (1 seed) does not depend on it**, and is far better without the wrist camera than without proprioception training (4.17–4.24 vs 3.76 with static camera and language). It needs more seeds to confirm.
+  - With proprioception always kept in training (proprio keep 1.0, 2 seeds), the CALVIN model depends on it as on MimicGen and LIBERO: withholding it halves avg_seq_len (e.g. 4.10 → 1.97 with all inputs).
 - **Language is indispensable on CALVIN and nearly irrelevant on MimicGen.**
   - CALVIN puts several tasks in one scene, so the instruction picks the task. Without language, no CALVIN model completes more than about 0.2 subtasks per chain on average.
   - Each MimicGen scene has one task, so dropping language changes success by at most a few points, except for the uniform model (46.9% → 34.7%).
@@ -39,7 +40,7 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
   - Proprio keep 1.0 is the most robust (79.6%) but, as on MimicGen, collapses without proprioception.
   - Without dropout, withholding language or the wrist camera gives 0%. The dropout models keep 62–73% on LIBERO-Plus without language or the static camera.
   - No model survives a changed task on LIBERO-PRO (0–12%).
-  - LIBERO-PRO is still missing for one run; see [missing or unusable results](#missing-or-unusable-libero-results).
+  - Excluded runs and evaluations are listed under [missing or unusable results](#missing-or-unusable-libero-results).
 
 ## Setup
 
@@ -199,12 +200,24 @@ Dirichlet keep 0.5 with the robot state as a fourth input (`model.use_proprio=Tr
 - **Without the wrist camera this run is much better than any run trained without proprioception:** 4.17–4.24 with static+lang, against 3.54–3.89 for the three seeds of keep 0.5 without it, and almost as good as with all inputs. That holds whether or not proprioception is given at evaluation, so it is not proprioception standing in for the wrist camera. With one seed this may be seed luck; it needs more seeds before it is a finding.
 - With all inputs it is at the top of the keep 0.5 range (4.30 vs 4.09–4.34), still below no dropout (4.44).
 
-**Proprio keep 1.0 (in progress, as of 2026-11-04).** The same recipe with proprioception always kept in training (`model.modality_dropout_proprio_keep_p=1.0`), seeds 42, 5 and 100:
-- **Seeds 42 and 5** (`calvin_abcd_d_dropout/2026-11-03_13-49-49`, `13-50-01`) are still being evaluated.
-- **Seed 100** (`2026-11-03_13-50-23`) is unusable. Its training degraded in the second half:
-  - Validation action loss rose from about 0.10 to 0.13–0.17, and the final training loss is 0.21, against 0.15 for the other proprio runs.
+**Proprio keep 1.0.** The same recipe with proprioception always kept in training (`model.modality_dropout_proprio_keep_p=1.0`), seeds 42 and 5, evaluated on all 14 combinations. avg_seq_len (5/5 %), next to the proprio keep 0.5 run above:
+
+| inputs | keep 1.0, seed 42 | proprio withheld | keep 1.0, seed 5 | proprio withheld | keep 0.5, seed 42 | proprio withheld |
+|---|---|---|---|---|---|---|
+| static+wrist+lang | 2.952 (35.5) | 1.534 (6.7) | 4.096 (69.2) | 1.969 (10.1) | 4.301 (73.9) | 4.238 (73.3) |
+| static+wrist | 0.186 (0.0) | 0.133 (0.0) | 0.153 (0.0) | 0.114 (0.0) | 0.149 (0.0) | 0.178 (0.0) |
+| static+lang | 2.392 (21.8) | 1.189 (2.1) | 3.958 (61.8) | 1.777 (7.8) | 4.168 (67.0) | 4.236 (69.8) |
+| wrist+lang | 1.647 (6.3) | 0.822 (0.7) | 2.606 (23.8) | 1.029 (1.1) | 2.543 (20.4) | 2.380 (17.0) |
+| static | 0.166 (0.0) | 0.099 (0.0) | 0.184 (0.1) | 0.086 (0.0) | 0.224 (0.0) | 0.199 (0.0) |
+| wrist | 0.139 (0.0) | 0.121 (0.0) | 0.104 (0.0) | 0.135 (0.0) | 0.129 (0.0) | 0.139 (0.0) |
+| lang | 0.015 (0.0) | 0.000 (0.0) | 0.005 (0.0) | 0.001 (0.0) | 0.000 (0.0) | 0.000 (0.0) |
+
+- **Proprio keep 1.0 depends on proprioception, as on MimicGen and LIBERO.** Withholding it halves avg_seq_len in every combination that works at all: with all inputs 2.95 → 1.53 (seed 42) and 4.10 → 1.97 (seed 5). Proprio keep 0.5 loses at most 0.16.
+- **The two seeds differ a lot with all inputs** (2.95 vs 4.10). Seed 5 is close to proprio keep 0.5 (4.30), including without the wrist camera (3.96 vs 4.17 with static+lang). Seed 42 is far below every other CALVIN dropout run, although its training and validation losses look like seed 5's (final validation action loss 0.098 vs 0.093).
+- **Seed 100** (`2026-11-03_13-50-23`) is unusable and not shown:
+  - Its training degraded in the second half: validation action loss rose from about 0.10 to 0.13–0.17, and the final training loss is 0.21, against 0.15 for the other proprio runs.
   - It completes almost no subtask in any combination (avg_seq_len 0.00–0.16).
-  - It needs retraining.
+  - A retrain is running (`2026-11-04_15-07-22`, with seed 101).
 
 ### Open loop along the demonstrations
 
@@ -732,7 +745,7 @@ Success on all 2519 LIBERO-Plus tasks with one input removed at evaluation. In b
 
 ### LIBERO-PRO
 
-LIBERO-PRO was run for 20 runs of all seven models; proprio keep 0.75 seed 42 is still missing. All inputs, 200 episodes per perturbation, mean over seeds with the per-seed values in brackets:
+LIBERO-PRO was run for all 21 runs. All inputs, 200 episodes per perturbation, mean over seeds with the per-seed values in brackets:
 
 | model | seeds | lan | object | swap | task |
 |---|---|---|---|---|---|
@@ -740,15 +753,15 @@ LIBERO-PRO was run for 20 runs of all seven models; proprio keep 0.75 seed 42 is
 | no dropout + proprio | 42, 5, 100 | 90.2 (86.5 / 90.0 / 94.0) | 48.8 (50.0 / 50.0 / 46.5) | 0.2 (0.0 / 0.5 / 0.0) | 9.2 (10.5 / 7.5 / 9.5) |
 | dropout, no proprio | 42, 5, 100 | 92.2 (95.0 / 91.5 / 90.0) | 42.3 (51.5 / 41.0 / 34.5) | 0.2 (0.0 / 0.0 / 0.5) | 9.2 (9.5 / 9.5 / 8.5) |
 | dropout, proprio keep 1.0 | 42, 5, 100 | 93.5 (94.0 / 92.0 / 94.5) | 42.3 (39.5 / 48.5 / 39.0) | 0.0 | 9.3 (8.0 / 11.5 / 8.5) |
-| dropout, proprio keep 0.75 | 5, 100 | 93.8 (93.5 / 94.0) | 40.2 (39.5 / 41.0) | 0.2 (0.5 / 0.0) | 10.5 (10.5 / 10.5) |
+| dropout, proprio keep 0.75 | 42, 5, 100 | 94.0 (94.5 / 93.5 / 94.0) | 41.8 (45.0 / 39.5 / 41.0) | 0.2 (0.0 / 0.5 / 0.0) | 9.8 (8.5 / 10.5 / 10.5) |
 | dropout, proprio keep 0.5 | 42, 5, 100 | 94.7 (94.0 / 93.0 / 97.0) | 37.0 (43.0 / 38.5 / 29.5) | 0.2 (0.5 / 0.0 / 0.0) | 10.0 (9.5 / 10.0 / 10.5) |
 | dropout, proprio keep 0.25 | 42, 5, 100 | 93.2 (93.0 / 95.0 / 91.5) | 43.5 (42.0 / 50.0 / 38.5) | 0.3 (0.5 / 0.5 / 0.0) | 9.7 (10.0 / 9.5 / 9.5) |
 
-- **Reworded instructions (`lan`) cost almost nothing with all inputs.** Paired with the same LIBERO-10 episodes, 19 of the 20 runs are within 3 points of their LIBERO-10 result (exact McNemar p ≥ 0.11).
+- **Reworded instructions (`lan`) cost almost nothing with all inputs.** Paired with the same LIBERO-10 episodes, 20 of the 21 runs are within 3 points of their LIBERO-10 result (exact McNemar p ≥ 0.11).
   - The exception is no dropout + proprio, seed 42: 87.0% vs 94.5% (p = 0.003).
 - **Without the static camera, rewording costs the dropout models more.**
-  - With wrist camera + language (± proprio), 10 of the 25 paired comparisons drop 7–18 points (p 1e-7 to 0.05, uncorrected), spread over eight runs.
-  - Over all 161 paired `lan` comparisons with a reduced input set, 13 reach p < 0.05, so a few of these are chance.
+  - With wrist camera + language (± proprio), 10 of the 27 paired comparisons drop 7–18 points (p 1e-7 to 0.05, uncorrected), spread over eight runs.
+  - Over all 174 paired `lan` comparisons with a reduced input set, 13 reach p < 0.05, so a few of these are chance.
 - **A changed task (`task`) or swapped object positions (`swap`) defeats every model** (0–12%).
   - The paired `task` drop is 80–88 points with all inputs (p < 1e-37).
   - With any subset of inputs the models still succeed at most 12.5% of the time.
@@ -759,11 +772,7 @@ LIBERO-PRO was run for 20 runs of all seven models; proprio keep 0.75 seed 42 is
 
 Run folders are under `train_logs/<group>/<run>`. "W&B host" is where the run trained. Everything that is on disk here lives on goldberry (`/mnt/goldberry_sdb1/morsic/flower_vla_calvin/train_logs`).
 
-**Main study, still incomplete** (as of 2026-11-04):
-
-| run | model, seed | W&B host | what is missing |
-|---|---|---|---|
-| `libero_10_dropout/2026-09-14_17-12-09` | proprio keep 0.75, seed 42 | tom | LIBERO-PRO only. Run `PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/2026-09-14_17-12-09`, which skips the completed stages. |
+**Main study:** complete as of 2026-11-04. Every model has three seeds with every evaluation, LIBERO-PRO included.
 
 - Five runs have an empty `eval_timestamp` column: the three re-evaluated on primrose (`16-11-38`, `16-47-49`, `16-48-01`) and `2026-11-02_12-18-36` and `12-18-49`, which were trained and evaluated on goldberry on 2026-11-02/03. Multi-GPU evaluation writes the rank shards without one, and the merge does not fill it in. For the primrose runs, validity rests on the file modification times instead (2026-10-28 to 10-30, with `PIPELINE_REEVAL=1`); the two goldberry runs were trained after both cutoffs.
 
@@ -804,6 +813,7 @@ Training runs live under `$SAVES_DIR/train_logs/`, and closed-loop results in `<
 | CALVIN uniform keep 0.5, seed 100 repeat (not in the means) | `calvin_abcd_d_dropout/2026-10-17_11-02-27` (trained on another host) |
 | CALVIN Dirichlet keep 0.25, seeds 5 / 100 | `calvin_abcd_d_dropout/2026-10-23_16-48-27` / `2026-10-27_02-46-45` |
 | CALVIN Dirichlet keep 0.5 + proprio | `calvin_abcd_d_dropout/2026-10-21_03-14-19` |
+| CALVIN Dirichlet keep 0.5 + proprio, proprio keep 1.0, seeds 42 / 5 | `calvin_abcd_d_dropout/2026-11-03_13-49-49` / `2026-11-03_13-50-01` |
 | CALVIN no dropout + proprio, seeds 42 / 5 | `calvin_abcd_d/2026-10-14_13-37-34` / `2026-10-14_13-37-42` (W&B runs `calvin_abcd_d_2026-10-14_13-37-34` / `_13-37-42`; trained on another host) |
 | CALVIN no dropout + proprio, seed 100 | `calvin_abcd_d/2026-10-27_22-04-48` |
 | MimicGen no dropout, seeds 42 / 5 | `mimicgen/2026-10-01_19-26-58` / `2026-10-27_02-50-24` |
@@ -832,6 +842,8 @@ CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-calvin-dropout batch_size=8 accumulate_g
 ./run.sh train-calvin model.use_proprio=True proprio_dims=8 seed=42
 # Dirichlet dropout with proprioception
 ./run.sh train-calvin-dropout batch_size=8 accumulate_grad_batches=2 model.use_proprio=True proprio_dims=8
+./run.sh train-calvin-dropout batch_size=8 accumulate_grad_batches=2 model.use_proprio=True proprio_dims=8 \
+    model.modality_dropout_proprio_keep_p=1.0 seed=5        # proprio keep 1.0
 CUDA_VISIBLE_DEVICES=0 ./run.sh open-loop-calvin /saves/train_logs/calvin_abcd_d_dropout/<ts>
 ./run.sh analyze-open-loop
 
