@@ -199,6 +199,13 @@ Dirichlet keep 0.5 with the robot state as a fourth input (`model.use_proprio=Tr
 - **Without the wrist camera this run is much better than any run trained without proprioception:** 4.17–4.24 with static+lang, against 3.54–3.89 for the three seeds of keep 0.5 without it, and almost as good as with all inputs. That holds whether or not proprioception is given at evaluation, so it is not proprioception standing in for the wrist camera. With one seed this may be seed luck; it needs more seeds before it is a finding.
 - With all inputs it is at the top of the keep 0.5 range (4.30 vs 4.09–4.34), still below no dropout (4.44).
 
+**Proprio keep 1.0 (in progress, as of 2026-11-04).** The same recipe with proprioception always kept in training (`model.modality_dropout_proprio_keep_p=1.0`), seeds 42, 5 and 100:
+- **Seeds 42 and 5** (`calvin_abcd_d_dropout/2026-11-03_13-49-49`, `13-50-01`) are still being evaluated.
+- **Seed 100** (`2026-11-03_13-50-23`) is unusable. Its training degraded in the second half:
+  - Validation action loss rose from about 0.10 to 0.13–0.17, and the final training loss is 0.21, against 0.15 for the other proprio runs.
+  - It completes almost no subtask in any combination (avg_seq_len 0.00–0.16).
+  - It needs retraining.
+
 ### Open loop along the demonstrations
 
 **Method.**
@@ -809,6 +816,7 @@ Training runs live under `$SAVES_DIR/train_logs/`, and closed-loop results in `<
 **CALVIN and MimicGen runs on W&B (`multimodal_florence`) that are not reported:**
 - Smoke tests: `mimicgen_2026-10-01_18-57-09`, `mimicgen_dropout_2026-10-05_09-08-12` and `calvin_abcd_d_dropout_2026-10-10_10-56-08`.
 - Crashed at epoch 20 and restarted as the repeat run above: `calvin_abcd_d_dropout_2026-10-16_16-39-54`.
+- Training degraded (validation loss rising in the second half), closed loop near zero in every combination: `calvin_abcd_d_dropout_2026-11-03_13-50-23` (proprio keep 1.0, seed 100).
 - Stopped at epoch 0 when the disk filled, replaced by `2026-10-23_16-48-27`: `calvin_abcd_d_dropout_2026-10-21_22-12-27`.
 
 ```bash
