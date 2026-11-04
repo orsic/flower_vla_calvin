@@ -1,0 +1,369 @@
+"""Print the LIBERO tables of docs/results.md from the W&B evaluation artifacts that
+scripts/results_libero_collect.py downloaded.
+
+Only the main-study runs in MODELS are used: trained with ffba3d2 or later (W&B project
+multimodal_florence) and evaluated after ca969a8 (checked on every CSV's eval_timestamp,
+except the multi-GPU runs in NO_TS, whose shards leave it empty). Values are success
+rates in %, mean ± sd over a model's seeds.
+
+    python scripts/results_libero_tables.py [--artifacts /saves/libero_artifacts]
+"""
+
+import argparse
+import re
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence
+
+import numpy as np
+import pandas as pd
+
+CUT = "2026-09-23_14-46-43"  # ca969a8, 2026-09-23 16:46:43 +0200, in the CSVs' UTC timestamps
+PROJECT = "multimodal_florence"
+MODELS: Dict[str, Dict[int, str]] = {
+    "no dropout": {
+        42: "libero_10_2026-09-18_16-47-38",
+        5: "libero_10_2026-09-18_16-47-48",
+        100: "libero_10_2026-09-18_16-48-01",
+    },
+    "no dropout + proprio": {
+        42: "libero_10_static+wrist+lang+proprio_2026-09-18_16-47-17",
+        5: "libero_10_static+wrist+lang+proprio_2026-09-18_16-47-22",
+        100: "libero_10_static+wrist+lang+proprio_2026-09-18_16-47-49",
+    },
+    "dropout, no proprio": {
+        42: "libero_10_dropout_2026-09-14_17-14-47",
+        5: "libero_10_dropout_2026-09-14_17-15-19",
+        100: "libero_10_dropout_2026-11-02_12-18-49",
+    },
+    "dropout, proprio keep 1.0": {
+        42: "libero_10_dropout_2026-09-14_17-00-43",
+        5: "libero_10_dropout_2026-09-14_17-07-42",
+        100: "libero_10_dropout_2026-09-14_17-08-28",
+    },
+    "dropout, proprio keep 0.75": {
+        42: "libero_10_dropout_2026-09-14_17-12-09",
+        5: "libero_10_dropout_2026-09-14_17-03-21",
+        100: "libero_10_dropout_2026-09-14_17-12-40",
+    },
+    "dropout, proprio keep 0.5": {
+        42: "libero_10_dropout_2026-09-14_17-00-58",
+        5: "libero_10_dropout_2026-09-14_17-07-23",
+        100: "libero_10_dropout_2026-09-14_17-08-24",
+    },
+    "dropout, proprio keep 0.25": {
+        42: "libero_10_dropout_2026-09-15_16-05-08",
+        5: "libero_10_dropout_2026-09-15_16-11-38",
+        100: "libero_10_dropout_2026-11-02_12-18-36",
+    },
+}
+# Multi-GPU evaluations leave eval_timestamp empty (rank shards are written without it);
+# their validity was checked by file modification time or training date instead.
+NO_TS = {
+    "libero_10_2026-09-18_16-48-01",
+    "libero_10_dropout_2026-09-15_16-11-38",
+    "libero_10_static+wrist+lang+proprio_2026-09-18_16-47-49",
+    "libero_10_dropout_2026-11-02_12-18-49",
+    "libero_10_dropout_2026-11-02_12-18-36",
+}
+PROPRIO = {m: ("proprio" in m and "no proprio" not in m) for m in MODELS}
+NAMES = (
+    ("static", "use_rgb_static"),
+    ("wrist", "use_rgb_gripper"),
+    ("lang", "use_language"),
+    ("proprio", "use_proprio"),
+)
+TOKEN_COMBOS = ["static+wrist+lang", "static+wrist", "static+lang", "wrist+lang", "static", "wrist", "lang"]
+CATS = [
+    "Camera Viewpoints",
+    "Robot Initial States",
+    "Language Instructions",
+    "Light Conditions",
+    "Background Textures",
+    "Sensor Noise",
+    "Objects Layout",
+]
+CAT_TASKS = {
+    "Camera Viewpoints": 419,
+    "Robot Initial States": 393,
+    "Light Conditions": 274,
+    "Sensor Noise": 449,
+    "Objects Layout": 312,
+}
+COUNTS = ["successes", "n", "orig_successes", "orig_n"]
+# Physical-size tables: (category, title, severity_sr bin -> row label or None to skip,
+# whether the rows form a range that the doubled-range tables merge).
+GROUPS: Dict[str, tuple] = {
+    "cam_rot": (
+        "Camera Viewpoints",
+        "Camera Viewpoints, camera rotation",
+        lambda b: b if b.startswith("rot") else None,
+        True,
+    ),
+    "cam_scale": (
+        "Camera Viewpoints",
+        "Camera Viewpoints, camera distance scale",
+        lambda b: b if b.startswith("scale") else None,
+        True,
+    ),
+    "robot": ("Robot Initial States", "Robot Initial States, initial joint offset", lambda b: b, True),
+    "light": ("Light Conditions", "Light Conditions, light severity", lambda b: b, True),
+    "noise_level": (
+        "Sensor Noise",
+        "Sensor Noise by level, pooled over the 5 noise types",
+        lambda b: "level " + b.rsplit("_", 1)[1],
+        True,
+    ),
+    "noise_type": (
+        "Sensor Noise",
+        "Sensor Noise by type, pooled over the 10 levels",
+        lambda b: b.rsplit("_", 1)[0],
+        False,
+    ),
+    "obj_disp": (
+        "Objects Layout",
+        "Objects Layout, target displacement",
+        lambda b: b if b.startswith("displacement") else None,
+        True,
+    ),
+    "obj_dist": (
+        "Objects Layout",
+        "Objects Layout, number of distractors",
+        lambda b: b if b.startswith("distractors") else None,
+        True,
+    ),
+}
+
+
+def merge_bins(bins: Sequence[str]) -> List[List[str]]:
+    """Pair adjacent bins from the low end, doubling each range; an odd last bin joins
+    the previous group (so 5 bins give [1, 2], [3, 4, 5])."""
+    groups = [list(bins[i : i + 2]) for i in range(0, len(bins), 2)]
+    if len(groups) > 1 and len(groups[-1]) == 1:
+        last = groups.pop()
+        groups[-1] += last
+    return groups
+
+
+def span_label(labels: Sequence[str]) -> str:
+    """'rot~0-15deg' + 'rot~15-30deg' -> 'rot~0-30deg'; '0.1rad' + '0.2rad' -> '0.1-0.2rad'."""
+    if len(labels) == 1:
+        return labels[0]
+    num = r"\d+(?:\.\d+)?"
+    first = list(re.finditer(num, labels[0]))
+    hi = re.findall(num, labels[-1])[-1]
+    if len(first) == 1:
+        m = first[0]
+        return labels[0][: m.start()] + f"{m.group()}-{hi}" + labels[0][m.end() :]
+    m = first[-1]
+    return labels[0][: m.start()] + hi + labels[0][m.end() :]
+
+
+def merged_counts(d: pd.DataFrame, groups: List[List[str]], labels: List[str]) -> pd.DataFrame:
+    """Sum the COUNTS columns of d (indexed by bin) over each group of bins."""
+    return pd.DataFrame([d.loc[g, COUNTS].sum() for g in groups], index=labels)
+
+
+def ms(v: Sequence[float]) -> str:
+    v = 100 * np.array(v, dtype=float)
+    return f"{v.mean():.1f}" if len(v) == 1 else f"{v.mean():.1f} ± {v.std(ddof=1):.1f}"
+
+
+def md(df: pd.DataFrame) -> str:
+    cols = [df.index.name or ""] + list(df.columns)
+    out = ["| " + " | ".join(map(str, cols)) + " |", "|" + "---|" * len(cols)]
+    out += ["| " + " | ".join([str(i)] + [str(x) for x in r]) + " |" for i, r in df.iterrows()]
+    return "\n".join(out)
+
+
+def full(m: str) -> str:
+    return "static+wrist+lang+proprio" if PROPRIO[m] else "static+wrist+lang"
+
+
+class Artifacts:
+    def __init__(self, root: Path) -> None:
+        self.root = root / PROJECT
+
+    def path(self, run: str, member: str) -> Path:
+        return self.root / run / member
+
+    def load(self, run: str, member: str) -> pd.DataFrame:
+        d = pd.read_csv(self.path(run, member))
+        if d["eval_timestamp"].isna().all():
+            assert run in NO_TS, (run, member)
+        else:
+            assert d["eval_timestamp"].min() >= CUT, (run, member)
+        d["combo"] = d.apply(lambda r: "+".join(n for n, c in NAMES if int(r[c])), axis=1)
+        return d
+
+
+def size_table(
+    sev: Dict[str, Dict[int, pd.DataFrame]],
+    cat: str,
+    lab: Callable[[str], Optional[str]],
+    doubled: bool,
+) -> pd.DataFrame:
+    """One perturbation-size table: per bin (or doubled group), task count, mean ± sd
+    over seeds per model, and the paired original-LIBERO success pooled over all runs."""
+    rows: Dict[str, List[pd.DataFrame]] = {}
+    order: List[str] = []
+    for m in MODELS:
+        per_seed = []
+        for d in sev[m].values():
+            d = d[d.category == cat].copy()
+            d["row"] = d.bin.map(lab)
+            d = d.dropna(subset=["row"])
+            g = d.groupby("row", sort=False)[COUNTS].sum()
+            per_seed.append(g)
+            order = list(dict.fromkeys(order + list(g.index)))
+        rows[m] = per_seed
+    if doubled:
+        groups = merge_bins(order)
+        order = [span_label(g) for g in groups]
+        rows = {m: [merged_counts(g, groups, order) for g in ps] for m, ps in rows.items()}
+    ref = rows["no dropout"][0]
+    allruns = sum(g[["orig_successes", "orig_n"]] for ps in rows.values() for g in ps)
+    t = {}
+    for r in order:
+        t[r] = {"tasks": int(ref.loc[r, "n"])}
+        for m, ps in rows.items():
+            assert all(int(g.loc[r, "n"]) == t[r]["tasks"] for g in ps), (cat, r, m)
+            t[r][m] = ms([g.loc[r, "successes"] / g.loc[r, "n"] for g in ps])
+        t[r]["orig, paired"] = f"{100 * allruns.loc[r, 'orig_successes'] / allruns.loc[r, 'orig_n']:.0f}"
+    return pd.DataFrame(t).T.rename_axis("bin")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--artifacts", type=Path, default=Path("/saves/libero_artifacts"))
+    a = Artifacts(ap.parse_args().artifacts)
+
+    orig = {m: {s: a.load(r, "libero_orig.csv") for s, r in runs.items()} for m, runs in MODELS.items()}
+    plus = {m: {s: a.load(r, "libero_plus.csv") for s, r in runs.items()} for m, runs in MODELS.items()}
+    for m in MODELS:
+        for s, d in orig[m].items():
+            assert d.groupby("combo").size().eq(200).all(), (m, s)
+        for s, d in plus[m].items():
+            assert len(d) == 2519 and d.combo.nunique() == 1 and d.combo.iloc[0] == full(m), (m, s)
+
+    print("## Headline: LIBERO-10 and LIBERO-Plus with all inputs (%)")
+    rows = {}
+    for m, runs in MODELS.items():
+        o = [orig[m][s].pipe(lambda d: d[d["combo"] == full(m)]).success.mean() for s in runs]
+        p = [plus[m][s].success.mean() for s in runs]
+        rows[m] = {
+            "seeds": " / ".join(map(str, runs)),
+            "LIBERO-10 per seed": " / ".join(f"{100 * x:.1f}" for x in o),
+            "LIBERO-10": ms(o),
+            "LIBERO-Plus per seed": " / ".join(f"{100 * x:.1f}" for x in p),
+            "LIBERO-Plus": ms(p),
+        }
+    print(md(pd.DataFrame(rows).T.rename_axis("model")))
+
+    print("\n## LIBERO-10 by modality combo (%), mean over seeds")
+    order = []
+    for c in TOKEN_COMBOS:
+        order += [c + "+proprio", c]
+    t = {}
+    for m in MODELS:
+        vals = {}
+        for c in order:
+            v = [d.pipe(lambda d: d[d["combo"] == c]).success.mean() for d in orig[m].values() if (d.combo == c).any()]
+            vals[c] = ms(v) if v else "n/a"
+        t[m] = vals
+    tab = pd.DataFrame(t).rename_axis("inputs")
+    print(md(tab[~(tab == "n/a").all(axis=1)]))
+
+    print("\n## LIBERO-Plus by category, all inputs (%), mean over seeds")
+    t = {}
+    for m in MODELS:
+        t[m] = {
+            c: ms([d.pipe(lambda d: d[d["task_category"] == c]).success.mean() for d in plus[m].values()]) for c in CATS
+        }
+        t[m]["all"] = ms([d.success.mean() for d in plus[m].values()])
+    print(md(pd.DataFrame(t).rename_axis("category")))
+    print("tasks per category:", plus["no dropout"][42].task_category.value_counts().to_dict())
+
+    print("\n## LIBERO-Plus by difficulty level, all inputs (%), mean over seeds")
+    t = {
+        m: {
+            lv: ms([d.pipe(lambda d: d[d["difficulty_level"] == lv]).success.mean() for d in plus[m].values()])
+            for lv in range(1, 6)
+        }
+        for m in MODELS
+    }
+    print(md(pd.DataFrame(t).T.rename_axis("model")))
+    print("tasks per level:", plus["no dropout"][42].difficulty_level.value_counts().sort_index().to_dict())
+
+    print(
+        "\n## LIBERO-Plus with one modality withheld at evaluation (%), mean over seeds; LIBERO-10 same combo in brackets"
+    )
+    t = {}
+    for m, runs in MODELS.items():
+        vals = {"all inputs": ms([d.success.mean() for d in plus[m].values()])}
+        for v in ("lang", "static", "wrist", "proprio"):
+            if v == "proprio" and not PROPRIO[m]:
+                vals["no " + v] = "n/a"
+                continue
+            ds = [a.load(r, f"libero_plus_no_{v}.csv") for r in runs.values()]
+            assert all(len(d) == 2519 for d in ds)
+            c = ds[0].combo.iloc[0]
+            o = [
+                orig[m][s].pipe(lambda d: d[d["combo"] == c]).success.mean()
+                for s in runs
+                if (orig[m][s].combo == c).any()
+            ]
+            vals["no " + v] = ms([d.success.mean() for d in ds]) + (f" ({ms(o)})" if o else "")
+        t[m] = vals
+    print(md(pd.DataFrame(t).T.rename_axis("model")))
+
+    print("\n## LIBERO-Plus no_* per category (%), mean over seeds")
+    for v in ("lang", "static", "wrist", "proprio"):
+        t = {}
+        for m, runs in MODELS.items():
+            if v == "proprio" and not PROPRIO[m]:
+                continue
+            ds = [a.load(r, f"libero_plus_no_{v}.csv") for r in runs.values()]
+            t[m] = {c: ms([d.pipe(lambda d: d[d["task_category"] == c]).success.mean() for d in ds]) for c in CATS}
+        print(f"\n### no {v}\n" + md(pd.DataFrame(t).rename_axis("category")))
+
+    print("\n## LIBERO-PRO, every run with pro_sr.csv (%)")
+    for m, runs in MODELS.items():
+        ps = {sd: pd.read_csv(a.path(r, "pro_sr.csv")) for sd, r in runs.items() if a.path(r, "pro_sr.csv").exists()}
+        if not ps:
+            continue
+        nat = {sd: p[p.libero_variant == "pro"].set_index("perturbation").success_rate for sd, p in ps.items()}
+        print(
+            m,
+            "seeds",
+            list(ps),
+            {
+                k: ms([n[k] for n in nat.values()]) + " [" + " / ".join(f"{100 * n[k]:.1f}" for n in nat.values()) + "]"
+                for k in ("lan", "object", "swap", "task")
+            },
+        )
+        for sd, p in ps.items():
+            for r in p[p.libero_variant == "pro_matched"].itertuples():
+                print(
+                    f"   seed {sd} matched {r.perturbation} {r.modality_combo} pro {100 * r.success_rate:.1f} "
+                    f"orig {100 * r.orig_success_rate:.1f} delta {100 * r.delta:+.1f} p={r.mcnemar_p:.3g}"
+                )
+
+    sev = {
+        m: {sd: pd.read_csv(a.path(r, "severity_sr.csv")).query("axis == 'severity'") for sd, r in runs.items()}
+        for m, runs in MODELS.items()
+    }
+    print("\n## LIBERO-Plus by physical perturbation size, all inputs (%), mean over seeds")
+    for cat, title, lab, _ in GROUPS.values():
+        tab = size_table(sev, cat, lab, doubled=False)
+        print(f"\n### {title} (tasks summed: {tab.tasks.sum()} of {CAT_TASKS[cat]})\n" + md(tab))
+
+    print("\n## LIBERO-Plus by physical perturbation size, doubled ranges, all inputs (%), mean over seeds")
+    for cat, title, lab, ranged in GROUPS.values():
+        if not ranged:
+            continue
+        tab = size_table(sev, cat, lab, doubled=True)
+        print(f"\n### {title} (tasks summed: {tab.tasks.sum()} of {CAT_TASKS[cat]})\n" + md(tab))
+
+
+if __name__ == "__main__":
+    main()

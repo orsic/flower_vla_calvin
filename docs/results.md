@@ -530,11 +530,13 @@ By difficulty level (number of tasks: 357 / 450 / 484 / 523 / 705):
 
 ### LIBERO-Plus by perturbation size
 
-Success (%) with all inputs, by the physical size of the perturbation, mean ± sd over the valid seeds. The sizes are measured from each task's BDDL and scene files (`scripts/perturbation_severity.py`), not taken from LIBERO-Plus's `difficulty_level`.
+Success (%) with all inputs, by the physical size of the perturbation, mean ± sd over the valid seeds: first at the fine bins of `scripts/severity_sr.py`, then with each range doubled, which halves the number of groups and steadies the per-seed values. The sizes are measured from each task's BDDL and scene files (`scripts/perturbation_severity.py`), not taken from LIBERO-Plus's `difficulty_level`.
 - "tasks" is the number of LIBERO-Plus tasks in the bin, one episode each per run.
 - "orig, paired" is the success of the matching original LIBERO-10 episodes (same base task and initial state), pooled over all 21 runs. It is 81–100% in every bin, so the drops come from the perturbation, not from harder base tasks.
 - Small bins (under about 20 tasks) swing by tens of points between seeds.
 - Background Textures and Language Instructions have no size axis.
+
+#### Fine bins
 
 **Camera Viewpoints: rotation** (342 of 419 tasks)
 
@@ -630,14 +632,78 @@ Success (%) with all inputs, by the physical size of the perturbation, mean ± s
 | distractors_4 | 42 | 67.5 ± 5.5 | 66.7 ± 7.1 | 69.0 ± 6.3 | 83.3 ± 4.1 | 75.4 ± 3.6 | 74.6 ± 9.9 | 77.0 ± 5.5 | 93 |
 | distractors_5 | 46 | 55.8 ± 5.5 | 65.9 ± 5.5 | 63.8 ± 7.0 | 78.3 ± 15.1 | 75.4 ± 6.6 | 71.0 ± 5.5 | 73.2 ± 3.3 | 93 |
 
-- **The robot's initial pose has the clearest size effect.** Success falls from 89–96% at 0.1 rad to 39–58% at 0.5 rad. At 0.5 rad every dropout model is 11–19 points above the no-dropout models.
+#### Doubled ranges
+
+The same data with each range doubled: adjacent fine bins merged in pairs from the low end, an odd last bin joining the previous group (e.g. 0.3–0.5 rad). Counts are summed per run before the rate is taken. Sensor noise type has no range, so it has no doubled table.
+
+**Camera Viewpoints: rotation** (342 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| rot~0-30deg | 162 | 66.0 ± 6.9 | 68.1 ± 8.9 | 72.2 ± 9.6 | 78.0 ± 8.3 | 74.5 ± 5.3 | 77.6 ± 10.8 | 77.2 ± 3.3 | 94 |
+| rot~30-60deg | 121 | 13.2 ± 3.8 | 18.2 ± 9.5 | 26.7 ± 6.0 | 55.6 ± 3.7 | 44.4 ± 12.9 | 30.6 ± 11.7 | 34.2 ± 8.6 | 95 |
+| rot~60-90deg | 59 | 9.6 ± 8.7 | 20.9 ± 15.7 | 18.1 ± 22.8 | 40.7 ± 13.5 | 18.6 ± 13.9 | 5.6 ± 4.3 | 6.2 ± 3.9 | 90 |
+
+**Camera Viewpoints: distance scale** (77 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| scale~1.2-1.3x | 15 | 64.4 ± 7.7 | 73.3 ± 24.0 | 68.9 ± 31.5 | 84.4 ± 3.8 | 73.3 ± 6.7 | 84.4 ± 16.8 | 95.6 ± 3.8 | 99 |
+| scale~1.4-1.5x | 18 | 46.3 ± 35.7 | 48.1 ± 14.0 | 66.7 ± 0.0 | 72.2 ± 11.1 | 79.6 ± 17.9 | 55.6 ± 19.2 | 85.2 ± 3.2 | 94 |
+| scale~1.6-1.7x | 19 | 63.2 ± 9.1 | 42.1 ± 13.9 | 70.2 ± 6.1 | 77.2 ± 23.7 | 93.0 ± 12.2 | 70.2 ± 29.9 | 45.6 ± 16.9 | 86 |
+| scale~1.8-2.0x | 25 | 20.0 ± 6.9 | 36.0 ± 6.9 | 37.3 ± 32.6 | 57.3 ± 16.7 | 37.3 ± 10.1 | 17.3 ± 8.3 | 10.7 ± 8.3 | 92 |
+
+**Robot Initial States: initial joint offset** (393 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.1-0.2rad | 118 | 83.3 ± 2.6 | 86.2 ± 0.5 | 90.4 ± 3.8 | 91.8 ± 1.0 | 90.7 ± 3.1 | 92.9 ± 1.8 | 88.4 ± 2.6 | 94 |
+| 0.3-0.5rad | 275 | 53.6 ± 3.4 | 54.8 ± 2.7 | 64.6 ± 0.8 | 61.1 ± 2.9 | 64.5 ± 3.9 | 64.5 ± 1.0 | 62.2 ± 1.9 | 93 |
+
+**Light Conditions: light severity** (274 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| severity~0.1-0.2 | 23 | 87.0 ± 11.5 | 95.7 ± 4.3 | 92.8 ± 6.6 | 88.4 ± 16.5 | 97.1 ± 5.0 | 95.7 ± 0.0 | 94.2 ± 6.6 | 90 |
+| severity~0.3-0.4 | 80 | 77.5 ± 12.7 | 79.2 ± 6.9 | 80.8 ± 1.4 | 75.0 ± 5.7 | 84.2 ± 4.4 | 83.8 ± 2.5 | 83.8 ± 3.3 | 93 |
+| severity~0.5-0.6 | 116 | 64.4 ± 9.5 | 70.1 ± 1.3 | 72.4 ± 3.8 | 66.4 ± 4.0 | 72.1 ± 6.2 | 72.7 ± 5.5 | 72.7 ± 5.7 | 93 |
+| severity~0.7-0.9 | 55 | 69.7 ± 12.1 | 73.3 ± 10.0 | 89.1 ± 3.1 | 77.6 ± 6.9 | 90.3 ± 3.8 | 87.9 ± 4.2 | 89.1 ± 6.3 | 93 |
+
+**Sensor Noise: level, pooled over the five noise types** (449 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| level 1-2 | 80 | 87.5 ± 2.5 | 96.7 ± 2.6 | 90.8 ± 9.5 | 96.2 ± 2.2 | 96.7 ± 4.7 | 96.7 ± 2.6 | 96.2 ± 2.2 | 93 |
+| level 3-4 | 88 | 85.2 ± 3.9 | 92.8 ± 2.4 | 91.7 ± 7.6 | 93.6 ± 2.9 | 96.2 ± 3.5 | 93.6 ± 4.3 | 93.9 ± 1.7 | 93 |
+| level 5-6 | 93 | 80.3 ± 1.6 | 85.7 ± 4.8 | 88.9 ± 2.2 | 91.0 ± 4.1 | 92.8 ± 2.2 | 89.2 ± 2.8 | 90.7 ± 2.2 | 93 |
+| level 7-8 | 93 | 60.9 ± 5.9 | 73.1 ± 13.0 | 71.3 ± 6.1 | 81.7 ± 6.7 | 83.9 ± 4.9 | 76.7 ± 9.4 | 76.3 ± 6.5 | 93 |
+| level 9-10 | 95 | 41.8 ± 7.9 | 59.3 ± 9.8 | 47.7 ± 3.4 | 63.2 ± 11.1 | 64.2 ± 4.8 | 58.6 ± 9.9 | 62.1 ± 1.1 | 93 |
+
+**Objects Layout: target displacement** (139 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| displacement_1-2 | 38 | 90.4 ± 8.0 | 97.4 ± 4.6 | 95.6 ± 5.5 | 94.7 ± 4.6 | 98.2 ± 1.5 | 96.5 ± 4.0 | 95.6 ± 1.5 | 93 |
+| displacement_3-5 | 101 | 81.8 ± 5.0 | 84.8 ± 1.1 | 87.8 ± 3.2 | 88.4 ± 2.1 | 86.5 ± 4.1 | 85.8 ± 2.9 | 86.8 ± 4.7 | 93 |
+
+**Objects Layout: number of distractors** (173 tasks)
+
+| bin | tasks | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 | orig, paired |
+|---|---|---|---|---|---|---|---|---|---|
+| distractors_1-2 | 45 | 84.4 ± 0.0 | 87.4 ± 7.1 | 89.6 ± 2.6 | 93.3 ± 2.2 | 87.4 ± 5.1 | 90.4 ± 4.6 | 88.9 ± 3.8 | 92 |
+| distractors_3-5 | 128 | 66.7 ± 3.2 | 69.5 ± 6.8 | 70.1 ± 4.6 | 83.3 ± 7.4 | 79.7 ± 1.4 | 76.0 ± 2.7 | 77.9 ± 1.8 | 93 |
+
+#### What the sizes show
+
+- **The robot's initial pose has the clearest size effect.** Success falls from 83–93% at 0.1–0.2 rad to 54–65% at 0.3–0.5 rad, and from 89–96% at 0.1 rad to 39–58% at 0.5 rad. The dropout models are 6–11 points above the no-dropout models at 0.3–0.5 rad, and 11–19 points at 0.5 rad.
 - **Camera rotation is where proprio keep 1.0 stands out.**
-  - Every model is at 79–96% below 15° and at 43–58% at 15–30°.
-  - From 45° on, proprio keep 1.0 keeps 39–50%. Every other model gets 0–26% there.
-  - At 30–45° all the dropout models (50–72%) are well above the no-dropout models (22–27%).
-- **Sensor noise only hurts from level 7 on.** Up to level 6 every model is at 76–100%. At level 10 no dropout falls to 37%, dropout without proprio to 44%, and the models with proprioception to 54–59% (no dropout + proprio 56%). Gaussian blur, zoom blur and fog hurt most; motion and glass blur least.
-- **More distractors cost every model** (from 88–96% with one distractor to 56–78% with five, the no-dropout model lowest). Target displacement costs less: from 89–98% at the smallest to 79–87% at the largest.
-- **Light severity has no monotone effect.** Success is lowest at severity 0.4–0.6 and recovers at 0.7–0.9.
+  - Up to 30° every model is at 66–78%.
+  - At 30–60° proprio keep 1.0 keeps 56% and proprio keep 0.75 44%. The other dropout models get 27–34%, and the no-dropout models 13–18%.
+  - At 60–90° proprio keep 1.0 keeps 41%; every other model gets 6–21%.
+- **Sensor noise only hurts from level 7 on.** Up to level 6 every model is at 80% or more. At levels 9–10 no dropout falls to 42%, dropout without proprio to 48%, and the models with proprioception to 59–64%. Gaussian blur, zoom blur and fog hurt most; motion and glass blur least.
+- **More distractors cost every model:** from 84–93% with one or two to 67–83% with three to five, the no-dropout models lowest. Target displacement costs less: 90–98% for the two smallest, 82–88% for the larger ones.
+- **Light severity has no monotone effect.** Success is lowest at severity 0.5–0.6 (64–73%) and recovers at 0.7–0.9 (70–90%).
+- **The camera distance scale is too sparse to read** (15–25 tasks per doubled group, seed sd up to 36 points). Only the largest scale, 1.8–2.0×, clearly hurts: 11–37% for every model except proprio keep 1.0 (57%).
 
 ### LIBERO-Plus with one modality withheld
 
@@ -776,6 +842,9 @@ PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run> n_
 ./run.sh train-dropout libero_10 model.use_proprio=True model.modality_dropout_proprio_keep_p=0.5 seed=5
 PIPELINE_REEVAL=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/<run>   # re-evaluate with the current eval code
 ./run.sh analyze filter --filters '{"config.modality_dropout": true}'           # tables from the W&B eval artifacts
+# the LIBERO tables in this document: download the eval artifacts, then print every table
+./run.sh results-libero-collect
+./run.sh results-libero-tables
 ```
 
 ## Appendix

@@ -1686,6 +1686,21 @@ Zero matched runs is a hard error; everything else is reported and still aggrega
 a `runs` column on every table so a cell backed by fewer runs than the header claims is
 visible rather than hidden.
 
+### Results tables for docs/results.md
+
+The LIBERO tables in `docs/results.md` come from two scripts:
+
+```bash
+./run.sh results-libero-collect   # latest eval artifact of every LIBERO run -> /saves/libero_artifacts
+./run.sh results-libero-tables    # prints every LIBERO table (markdown) from those files
+```
+
+`scripts/results_libero_tables.py` lists the reported runs in `MODELS` (three seeds per
+model) and asserts each evaluation postdates the eval-fix cutoff (`ca969a8`). Its
+perturbation-size section prints each `scripts/severity_sr.py` axis twice: at the fine bins,
+and with each range doubled (`merge_bins`: adjacent bins paired from the low end, an odd last
+bin joining the previous group).
+
 ### Plotting evaluation results
 
 `scripts/plot_eval.py` (`./run.sh plot`) turns the same W&B evaluation artifacts

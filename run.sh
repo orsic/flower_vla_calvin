@@ -661,6 +661,20 @@ case "$CMD" in
         python scripts/analyze_wandb.py "$@"
     ;;
 
+  results-libero-collect)
+    # Download every LIBERO run's latest W&B eval artifact for results-libero-tables.
+    #   ./run.sh results-libero-collect [--out /saves/libero_artifacts]
+    podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-mimicgen \
+        python scripts/results_libero_collect.py "$@"
+    ;;
+
+  results-libero-tables)
+    # Print docs/results.md's LIBERO tables from the artifacts results-libero-collect fetched.
+    #   ./run.sh results-libero-tables [--artifacts /saves/libero_artifacts]
+    podman-compose -f "$COMPOSE" run --rm -T shell-calvin \
+        python scripts/results_libero_tables.py "$@"
+    ;;
+
   plot)
     # Paper figures from the same W&B evaluation artifacts analyze reads.
     #   ./run.sh plot presence --filters '{"config.modality_dropout": true}'
@@ -746,6 +760,8 @@ case "$CMD" in
     echo "                     analyze filter --filters '<mongo-json>' -- mean/min/max across matches"
     echo "                     Example: ./run.sh analyze run libero_10_dropout_2026-09-09_13-56-20"
     echo "                              ./run.sh analyze filter --filters '{\"config.modality_dropout\": true}'"
+    echo "  results-libero-collect / results-libero-tables"
+    echo "                     Download the LIBERO eval artifacts, then print docs/results.md's LIBERO tables."
     echo "  plot <presence|perturbation|severity|all> ..."
     echo "                     Paper figures (PDF) from the same W&B evaluation artifacts, sharing one"
     echo "                     --filters run pool across every figure. Needs WANDB_API_KEY."
