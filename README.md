@@ -640,9 +640,11 @@ the only train/rollout difference is train-only RandomShifts augmentation.
                        train_folder=/saves/train_logs/mimicgen/<run>
 
 # Post-training pipeline (what train-mimicgen auto-runs): evaluates every dataset in
-# flower.datasets.mimicgen_tasks.CORE_DATASETS and uploads result.csv to the training
+# flower.datasets.mimicgen_tasks.CORE_DATASETS at 100 episodes each (n_eval's default in
+# conf/eval_mimicgen.yaml, as in docs/results.md) and uploads result.csv to the training
 # run's W&B artifact (same artifact scheme as ./run.sh pipeline, member "mimicgen.csv"):
 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run>
+./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run> n_eval=20         # quicker check
 PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run>   # discard + redo
 
 # One-off longer-horizon re-evaluation: max_steps_scale multiplies every dataset's

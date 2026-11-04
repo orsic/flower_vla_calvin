@@ -767,8 +767,8 @@ CUDA_VISIBLE_DEVICES=0 ./run.sh open-loop-calvin /saves/train_logs/calvin_abcd_d
 # re-evaluate an existing run at 100 episodes per dataset (and combination)
 PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run> n_eval=100
 ./run.sh train-mimicgen-dropout model.use_proprio=True model.modality_dropout_proprio_keep_p=0.5
-# Dirichlet keep 0.75; SKIP_PIPELINE=1 then pipeline-mimicgen n_eval=100, since the chained eval runs 20 episodes
-SKIP_PIPELINE=1 ./run.sh train-mimicgen-dropout batch_size=8 accumulate_grad_batches=2 model.use_proprio=True \
+# Dirichlet keep 0.75 (the chained eval runs 100 episodes per dataset since n_eval's default became 100)
+./run.sh train-mimicgen-dropout batch_size=8 accumulate_grad_batches=2 model.use_proprio=True \
     model.modality_dropout_keep_fraction=0.75
 
 # LIBERO-10 (batch 32 by default; training chains ./run.sh pipeline: LIBERO-10 per combo, LIBERO-Plus, modality-off, LIBERO-PRO)
