@@ -516,6 +516,29 @@ Values below are mean ± sd over the three seeds, in %.
 - **Language matters much less than on CALVIN.** Without it the dropout models still reach 82–85% (static+wrist, with or without proprio). With all inputs they reach 92–96%.
 - **Proprioception must be dropped in training, as on MimicGen.** With proprio keep 1.0, every combination without proprioception collapses: 39.7% with both cameras and language, 3–34% otherwise. With keep 0.75, 0.5 and 0.25 the model is indifferent to it.
 
+### Whole-modality dropout (`subset`), preliminary
+
+`model.modality_dropout_strategy=subset` keeps or drops whole modalities per training sample: a non-empty subset of {static camera, wrist camera, language, proprio}, each subset weighted 2^size, so all four inputs are kept 20% of the time.
+- **Runs:** two seeds, `libero_10_dropout/2026-11-04_21-49-24` (seed 42) and `2026-11-04_21-51-57` (seed 5).
+- **Evaluation so far:** only on LIBERO-10, and only with all inputs or one input withheld (`PIPELINE_SKIP_MULTI_OFF=1`).
+- **Source:** the runs' own `result.csv` (2026-11-05); their W&B artifacts are not uploaded yet.
+- **Still to come:** LIBERO-Plus and LIBERO-PRO are still running. Seed 100 failed at startup.
+
+LIBERO-10 success (%), 200 episodes per cell, next to the Dirichlet keep 0.5 models with proprioception (mean over 3 seeds, from the table above):
+
+| inputs | subset, seed 42 | subset, seed 5 | Dirichlet, proprio keep 1.0 | proprio keep 0.75 | proprio keep 0.5 | proprio keep 0.25 |
+|---|---|---|---|---|---|---|
+| static+wrist+lang+proprio | 96.5 | 95.0 | 94.3 ± 1.4 | 92.8 ± 0.6 | 95.3 ± 2.0 | 94.3 ± 2.3 |
+| static+wrist+lang (no proprio) | 97.5 | 94.5 | 39.7 ± 12.7 | 94.5 ± 1.0 | 95.5 ± 1.8 | 95.3 ± 2.5 |
+| static+wrist+proprio (no language) | 87.5 | 86.0 | 82.0 ± 1.3 | 84.3 ± 1.5 | 84.7 ± 1.9 | 84.5 ± 1.3 |
+| wrist+lang+proprio (no static camera) | 93.5 | 90.0 | 87.3 ± 2.8 | 83.0 ± 3.8 | 82.7 ± 1.8 | 81.3 ± 3.3 |
+| static+lang+proprio (no wrist camera) | 69.5 | 74.5 | 43.3 ± 8.4 | 43.7 ± 6.2 | 44.8 ± 5.3 | 41.0 ± 4.4 |
+
+- **With all inputs it is as good as the best Dirichlet models** (96.5% and 95.0%, against 92.8–95.3%).
+- **It is far more robust without the wrist camera:** 69.5% and 74.5%, against 41–45% for every Dirichlet model. The wrist camera was the input the Dirichlet models depended on most.
+- **It also loses less without the static camera** (93.5% and 90.0% vs 81–87%) or language (87.5% and 86.0% vs 82–85%), and nothing without proprioception.
+- Two seeds and LIBERO-10 only, so these are first results. The 95% interval of one cell is about ±3–7 points.
+
 ### LIBERO-Plus by perturbation category, all inputs
 
 | category | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 |
@@ -861,6 +884,7 @@ PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run> n_
 ./run.sh train libero_10                                   # no dropout; add model.use_proprio=True for + proprio
 ./run.sh train-dropout libero_10 model.use_proprio=True model.modality_dropout_proprio_keep_p=0.5 seed=5
 PIPELINE_REEVAL=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/<run>   # re-evaluate with the current eval code
+PIPELINE_SKIP_MULTI_OFF=1 ./run.sh train-dropout libero_10 model.use_proprio=True model.modality_dropout_strategy=subset seed=42   # whole-modality dropout
 ./run.sh analyze filter --filters '{"config.modality_dropout": true}'           # tables from the W&B eval artifacts
 # the LIBERO tables in this document: download the eval artifacts, then print every table
 ./run.sh results-libero-collect
