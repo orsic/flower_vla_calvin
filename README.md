@@ -91,6 +91,7 @@ A self-contained Podman environment covers building, training, evaluation, and i
 ```bash
 cp vars.env.example vars.env   # fill in DATA_DIR, SAVES_DIR, HF_HOME
 ./run.sh build                 # build flower-vla-eval:latest (~11 GB, cached layers)
+# or: ./run.sh build-all       # update the submodules, then build the eval, CALVIN and MimicGen images
 ./run.sh download-pret         # pretrained FlowerVLA checkpoint → /saves/checkpoints/flower_vla_pret/
 ./run.sh download-data         # LIBERO-10 HDF5 demos → DATA_DIR/libero_hdf5/ (see below for other benchmarks)
 ```
@@ -1713,6 +1714,73 @@ the same evaluated modality combos, episodes, LIBERO-Plus categories, or severit
 Zero matched runs is a hard error; everything else is reported and still aggregated, with
 a `runs` column on every table so a cell backed by fewer runs than the header claims is
 visible rather than hidden.
+
+### Distributed evaluation
+
+Training machines train only; evaluation runs on whichever machines are free. One machine
+(the master) keeps a queue of finished training runs read from W&B. Workers, started with a
+list of GPUs on any machine, take one run per GPU, fetch it over ssh, evaluate it with the
+benchmark's pipeline (LIBERO, CALVIN or MimicGen) and upload the results to the run's W&B
+artifact as usual.
+
+**Train with `SKIP_PIPELINE=1`**, so the training machine doesn't also start evaluating:
+
+```bash
+SKIP_PIPELINE=1 CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-calvin-dropout ...
+```
+
+**Which runs are queued.** A W&B run is queued when it was created on or after `DIST_SINCE`, is
+`finished` with its last epoch at `max_epochs - 1` (from the benchmark's `conf/config_*.yaml`,
+or a `max_epochs=` override), and has no `evaluation` artifact yet. Runs that crashed early, or
+were evaluated some other way, are never handed out. The queue is
+`$SAVES_DIR/dist_scheduler/state.json` on the master, refreshed from W&B at most every 5 minutes.
+
+**Settings** (in each machine's gitignored `vars.env`; `vars.env.example` lists them):
+
+| Variable | Where | Meaning |
+|---|---|---|
+| `DIST_MASTER`, `DIST_MASTER_REPO` | workers | the master's ssh host name and its checkout of this repo |
+| `DIST_HOSTS` | workers | `"hostA=/path/to/saves hostB=/path/to/saves"`: every training host and its `SAVES_DIR` |
+| `DIST_POLL_MIN` | workers | how often an idle GPU asks again (default 10) |
+| `DIST_SINCE` | master | queue runs created on or after this date, e.g. `2026-11-05` |
+| `DIST_EVAL_OPTS` | master | pipeline options per run-id glob: `"libero_10_dropout_*:PIPELINE_SKIP_MULTI_OFF=1;calvin_*:VAR=VAL"`, first match wins |
+| `DIST_LEASE_MIN` | master | minutes without a heartbeat before a running task is re-queued (default 30) |
+
+Host names are those of `~/.ssh/config`, which are also the host names W&B records.
+
+**Starting a worker**, in its own tmux window:
+
+```bash
+./run.sh dist-worker 0,1      # one evaluation at a time on GPU 0 and on GPU 1
+```
+
+- It starts an ssh-agent for this window only and adds the `IdentityFile`s that `ssh -G` reports
+  for the master and every `DIST_HOSTS` host, asking for their passphrases once. No other shell
+  gets the keys; the agent is stopped when the worker exits.
+- Each GPU loops: claim a task (`ssh <master> ./run.sh dist-sched claim`), copy the run's `.hydra`
+  and `seed_*/saved_models/last.ckpt` from its training host into the same
+  `train_logs/<group>/<ts>` path under the local `SAVES_DIR` (rsync over ssh), run
+  `./run.sh pipeline` / `pipeline-calvin` / `pipeline-mimicgen` with `CUDA_VISIBLE_DEVICES=<gpu>`,
+  `PIPELINE_RESUME=1` and the task's options, report done or failed, and delete the copied
+  `last.ckpt`. `.hydra` and `eval_logs` stay as a local copy of the results.
+- A run that trained on the worker's own machine is evaluated in place: no ssh, no copy, no
+  deletion.
+- With nothing queued it asks again every `DIST_POLL_MIN` minutes. It runs until you stop it
+  (Ctrl-C or close the window); its tasks then time out and go back to the queue.
+- Per-task logs: `$SAVES_DIR/dist_logs/<run_id>.log` on the worker.
+
+**Status and fixes** (on the master):
+
+```bash
+./run.sh dist-status                       # counts and every task: state, worker, tries, age, error
+./run.sh dist-sched refresh                # read W&B now
+./run.sh dist-sched requeue --run <run_id> # e.g. after fixing whatever made it fail
+./run.sh dist-sched skip --run <run_id>    # never hand it out
+```
+
+A running task sends a heartbeat every 5 minutes; after `DIST_LEASE_MIN` minutes without one it
+returns to the queue. A failed evaluation is retried once (possibly on another worker), then
+marked `failed` with its exit status.
 
 ### Results tables for docs/results.md
 

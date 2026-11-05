@@ -2,6 +2,7 @@
 # Entry point for all podman operations in this repo.
 # Usage:
 #   ./run.sh build                        Build the container image (flower-vla-eval:latest)
+#   ./run.sh build-all                    Update submodules, then build the eval, CALVIN and MimicGen images
 #   ./run.sh shell                        Interactive bash session inside the container
 #   ./run.sh download                     Download the LIBERO-10 eval checkpoint from HuggingFace
 #   ./run.sh download-pret                Download the general pretrained checkpoint (for training)
@@ -204,6 +205,15 @@ run_train_calvin() {
 }
 
 case "$CMD" in
+  build-all)
+    # Update every submodule (LIBERO, LIBERO-plus, LIBERO-pro, calvin_env), then build all
+    # images; the CALVIN and MimicGen images build on top of flower-vla-eval:latest.
+    git -C "$REPO_ROOT" submodule update --init --recursive
+    "$0" build
+    "$0" build-calvin
+    "$0" build-mimicgen
+    ;;
+
   build)
     podman build \
         --tag "$IMAGE" \
@@ -666,6 +676,29 @@ case "$CMD" in
         python scripts/analyze_wandb.py "$@"
     ;;
 
+  dist-sched)
+    # Distributed-evaluation queue on the master (scripts/dist_scheduler.py): refresh,
+    # status, claim, heartbeat, done, fail, requeue, skip. Workers call this over ssh.
+    # Settings from vars.env: DIST_SINCE, DIST_EVAL_OPTS, DIST_LEASE_MIN.
+    mkdir -p "$SAVES_DIR/dist_scheduler"
+    podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts \
+        python scripts/dist_scheduler.py --state /saves/dist_scheduler/state.json \
+        --since "${DIST_SINCE:-}" --opts "${DIST_EVAL_OPTS:-}" --lease-min "${DIST_LEASE_MIN:-30}" \
+        "$@"
+    ;;
+
+  dist-status)
+    # Every queued evaluation task and its state (on the master).
+    exec "$0" dist-sched status
+    ;;
+
+  dist-worker)
+    # Evaluation worker: one claim-fetch-evaluate loop per GPU until killed. Starts an
+    # ssh-agent for this window only and asks for the key passphrases once.
+    #   ./run.sh dist-worker 0,1
+    exec bash "$REPO_ROOT/scripts/dist_worker.sh" "$@"
+    ;;
+
   results-libero-collect)
     # Download every LIBERO run's latest W&B eval artifact for results-libero-tables.
     #   ./run.sh results-libero-collect [--out /saves/libero_artifacts]
@@ -709,6 +742,7 @@ case "$CMD" in
     echo "Usage: ./run.sh <build|shell|download|download-pret|download-data|download-plus|download-pro|train|train-frozen|train-dropout|eval|eval-plus|eval-pro|pipeline|analyze|plot|smoke|devenv>"
     echo ""
     echo "  build              Build the container image (flower-vla-eval:latest)"
+    echo "  build-all          Update submodules, then build the eval, CALVIN and MimicGen images"
     echo "  shell              Interactive bash inside the container"
     echo "  download           Download LIBERO-10 eval checkpoint from HuggingFace"
     echo "  download-pret      Download general pretrained checkpoint (for fine-tuning)"
@@ -767,6 +801,9 @@ case "$CMD" in
     echo "                     analyze filter --filters '<mongo-json>' -- mean/min/max across matches"
     echo "                     Example: ./run.sh analyze run libero_10_dropout_2026-09-09_13-56-20"
     echo "                              ./run.sh analyze filter --filters '{\"config.modality_dropout\": true}'"
+    echo "  dist-worker <gpu[,gpu,...]> / dist-status / dist-sched <cmd>"
+    echo "                     Distributed evaluation: workers claim finished W&B runs from the master's"
+    echo "                     queue, one per GPU (see README, Distributed evaluation)."
     echo "  results-libero-collect / results-libero-tables"
     echo "                     Download the LIBERO eval artifacts, then print docs/results.md's LIBERO tables."
     echo "  plot <presence|perturbation|severity|all> ..."
