@@ -80,6 +80,7 @@ def _run_pipeline(tmp_path, extra_env=None):
     env["FAKE_UPLOAD_LOG"] = str(upload_log)
     for key in (
         "PIPELINE_RESUME", "PIPELINE_REEVAL", "PIPELINE_REEVAL_SUITES", "PIPELINE_SKIP_MODALITY_OFF",
+        "PIPELINE_SKIP_PRO_COMBOS", "PIPELINE_SKIP_MULTI_OFF",
         "FAKE_PLAN_EXIT", "FAKE_PLAN_EMPTY",
     ):
         env.pop(key, None)
@@ -217,3 +218,15 @@ def test_pipeline_empty_plan_runs_zero_evals_and_still_uploads(tmp_path):
     assert result.returncode == 0, f"run.sh failed:\nstdout={result.stdout}\nstderr={result.stderr}"
     assert eval_lines == []
     assert len(upload_lines) == 1
+
+
+def test_pipeline_omits_skip_multi_off_flag_by_default(tmp_path):
+    _, _, plan_lines, _ = _run_pipeline(tmp_path)
+    assert "--skip-multi-off" not in plan_lines[0]
+
+
+def test_pipeline_passes_skip_multi_off_flag_when_env_set(tmp_path):
+    result, _, plan_lines, _ = _run_pipeline(tmp_path, extra_env={"PIPELINE_SKIP_MULTI_OFF": "1"})
+    assert result.returncode == 0, result.stderr
+    assert "--skip-multi-off" in plan_lines[0]
+    assert "--skip-pro-combos" not in plan_lines[0]

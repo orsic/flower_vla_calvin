@@ -196,6 +196,34 @@ concentrate around their share of the budget (at keep 0.5 a whole camera is prac
 never removed), whereas Dirichlet proportions often starve or saturate a group.
 `modality_dropout_alphas` is unused in that mode.
 
+With `model.modality_dropout_strategy=subset`, each training sample keeps or drops whole
+modalities instead of individual tokens. It keeps a non-empty subset S of {static, wrist,
+language, proprio} (proprio only with `model.use_proprio=True`), drawn with probability
+proportional to 2^|S|: the full set is twice as likely as any one subset with one modality
+fewer, and so on. With all four modalities that is 0.2 for the full set, 0.1 for each 3-subset,
+0.05 for each pair and 0.025 for each single modality; without proprio, 8/26 for all three,
+4/26 for each pair and 2/26 for each single one. A dropped view or language loses all its
+tokens; a dropped proprio is zeroed, like the Bernoulli gate below.
+`modality_dropout_keep_fraction`, `modality_dropout_alphas` and
+`modality_dropout_proprio_keep_p` are unused in that mode.
+
+Samples in one batch then keep different numbers of tokens, so the kept sequences are padded to
+the longest row (`build_keep_indices(..., ragged=True)`). The padding is masked twice: in the
+Florence-2 encoder's attention mask, and in the DiT's cross-attention through the
+`context_mask` that `encode_observations` returns. `context_mask` is `None` on every other path
+(Dirichlet, uniform, fixed combos, evaluation), which leaves those exactly as before. A sample
+that keeps only proprio is left with the `<Flow>` token alone. Evaluation needs nothing new:
+like any `model.modality_dropout=True` run, the pipelines evaluate every input combination.
+
+```bash
+# Whole-modality dropout with proprioception on each benchmark (training chains the eval pipeline)
+./run.sh train-dropout libero_10 model.use_proprio=True model.modality_dropout_strategy=subset
+CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-calvin-dropout batch_size=8 accumulate_grad_batches=2 \
+    model.use_proprio=True proprio_dims=8 model.modality_dropout_strategy=subset
+CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-mimicgen-dropout batch_size=8 accumulate_grad_batches=2 \
+    model.use_proprio=True model.modality_dropout_strategy=subset
+```
+
 The `<Flow>` prompt token is always kept. Rollout evaluation during training is disabled
 (`rollout_lh_skip_epochs` defaults to `max_epochs` in `conf/config_libero.yaml`); evaluate a
 finished run with `./run.sh pipeline` instead (see [Evaluation](#evaluation)). Hyperparameters
@@ -206,7 +234,7 @@ finished run with `./run.sh pipeline` instead (see [Evaluation](#evaluation)). H
 | `modality_dropout` | `False` | Enable pre-encoder token removal |
 | `modality_dropout_keep_fraction` | `0.5` | Fraction of total tokens to keep per sample |
 | `modality_dropout_alphas` | `[1.0, 1.0, 1.0]` | Dirichlet α for [static, wrist, language] |
-| `modality_dropout_strategy` | `dirichlet` | `dirichlet`, or `uniform`: keep a random subset of all tokens, ignoring groups |
+| `modality_dropout_strategy` | `dirichlet` | `dirichlet`; `uniform`: keep a random subset of all tokens, ignoring groups; `subset`: keep or drop whole modalities (proprio included), weight 2^size |
 | `modality_dropout_proprio_keep_p` | `0.5` | Proprio keep probability (Bernoulli, not part of the Dirichlet budget above — see below) |
 
 Proprioception isn't a token — see [Training with proprioception](#training-with-proprioception-modeluse_proprio)
@@ -1944,6 +1972,8 @@ combos do. (LIBERO-Plus needs its `csv_dir=` split only because `perturbation_sr
 |---|---|---|---|---|
 | `use_proprio=true` | 14 | 32 | 6400 | ~6.5 h |
 | `use_proprio=false` | 7 | 18 | 3600 | ~3.3 h |
+| `use_proprio=true`, with `PIPELINE_SKIP_MULTI_OFF=1` | 5 | 14 | 2800 | ~3.3 h |
+| `use_proprio=false`, with `PIPELINE_SKIP_MULTI_OFF=1` | 4 | 12 | 2400 | ~2.8 h |
 | any, with `PIPELINE_SKIP_PRO_COMBOS=1` | 1 | 6 | 1200 | ~1.4 h |
 
 Measured at ~14 min per 200-episode suite on one GPU. `PIPELINE_SKIP_PRO_COMBOS=1` drops
@@ -1951,6 +1981,20 @@ the sweep back to full modality only — use it to keep a chained
 `train-dropout` → `pipeline` run short, then catch the rest up later with
 `PIPELINE_RESUME=1`, which back-fills only the combos still missing. It is independent of
 `PIPELINE_SKIP_MODALITY_OFF` (that one gates the LIBERO-Plus axis).
+
+`PIPELINE_SKIP_MULTI_OFF=1` keeps only the combinations with at most one modality withheld: all
+inputs, plus each single input off. That is 5 combinations with proprio (full, no static, no
+wrist, no language, no proprio) or 4 without, instead of 14 or 7. It applies to the LIBERO-10
+sweep of a dropout run and to the PRO matched sweep alike. LIBERO-Plus already evaluates only
+those, so it is unaffected. Like the other `PIPELINE_*` flags it reaches the pipeline chained
+after training:
+
+```bash
+PIPELINE_SKIP_MULTI_OFF=1 ./run.sh train-dropout libero_10 model.use_proprio=True
+PIPELINE_SKIP_MULTI_OFF=1 ./run.sh pipeline /saves/train_logs/libero_10_dropout/<run>
+```
+
+A later `PIPELINE_RESUME=1` run without the flag back-fills the combinations it skipped.
 
 `pro_sr.py` prints a `mod` column — a 4-slot mask over (static, wrist, lang, proprio):
 `SWLP` is full modality, `SW-P` is language withheld. `./run.sh analyze` shows the

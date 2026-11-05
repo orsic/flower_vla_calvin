@@ -128,12 +128,36 @@ def sample_uniform_counts(avail: LongTensor, keep_fraction: float) -> LongTensor
 
 def sample_kept_counts(strategy: str, avail: LongTensor, keep_fraction: float, alphas: Tensor) -> LongTensor:
     """Training-dropout kept-token counts for model.modality_dropout_strategy:
-    "dirichlet" (`sample_token_budget`) or "uniform" (`sample_uniform_counts`)."""
+    "dirichlet" (`sample_token_budget`) or "uniform" (`sample_uniform_counts`).
+    "subset" also decides proprio, so its caller uses `sample_modality_subsets` directly."""
     if strategy == "dirichlet":
         return sample_token_budget(avail, keep_fraction, alphas)
     if strategy == "uniform":
         return sample_uniform_counts(avail, keep_fraction)
-    raise ValueError(f"Unknown modality_dropout_strategy {strategy!r}: expected 'dirichlet' or 'uniform'")
+    raise ValueError(
+        f"Unknown modality_dropout_strategy {strategy!r}: expected 'dirichlet', 'uniform' or 'subset'"
+    )
+
+
+def sample_modality_subsets(
+    B: int, n_modalities: int, device: torch.device, generator: torch.Generator | None = None
+) -> torch.BoolTensor:
+    """
+    Whole-modality dropout (model.modality_dropout_strategy=subset): per sample, keep a
+    non-empty subset S of the modalities, each subset drawn with probability proportional
+    to 2^|S| -- the full set is twice as likely as any one subset of one fewer modality,
+    and so on. With 4 modalities the weights total 80 (full set 0.2, each 3-subset 0.1,
+    each 2-subset 0.05, each single 0.025); with 3 they total 26.
+
+    Returns:
+        [B, n_modalities] bool, columns (static, wrist, language[, proprio]); every row
+        has at least one True.
+    """
+    codes = torch.arange(1, 2**n_modalities, device=device)  # every non-empty subset
+    bits = (codes.unsqueeze(1) >> torch.arange(n_modalities, device=device)) & 1  # [S, n]
+    weights = (2.0 ** bits.sum(dim=1)).float()
+    pick = torch.multinomial(weights, B, replacement=True, generator=generator)
+    return bits[pick].bool()
 
 
 def deterministic_keep_counts(avail: LongTensor, keep_mask: Sequence[bool]) -> LongTensor:
@@ -250,6 +274,7 @@ def build_keep_indices(
     lang_valid_len: LongTensor,
     prompt_idx: int,
     generator: torch.Generator | None = None,
+    ragged: bool = False,
 ) -> LongTensor:
     """
     Build keep-indices for each sample such that:
@@ -277,6 +302,10 @@ def build_keep_indices(
         lang_valid_len: [B] number of non-padding language tokens per sample.
         prompt_idx: index of the <Flow> prompt token; always kept.
         generator: optional RNG.
+        ragged: allow per-row totals to differ (the subset strategy). K is then the
+                largest row total + 1, and each row's tail beyond its own
+                kept_counts[b].sum() + 1 entries repeats prompt_idx; the caller masks
+                those padding columns (`arange(K) < kept_counts.sum(1) + 1`).
 
     Returns:
         keep_indices: [B, K] sorted indices, in the same coordinate space as
@@ -284,13 +313,13 @@ def build_keep_indices(
     """
     B, G = kept_counts.shape
     totals = kept_counts.sum(dim=1)
-    if not bool((totals == totals[0]).all()):
+    if not ragged and not bool((totals == totals[0]).all()):
         raise RuntimeError(
             "kept_counts total differs across the batch: build_keep_indices requires a "
             "rectangular result (see deterministic_keep_counts / sample_token_budget "
             "docstrings for how to keep the per-sample total constant)"
         )
-    K = int(totals[0].item()) + 1  # +1 for the prompt
+    K = int(totals.max().item()) + 1  # +1 for the prompt
     device = kept_counts.device
     N = max(group_spans[-1][1], prompt_idx + 1)
 
@@ -323,7 +352,7 @@ def build_keep_indices(
     # (cumsum - 1); non-kept positions are routed to a scratch column (index K) that
     # gets discarded.
     dest = (keep.long().cumsum(dim=1) - 1).masked_fill(~keep, K)  # [B, N]
-    buf = torch.zeros(B, K + 1, dtype=torch.long, device=device)
+    buf = torch.full((B, K + 1), prompt_idx, dtype=torch.long, device=device)
     src = torch.arange(N, device=device).unsqueeze(0).expand(B, -1)
     buf.scatter_(1, dest, src)
     return buf[:, :K]

@@ -17,6 +17,9 @@ Tests:
 8. Uniform strategy         — sample_uniform_counts keeps a uniform random subset of all
                               tokens (group-agnostic), and sample_kept_counts dispatches
                               on model.modality_dropout_strategy.
+9. Subset strategy          — sample_modality_subsets draws whole-modality subsets with
+                              weight 2^size, and build_keep_indices(ragged=True) pads rows
+                              whose kept-token totals differ.
 """
 
 import pytest
@@ -26,6 +29,7 @@ from flower.models.networks.modality_dropout import (
     sample_token_budget,
     sample_uniform_counts,
     sample_kept_counts,
+    sample_modality_subsets,
     build_keep_indices,
     position_correct,
     deterministic_keep_counts,
@@ -671,3 +675,68 @@ class TestSampleKeptCounts:
     def test_unknown_strategy_raises(self):
         with pytest.raises(ValueError, match="modality_dropout_strategy"):
             sample_kept_counts("beta", make_avail(), KEEP_FRAC, ALPHAS)
+
+
+# ---------------------------------------------------------------------------
+# Test 9: Subset (whole-modality) strategy
+# ---------------------------------------------------------------------------
+
+class TestSampleModalitySubsets:
+    @pytest.mark.parametrize("n", [3, 4])
+    def test_frequencies_follow_two_to_the_size(self, n):
+        """Each non-empty subset S is drawn with probability 2^|S| / sum_S' 2^|S'|
+        (80 for 4 modalities, 26 for 3): e.g. with 4, each 2-subset has 0.05."""
+        torch.manual_seed(0)
+        draws = sample_modality_subsets(200_000, n, torch.device("cpu"))
+        assert draws.shape == (200_000, n) and draws.dtype == torch.bool
+        assert draws.any(dim=1).all()  # the empty set is never drawn
+        total = sum(2 ** bin(m).count("1") for m in range(1, 2**n))
+        assert total == (80 if n == 4 else 26)
+        codes = (draws.long() * (2 ** torch.arange(n))).sum(dim=1)
+        freq = torch.bincount(codes, minlength=2**n).float() / len(codes)
+        assert freq[0] == 0
+        for m in range(1, 2**n):
+            expected = 2 ** bin(m).count("1") / total
+            assert abs(freq[m].item() - expected) < 0.005, (m, freq[m].item(), expected)
+
+    def test_size_class_totals_with_four_modalities(self):
+        torch.manual_seed(1)
+        sizes = sample_modality_subsets(200_000, 4, torch.device("cpu")).sum(dim=1)
+        share = torch.bincount(sizes, minlength=5).float() / len(sizes)
+        for k, p in {1: 0.10, 2: 0.30, 3: 0.40, 4: 0.20}.items():
+            assert abs(share[k].item() - p) < 0.005
+
+
+class TestRaggedKeepIndices:
+    def _counts(self):
+        avail = make_avail()
+        avail[:, 2] = torch.tensor([20, 7, 13, 1])
+        subset = torch.tensor(
+            [[1, 1, 1], [0, 0, 1], [1, 0, 0], [0, 1, 1]], dtype=torch.long
+        )
+        return avail * subset, avail
+
+    def test_rows_hold_their_own_counts_plus_prompt(self):
+        torch.manual_seed(0)
+        counts, avail = self._counts()
+        lang_valid = avail[:, 2]
+        idx = build_keep_indices(make_group_spans(), counts, lang_valid, PROMPT_IDX, ragged=True)
+        totals = counts.sum(dim=1) + 1
+        assert idx.shape == (B, int(totals.max()))
+        spans = make_group_spans()
+        for b in range(B):
+            row = idx[b, : int(totals[b])].tolist()
+            assert row == sorted(row) and len(set(row)) == len(row)
+            assert PROMPT_IDX in row
+            for g, (s0, s1) in enumerate(spans):
+                in_g = [i for i in row if s0 <= i < s1]
+                assert len(in_g) == int(counts[b, g])
+            # language never picks padding
+            assert all(i < LANG_START + int(lang_valid[b]) for i in row if i >= LANG_START)
+            # the padded tail points at a valid index (the prompt)
+            assert all(i == PROMPT_IDX for i in idx[b, int(totals[b]) :].tolist())
+
+    def test_default_still_requires_rectangular_totals(self):
+        counts, avail = self._counts()
+        with pytest.raises(RuntimeError, match="rectangular"):
+            build_keep_indices(make_group_spans(), counts, avail[:, 2], PROMPT_IDX)

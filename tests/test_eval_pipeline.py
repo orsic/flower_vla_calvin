@@ -1407,3 +1407,56 @@ def test_upload_pid_modality_failure_still_uploads_the_rest(tmp_path, monkeypatc
     assert "libero_plus.csv" in member_names
     assert "pid_modality.txt" not in member_names  # the one broken member, correctly dropped
     assert "boom" in capsys.readouterr().err
+
+
+def _combo_of(overrides):
+    """(static, wrist, lang, proprio) from an eval line's eval_modalities.* overrides."""
+    flags = dict(o.split("=", 1) for o in overrides if o.startswith("eval_modalities."))
+    return tuple(flags[f"eval_modalities.{m}"] == "True" for m in ("rgb_static", "rgb_gripper", "language", "proprio"))
+
+
+@pytest.mark.parametrize("use_proprio, n_combos", [(True, 5), (False, 4)])
+def test_plan_lines_skip_multi_off_keeps_only_single_withheld_combos(tmp_path, use_proprio, n_combos):
+    """--skip-multi-off drops every combo with two or more modalities withheld, from the
+    orig sweep and the LIBERO-PRO matched sweep alike; LIBERO-Plus is unaffected."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=True, use_proprio=use_proprio)
+
+    full = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], skip_multi_off=True)
+
+    orig = [_combo_of(ov) for svc, ov in lines if svc == "eval"]
+    assert len(orig) == len(set(orig)) == n_combos
+    assert all(sum(not on for on in c) <= 1 for c in orig)
+    assert (True, True, True, True) in orig
+    if not use_proprio:
+        assert all(c[3] for c in orig)
+
+    matched = [_combo_of(ov) for svc, ov in lines if svc == "eval-pro" and "pro_init_states=matched" in ov]
+    assert len(matched) == 2 * n_combos
+    assert set(matched) == set(orig)
+    assert len([1 for svc, _ in lines if svc == "eval-pro"]) == 4 + 2 * n_combos
+
+    plus = lambda ls: [ov for svc, ov in ls if svc == "eval-plus"]  # noqa: E731
+    assert plus(lines) == plus(full)
+
+
+def test_plan_lines_skip_multi_off_with_skip_pro_combos(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=True, use_proprio=True)
+
+    lines = plan_lines(
+        str(train_folder), resume=False, extra_overrides=[], skip_multi_off=True, skip_pro_combos=True
+    )
+    assert len([1 for svc, _ in lines if svc == "eval-pro"]) == 6
+    assert len([1 for svc, _ in lines if svc == "eval"]) == 5
+
+
+def test_plan_lines_skip_multi_off_leaves_a_non_dropout_run_unchanged(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+
+    full = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], skip_multi_off=True)
+    assert [ov for svc, ov in lines if svc == "eval"] == [ov for svc, ov in full if svc == "eval"]
+    assert [ov for svc, ov in lines if svc == "eval-plus"] == [ov for svc, ov in full if svc == "eval-plus"]

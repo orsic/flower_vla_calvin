@@ -360,6 +360,9 @@ case "$CMD" in
     #                      # sweeping the matched arm across all 14 combos (~6.5 h);
     #                      # catch up later with PIPELINE_RESUME=1, which back-fills
     #                      # only the combos still missing
+    #   PIPELINE_SKIP_MULTI_OFF=1 ./run.sh pipeline /saves/train_logs/.../<run>
+    #                      # LIBERO-10 and the PRO matched sweep only with all inputs or one
+    #                      # withheld (5 combos, or 4 without proprio, instead of 14 / 7)
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline <train_run_dir> [hydra_overrides...]" >&2
         exit 1
@@ -378,11 +381,13 @@ case "$CMD" in
     [[ -n "${PIPELINE_SKIP_MODALITY_OFF:-}" ]] && skip_modality_off_flag=(--skip-modality-off)
     skip_pro_combos_flag=()
     [[ -n "${PIPELINE_SKIP_PRO_COMBOS:-}" ]] && skip_pro_combos_flag=(--skip-pro-combos)
+    skip_multi_off_flag=()
+    [[ -n "${PIPELINE_SKIP_MULTI_OFF:-}" ]] && skip_multi_off_flag=(--skip-multi-off)
 
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell \
         python scripts/eval_pipeline.py plan --train-folder "$train_dir" \
         "${resume_flag[@]}" "${reeval_flag[@]}" "${skip_modality_off_flag[@]}" \
-        "${skip_pro_combos_flag[@]}" -- "$@")"
+        "${skip_pro_combos_flag[@]}" "${skip_multi_off_flag[@]}" -- "$@")"
 
     # Read every plan line into memory before launching anything -- a long-running eval
     # container previously held the loop's plan text on a shared fd for its entire
@@ -753,6 +758,8 @@ case "$CMD" in
     echo "                     PIPELINE_SKIP_MODALITY_OFF=1 skips the 4 modality-withheld LIBERO-Plus"
     echo "                     evals (they make the LIBERO-Plus portion ~5x longer); catch them up"
     echo "                     later with PIPELINE_REEVAL_SUITES=plus_<bench>_no_<modality>."
+    echo "                     PIPELINE_SKIP_MULTI_OFF=1 evaluates LIBERO-10 and the LIBERO-PRO matched"
+    echo "                     suites only with all inputs or one withheld (5 combos, 4 without proprio)."
     echo "  analyze <run|filter> ..."
     echo "                     Read the W&B evaluation artifact(s) ./run.sh pipeline uploaded and report"
     echo "                     PID + per-perturbation success rates. Needs WANDB_API_KEY."

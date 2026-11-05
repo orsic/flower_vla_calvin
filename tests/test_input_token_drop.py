@@ -360,3 +360,81 @@ class TestOtherFixedMaskPaths:
         stub.encode_observations(_batch())
 
         assert calls == [0.5]
+
+
+# ---------------------------------------------------------------------------
+# 6. Subset strategy: whole modalities kept or dropped per sample, ragged padding
+# ---------------------------------------------------------------------------
+
+
+class TestSubsetStrategy:
+    def _run(self, monkeypatch, subset, use_proprio=False, batch=None):
+        import flower.models.flower as fl
+
+        monkeypatch.setattr(fl, "sample_modality_subsets", lambda B, n, device: subset[:B, :n].clone())
+        vlm = _FakeVLM(tokens_per_image=4, embed_dim=8)
+        stub = _ObsStub(modality_dropout=True, modality_dropout_strategy="subset", training=True, vlm=vlm)
+        stub._tokens_per_image = vlm.tokens_per_image
+        stub.use_proprio = use_proprio
+        stub.modality_dropout_proprio_keep_p = 0.5
+        batch = batch if batch is not None else _batch()
+        if use_proprio:
+            batch["robot_obs"] = torch.randn(len(batch["lang_text"]), 1, 8)
+        return stub, vlm, stub.encode_observations(batch), batch
+
+    def test_rows_keep_only_their_modalities_and_padding_is_masked(self, monkeypatch):
+        # Row 0 keeps everything (4 + 4 + 5 words + prompt = 14); row 1 only language
+        # ("push the button": 3 non-pad tokens + prompt = 4) and is padded to 14.
+        subset = torch.tensor([[True, True, True], [False, False, True]])
+        _, _, out, _ = self._run(monkeypatch, subset)
+        assert out["attention_mask"].shape == (2, 14)
+        assert out["attention_mask"].sum(dim=1).tolist() == [14, 4]
+        assert out["context_mask"].dtype == torch.bool
+        assert out["context_mask"].sum(dim=1).tolist() == [14, 4]
+        assert torch.equal(out["context_mask"], out["attention_mask"].bool())
+        assert out["context_mask"][1, 4:].logical_not().all()
+
+    def test_kept_tokens_match_a_fixed_mask_run_of_the_same_sample(self, monkeypatch):
+        """Row 1's valid features equal those of a language-only fixed-mask run on that
+        sample alone: dropping whole modalities via ragged padding is the same input as
+        withholding them."""
+        batch = _batch()
+        subset = torch.tensor([[True, True, True], [False, False, True]])
+        _, vlm, out, _ = self._run(monkeypatch, subset, batch=batch)
+
+        ref = _ObsStub(eval_modality_mask=(False, False, True), vlm=vlm)
+        ref._tokens_per_image = vlm.tokens_per_image
+        single = {
+            "rgb_obs": {k: v[1:2] for k, v in batch["rgb_obs"].items()},
+            "lang_text": batch["lang_text"][1:2],
+        }
+        ref_out = ref.encode_observations(single)
+        n = int(out["context_mask"][1].sum())
+        assert torch.allclose(out["features"][1, :n], ref_out["features"][0], atol=1e-6)
+
+    def test_proprio_keep_follows_the_fourth_column(self, monkeypatch):
+        subset = torch.tensor([[True, False, True, False], [False, True, False, True]])
+        _, _, out, _ = self._run(monkeypatch, subset, use_proprio=True)
+        assert out["proprio_keep"].tolist() == [False, True]
+
+    def test_proprio_only_sample_keeps_just_the_prompt(self, monkeypatch):
+        subset = torch.tensor([[False, False, False, True], [True, True, True, True]])
+        _, _, out, _ = self._run(monkeypatch, subset, use_proprio=True)
+        assert out["context_mask"][0].sum() == 1
+        assert torch.isfinite(out["features"]).all()
+
+    @pytest.mark.parametrize("strategy", ["dirichlet", "uniform"])
+    def test_other_strategies_have_no_context_mask(self, strategy):
+        vlm = _FakeVLM(tokens_per_image=4, embed_dim=8)
+        stub = _ObsStub(modality_dropout=True, modality_dropout_strategy=strategy, training=True, vlm=vlm)
+        stub._tokens_per_image = vlm.tokens_per_image
+        assert stub.encode_observations(_batch())["context_mask"] is None
+
+    def test_eval_path_has_no_context_mask(self, monkeypatch):
+        import flower.models.flower as fl
+
+        monkeypatch.setattr(fl, "sample_modality_subsets", lambda *a, **k: pytest.fail("sampled at eval"))
+        vlm = _FakeVLM(tokens_per_image=4, embed_dim=8)
+        stub = _ObsStub(modality_dropout=True, modality_dropout_strategy="subset", training=False, vlm=vlm)
+        stub._tokens_per_image = vlm.tokens_per_image
+        assert stub.encode_observations(_batch())["context_mask"] is None

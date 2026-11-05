@@ -33,6 +33,7 @@ from flower.models.networks.transformers import (
 )
 from flower.models.networks.modality_dropout import (
     sample_kept_counts,
+    sample_modality_subsets,
     build_keep_indices,
     position_correct,
     deterministic_keep_counts,
@@ -145,7 +146,9 @@ class FLOWERVLA(pl.LightningModule):
         modality_dropout: bool = False,
         modality_dropout_keep_fraction: float = 0.5,
         modality_dropout_alphas: tuple = (1.0, 1.0, 1.0),
-        # "dirichlet" (per-group proportions above) or "uniform" (a random subset of all tokens).
+        # "dirichlet" (per-group proportions above), "uniform" (a random subset of all tokens)
+        # or "subset" (whole modalities kept or dropped, proprio included; see
+        # sample_modality_subsets -- keep_fraction, alphas and proprio_keep_p are unused).
         modality_dropout_strategy: str = "dirichlet",
         # Proprioception isn't a token (see encode_proprio/dit_forward) so it can't join the
         # Dirichlet token budget above; it gets its own per-sample Bernoulli keep gate instead.
@@ -222,6 +225,11 @@ class FLOWERVLA(pl.LightningModule):
                 "model.modalities and model.modality_dropout are mutually exclusive — "
                 f"got a fixed subset {modality_tuple} (proprio={proprio_enabled}) together "
                 "with modality_dropout=True"
+            )
+        if modality_dropout_strategy not in ("dirichlet", "uniform", "subset"):
+            raise ValueError(
+                f"Unknown modality_dropout_strategy {modality_dropout_strategy!r}: "
+                "expected 'dirichlet', 'uniform' or 'subset'"
             )
         self.modality_mask: Optional[Tuple[bool, bool, bool]] = None if all(modality_tuple) else modality_tuple
         # Fixed proprio ablation: None (on) leaves the Bernoulli-gate path off; False withholds
@@ -875,9 +883,18 @@ class FLOWERVLA(pl.LightningModule):
         
         cond = self.cond_linear(self.cond_norm(cond))
         
+        # Padding columns of the subset strategy (None everywhere else: no masking).
+        context_mask = cond_dict.get('context_mask')
+
         # Set up conditioning
         if self.use_adaln_cond:
-            vlm_token = cond[:, 0, :] if self.use_readout_token else cond.mean(dim=1)
+            if self.use_readout_token:
+                vlm_token = cond[:, 0, :]
+            elif context_mask is not None:
+                m = context_mask.unsqueeze(-1).to(cond.dtype)
+                vlm_token = (cond * m).sum(dim=1) / m.sum(dim=1)
+            else:
+                vlm_token = cond.mean(dim=1)
             global_cond = vlm_token + t_emb
         else:
             global_cond = t_emb
@@ -899,6 +916,7 @@ class FLOWERVLA(pl.LightningModule):
                 cx, 
                 global_cond, 
                 context=context, 
+                custom_cross_attn_mask=context_mask,
                 is_causal=True, 
                 global_adaln=global_adaln
             )
@@ -1070,6 +1088,10 @@ class FLOWERVLA(pl.LightningModule):
         # this is the identity and reduces to the pre-input-skipping algorithm exactly.
         layout = compact_layout(Ns, Nw, Lt, present, device=device)
 
+        # subset strategy only: per-sample kept modalities, and the [B, K] mask of real (not
+        # padding) columns, which the DiT's cross-attention also needs (see dit_forward).
+        subset = None
+        context_mask = None
         if fixed_mask is not None or (self.modality_dropout and self.training):
             # --- Physical pre-encoder token removal (fixed-mask or training-Dirichlet) ---
             # Available (compact) tokens per group per sample.
@@ -1088,16 +1110,23 @@ class FLOWERVLA(pl.LightningModule):
                 lang_valid_len = avail[:, 2].clone()
             else:
                 avail[:, 2] = text_mask.sum(dim=1)  # non-pad language tokens
-                alphas = torch.tensor(
-                    list(self.modality_dropout_alphas), dtype=torch.float, device=device
-                )
-                kept_counts = sample_kept_counts(
-                    self.modality_dropout_strategy, avail, self.modality_dropout_keep_fraction, alphas
-                )  # [B, 3]
+                if self.modality_dropout_strategy == "subset":
+                    # Whole modalities kept or dropped per sample (proprio is column 3), so
+                    # the kept-token total differs between samples: padded below.
+                    subset = sample_modality_subsets(B, 4 if self.use_proprio else 3, device)
+                    kept_counts = avail * subset[:, :3].long()
+                else:
+                    alphas = torch.tensor(
+                        list(self.modality_dropout_alphas), dtype=torch.float, device=device
+                    )
+                    kept_counts = sample_kept_counts(
+                        self.modality_dropout_strategy, avail, self.modality_dropout_keep_fraction, alphas
+                    )  # [B, 3]
                 lang_valid_len = text_mask.sum(dim=1).long()  # [B]
 
             keep_indices = build_keep_indices(
-                layout.group_spans, kept_counts, lang_valid_len, layout.prompt_idx
+                layout.group_spans, kept_counts, lang_valid_len, layout.prompt_idx,
+                ragged=subset is not None,
             )  # [B, K], compact-layout indices
 
             # Gather kept embeddings (without positional encoding, which the encoder adds).
@@ -1118,6 +1147,13 @@ class FLOWERVLA(pl.LightningModule):
             attention_mask = gather_attention_mask(
                 text_mask, keep_indices, layout.n_compact, layout.lang_start
             )
+            if subset is not None:
+                # Padding columns (beyond each row's own kept tokens + prompt) are masked
+                # in the encoder here and in the DiT's cross-attention via context_mask.
+                context_mask = torch.arange(K, device=device).unsqueeze(0) < (
+                    kept_counts.sum(dim=1) + 1
+                ).unsqueeze(1)
+                attention_mask = attention_mask * context_mask
             inputs_embeds = kept_embeds
         else:
             # --- Standard (no dropout, no fixed mask) path ---
@@ -1155,6 +1191,8 @@ class FLOWERVLA(pl.LightningModule):
 
             if fixed_proprio is not None:
                 proprio_keep = torch.full((B,), fixed_proprio, dtype=torch.bool, device=device)
+            elif subset is not None:
+                proprio_keep = subset[:, 3]
             elif self.modality_dropout and self.training:
                 proprio_keep = torch.rand(B, device=device) < self.modality_dropout_proprio_keep_p
 
@@ -1166,6 +1204,7 @@ class FLOWERVLA(pl.LightningModule):
             'proprio': proprio,
             'proprio_keep': proprio_keep,
             'attention_mask': attention_mask,
+            'context_mask': context_mask,
         }
 
     def encode_actions(self, z: torch.Tensor, action_type: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

@@ -14,7 +14,9 @@ modality_dropout: False
 modality_dropout_keep_fraction: 0.5
 modality_dropout_alphas: [1.0, 1.0, 1.0]
 # dirichlet: per-sample group proportions from Dirichlet(alphas); uniform: keep a random
-# subset of all tokens regardless of group (alphas unused).
+# subset of all tokens regardless of group (alphas unused); subset: keep or drop whole
+# modalities (proprio included), each non-empty subset weighted 2^size (keep_fraction,
+# alphas and proprio_keep_p unused).
 modality_dropout_strategy: dirichlet
 # Proprio isn't a token (it's an AdaLN conditioning vector, not part of the Dirichlet budget
 # above) — its own per-sample Bernoulli keep probability while modality_dropout=True.

@@ -72,6 +72,10 @@ Branching (read from <train-folder>/.hydra/config.yaml):
     do (pro_sr.py groups by combo, so it needs no csv_dir= split the way LIBERO-Plus
     does). --skip-pro-combos (PIPELINE_SKIP_PRO_COMBOS=1) collapses the sweep back to
     full modality only, leaving 6 PRO lines.
+  - --skip-multi-off (PIPELINE_SKIP_MULTI_OFF=1) keeps only the combos with at most one
+    modality withheld -- full plus each single withheld modality, 5 with proprio and 4
+    without -- in both the orig sweep and the PRO matched sweep (14 or 12 PRO lines).
+    LIBERO-Plus already evaluates only those, so it is unaffected.
 
 --overrides (after a literal "--") are Hydra overrides appended, unmodified, to every
 emitted line -- last on the line, so they take precedence (see run.sh's run_train/eval
@@ -184,6 +188,11 @@ def modality_combos(use_proprio: bool) -> List[Dict[str, bool]]:
         else:
             combos.append({**token_combo, "proprio": True})
     return combos
+
+
+def at_most_one_off(combos: List[Dict[str, bool]]) -> List[Dict[str, bool]]:
+    """The combos with at most one modality withheld (full, then each single one off)."""
+    return [c for c in combos if sum(not on for on in c.values()) <= 1]
 
 
 def modality_off_combo(variant: str) -> Dict[str, bool]:
@@ -368,6 +377,7 @@ def plan_lines(
     reeval_variants: Optional[Set[str]] = None,
     skip_modality_off: bool = False,
     skip_pro_combos: bool = False,
+    skip_multi_off: bool = False,
 ) -> List[Tuple[str, List[str]]]:
     """reeval_variants, when given, restricts the plan to those variants only, and each
     of them is replanned unconditionally (see should_replan below) -- the caller
@@ -431,6 +441,8 @@ def plan_lines(
         return ["reeval=true"]
 
     combos = modality_combos(use_proprio) if dropout else [full_modality_combo()]
+    if skip_multi_off:
+        combos = at_most_one_off(combos)
 
     lines: List[Tuple[str, List[str]]] = []
     if reeval_variants is None or "orig" in reeval_variants:
@@ -485,6 +497,8 @@ def plan_lines(
     # those records with empty paired columns rather than inventing a baseline.
     pro_extra = [o for o in extra_overrides if not o.startswith("benchmark_name=")]
     pro_combos = [full_modality_combo()] if skip_pro_combos else modality_combos(use_proprio)
+    if skip_multi_off:
+        pro_combos = at_most_one_off(pro_combos)
     for variant in PRO_VARIANTS:
         if reeval_variants is not None and variant not in reeval_variants:
             continue
@@ -713,6 +727,7 @@ def main() -> None:
     plan_p.add_argument("--reeval-suites", default=None)
     plan_p.add_argument("--skip-modality-off", action="store_true")
     plan_p.add_argument("--skip-pro-combos", action="store_true")
+    plan_p.add_argument("--skip-multi-off", action="store_true")
     plan_p.add_argument("overrides", nargs="*")
 
     upload_p = subparsers.add_parser("upload")
@@ -753,6 +768,7 @@ def main() -> None:
             reeval_variants,
             args.skip_modality_off,
             args.skip_pro_combos,
+            args.skip_multi_off,
         ):
             print("\t".join([service] + overrides))
     elif args.cmd == "upload":
