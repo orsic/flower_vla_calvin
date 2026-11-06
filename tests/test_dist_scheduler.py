@@ -70,7 +70,6 @@ def test_task_from_a_finished_run():
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"created_at": "2026-11-04T23:59:59Z"},  # before DIST_SINCE
         {"state": "running"},  # still training
         {"state": "crashed"},
         {"epoch": 0},  # finished but died at startup
@@ -204,3 +203,13 @@ def test_state_file_round_trip_under_lock(tmp_path):
         ds.claim(state, "w:0", T0)
     with ds.locked_state(path) as state:
         assert state["tasks"][LIB]["state"] == "running"
+
+
+def test_since_compares_with_the_local_date_in_the_run_name_not_utc_created_at():
+    """A run started at 00:00 local time on DIST_SINCE is created the previous day in
+    W&B's UTC created_at; the date in its name is what DIST_SINCE refers to."""
+    run = FakeRun("calvin_abcd_d_dropout_2026-11-06_00-00-18", created_at="2026-11-05T23:00:44Z")
+    assert ds.task_from_run(run, "2026-11-06", []) is not None
+    late = FakeRun("calvin_abcd_d_dropout_2026-11-05_23-59-59", created_at="2026-11-05T22:59:59Z")
+    assert ds.task_from_run(late, "2026-11-06", []) is None
+    assert ds.run_date(FakeRun(LIB)) == "2026-11-06_08-00-00"

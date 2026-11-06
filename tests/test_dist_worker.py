@@ -19,9 +19,9 @@ STUB_SSH = """#!/usr/bin/env bash
 echo "$*" >> "$FAKE_SSH_LOG"
 case "$*" in
   *"dist-sched"*"claim"*)
-    # hand out the fake task once, then nothing
-    if [[ -n "${FAKE_TASK:-}" && ! -e "$FAKE_SSH_LOG.claimed" ]]; then
-        touch "$FAKE_SSH_LOG.claimed"
+    # hand out the fake task once, then nothing; mkdir is atomic, so two GPU loops
+    # claiming at the same moment can't both get it (the real queue holds a lock)
+    if [[ -n "${FAKE_TASK:-}" ]] && mkdir "$FAKE_SSH_LOG.claimed" 2>/dev/null; then
         printf '%b\\n' "$FAKE_TASK"
     fi ;;
 esac

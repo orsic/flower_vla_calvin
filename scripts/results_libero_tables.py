@@ -56,6 +56,13 @@ MODELS: Dict[str, Dict[int, str]] = {
         100: "libero_10_dropout_2026-11-02_12-18-36",
     },
 }
+# Whole-modality dropout (model.modality_dropout_strategy=subset) with proprioception,
+# evaluated with all inputs or one withheld (PIPELINE_SKIP_MULTI_OFF=1): its own section,
+# since the main tables cover every input combination.
+SUBSET_RUNS: Dict[int, str] = {
+    42: "libero_10_dropout_2026-11-04_21-49-24",
+    5: "libero_10_dropout_2026-11-04_21-51-57",
+}
 # Multi-GPU evaluations leave eval_timestamp empty (rank shards are written without it);
 # their validity was checked by file modification time or training date instead.
 NO_TS = {
@@ -363,6 +370,59 @@ def main() -> None:
             continue
         tab = size_table(sev, cat, lab, doubled=True)
         print(f"\n### {title} (tasks summed: {tab.tasks.sum()} of {CAT_TASKS[cat]})\n" + md(tab))
+
+    print_subset(a)
+
+
+def print_subset(a: Artifacts) -> None:
+    """LIBERO-10, LIBERO-Plus and LIBERO-PRO for the subset-strategy runs (SUBSET_RUNS)."""
+    seeds = list(SUBSET_RUNS)
+    full = "static+wrist+lang+proprio"
+    orig = {sd: a.load(r, "libero_orig.csv") for sd, r in SUBSET_RUNS.items()}
+    plus = {sd: a.load(r, "libero_plus.csv") for sd, r in SUBSET_RUNS.items()}
+    for sd in seeds:
+        assert orig[sd].groupby("combo").size().eq(200).all() and orig[sd].combo.nunique() == 5, sd
+        assert len(plus[sd]) == 2519 and set(plus[sd].combo) == {full}, sd
+
+    def cell(vals: List[float]) -> str:
+        return ms(vals) + " (" + " / ".join(f"{100 * v:.1f}" for v in vals) + ")"
+
+    print(f"\n## Whole-modality dropout (subset), seeds {' / '.join(map(str, seeds))}: mean ± sd (per seed), %")
+    print("\n### LIBERO-10 by inputs")
+    combos = [c for c in orig[seeds[0]].combo.unique()]
+    combos.sort(key=lambda c: (-c.count("+"), c))
+    t = {c: {"LIBERO-10": cell([orig[sd][orig[sd].combo == c].success.mean() for sd in seeds])} for c in combos}
+    print(md(pd.DataFrame(t).T.rename_axis("inputs")))
+
+    print("\n### LIBERO-Plus, all inputs and one withheld")
+    t = {"all inputs": cell([plus[sd].success.mean() for sd in seeds])}
+    for v in ("lang", "static", "wrist", "proprio"):
+        ds = [a.load(SUBSET_RUNS[sd], f"libero_plus_no_{v}.csv") for sd in seeds]
+        assert all(len(d) == 2519 for d in ds)
+        t["no " + v] = cell([d.success.mean() for d in ds])
+    print(md(pd.DataFrame({"LIBERO-Plus": t}).rename_axis("inputs")))
+
+    print("\n### LIBERO-Plus by category, all inputs")
+    t = {c: {"subset": cell([plus[sd][plus[sd].task_category == c].success.mean() for sd in seeds])} for c in CATS}
+    print(md(pd.DataFrame(t).T.rename_axis("category")))
+
+    print("\n### LIBERO-Plus by category, one input withheld (mean over seeds)")
+    t = {}
+    for v in ("lang", "static", "wrist", "proprio"):
+        ds = [a.load(SUBSET_RUNS[sd], f"libero_plus_no_{v}.csv") for sd in seeds]
+        t["no " + v] = {c: ms([d[d.task_category == c].success.mean() for d in ds]) for c in CATS}
+    print(md(pd.DataFrame(t).rename_axis("category")))
+
+    print("\n### LIBERO-PRO")
+    ps = {sd: pd.read_csv(a.path(r, "pro_sr.csv")) for sd, r in SUBSET_RUNS.items()}
+    nat = {sd: p[p.libero_variant == "pro"].set_index("perturbation").success_rate for sd, p in ps.items()}
+    print(md(pd.DataFrame({k: {"native, all inputs": cell([n[k] for n in nat.values()])} for k in ("lan", "object", "swap", "task")}).rename_axis("")))
+    for sd, p in ps.items():
+        for r in p[p.libero_variant == "pro_matched"].itertuples():
+            print(
+                f"   seed {sd} matched {r.perturbation} {r.modality_combo} pro {100 * r.success_rate:.1f} "
+                f"orig {100 * r.orig_success_rate:.1f} delta {100 * r.delta:+.1f} p={r.mcnemar_p:.3g}"
+            )
 
 
 if __name__ == "__main__":

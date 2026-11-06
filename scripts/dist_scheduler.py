@@ -6,7 +6,8 @@ SSH, evaluate them with the benchmark's pipeline, and report back. The queue liv
 one JSON file guarded by an exclusive lock, so concurrent claims never hand out the
 same run twice.
 
-A run is queued when it was created on or after --since, finished training (W&B state
+A run is queued when it started on or after --since (the local date in its name, e.g.
+calvin_abcd_d_2026-11-06_00-00-18; W&B's created_at is UTC), finished training (W&B state
 "finished" and its last epoch reached max_epochs - 1, max_epochs from the benchmark's
 conf/config_*.yaml or a max_epochs= override in the run's args), and has no
 "evaluation" artifact yet. A running task's lease expires --lease-min minutes after its
@@ -23,6 +24,7 @@ import fcntl
 import fnmatch
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -81,6 +83,14 @@ def opts_for(run_id: str, rules: Rules) -> str:
     return ""
 
 
+def run_date(run) -> str:
+    """The local start time in the run's name (YYYY-MM-DD_HH-MM-SS), else W&B's UTC
+    created_at. DIST_SINCE compares against this, so a run started just after local
+    midnight counts for that day."""
+    m = re.search(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}", run.id)
+    return m.group() if m else run.created_at
+
+
 def _evaluated(run) -> bool:
     return any(a.type == "evaluation" for a in run.logged_artifacts())
 
@@ -88,7 +98,7 @@ def _evaluated(run) -> bool:
 def task_from_run(run, since: str, rules: Rules) -> Optional[Dict]:
     """A new todo task for a finished, not yet evaluated run, else None."""
     bench = benchmark_of(run.id)
-    if bench is None or run.created_at < since or run.state != "finished":
+    if bench is None or run_date(run) < since or run.state != "finished":
         return None
     meta = run.metadata or {}
     args = meta.get("args") or []
@@ -258,7 +268,9 @@ def _wandb_runs(since: str) -> List:
 
     logger = yaml.safe_load((REPO_ROOT / CONFIGS["libero"]).read_text())["logger"]
     api = wandb.Api(timeout=120)
-    return list(api.runs(f"{logger['entity']}/{logger['project']}", filters={"created_at": {"$gte": since}}))
+    # Query a day early: created_at is UTC, task_from_run applies --since to the local date.
+    day_before = (datetime.strptime(since[:10], "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    return list(api.runs(f"{logger['entity']}/{logger['project']}", filters={"created_at": {"$gte": day_before}}))
 
 
 def main() -> None:
