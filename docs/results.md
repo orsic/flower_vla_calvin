@@ -569,6 +569,80 @@ With one input withheld, per category (%, mean of the two seeds):
 | Sensor Noise | 84.3 | 89.8 | 23.3 | 90.1 |
 | Objects Layout | 67.9 | 73.7 | 50.2 | 76.3 |
 
+By difficulty level, all inputs (%; number of tasks 357 / 450 / 484 / 523 / 705):
+
+| model | level 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| no dropout + proprio | 86.6 | 86.0 | 82.2 | 71.8 | 49.4 |
+| Dirichlet, proprio keep 1.0 | 91.1 | 90.7 | 87.5 | 80.3 | 60.6 |
+| subset | 89.5 (88.2 / 90.8) | 92.7 (93.1 / 92.2) | 90.0 (89.5 / 90.5) | 88.6 (89.3 / 88.0) | 72.3 (69.8 / 74.8) |
+
+By physical perturbation size, all inputs, each range doubled as in [perturbation size](#libero-plus-by-perturbation-size) (%, mean ± sd over seeds), next to no dropout + proprio and the most robust Dirichlet model:
+
+**Camera Viewpoints: rotation**
+
+| bin | tasks | no dropout + proprio | dropout, proprio keep 1.0 | subset |
+|---|---|---|---|---|
+| rot~0-30deg | 162 | 68.1 ± 8.9 | 78.0 ± 8.3 | 93.5 ± 1.3 |
+| rot~30-60deg | 121 | 18.2 ± 9.5 | 55.6 ± 3.7 | 66.1 ± 9.4 |
+| rot~60-90deg | 59 | 20.9 ± 15.7 | 40.7 ± 13.5 | 59.3 ± 14.4 |
+
+**Camera Viewpoints: distance scale**
+
+| bin | tasks | no dropout + proprio | dropout, proprio keep 1.0 | subset |
+|---|---|---|---|---|
+| scale~1.2-1.3x | 15 | 73.3 ± 24.0 | 84.4 ± 3.8 | 100.0 ± 0.0 |
+| scale~1.4-1.5x | 18 | 48.1 ± 14.0 | 72.2 ± 11.1 | 91.7 ± 3.9 |
+| scale~1.6-1.7x | 19 | 42.1 ± 13.9 | 77.2 ± 23.7 | 94.7 ± 7.4 |
+| scale~1.8-2.0x | 25 | 36.0 ± 6.9 | 57.3 ± 16.7 | 52.0 ± 11.3 |
+
+**Robot Initial States: initial joint offset**
+
+| bin | tasks | no dropout + proprio | dropout, proprio keep 1.0 | subset |
+|---|---|---|---|---|
+| 0.1-0.2rad | 118 | 86.2 ± 0.5 | 91.8 ± 1.0 | 94.1 ± 1.2 |
+| 0.3-0.5rad | 275 | 54.8 ± 2.7 | 61.1 ± 2.9 | 70.7 ± 2.3 |
+
+**Light Conditions: light severity**
+
+| bin | tasks | no dropout + proprio | dropout, proprio keep 1.0 | subset |
+|---|---|---|---|---|
+| severity~0.1-0.2 | 23 | 95.7 ± 4.3 | 88.4 ± 16.5 | 91.3 ± 12.3 |
+| severity~0.3-0.4 | 80 | 79.2 ± 6.9 | 75.0 ± 5.7 | 82.5 ± 5.3 |
+| severity~0.5-0.6 | 116 | 70.1 ± 1.3 | 66.4 ± 4.0 | 73.3 ± 9.8 |
+| severity~0.7-0.9 | 55 | 73.3 ± 10.0 | 77.6 ± 6.9 | 85.5 ± 0.0 |
+
+**Sensor Noise: level, pooled over the five noise types**
+
+| bin | tasks | no dropout + proprio | dropout, proprio keep 1.0 | subset |
+|---|---|---|---|---|
+| level 1-2 | 80 | 96.7 ± 2.6 | 96.2 ± 2.2 | 98.8 ± 1.8 |
+| level 3-4 | 88 | 92.8 ± 2.4 | 93.6 ± 2.9 | 98.3 ± 0.8 |
+| level 5-6 | 93 | 85.7 ± 4.8 | 91.0 ± 4.1 | 96.8 ± 0.0 |
+| level 7-8 | 93 | 73.1 ± 13.0 | 81.7 ± 6.7 | 93.5 ± 0.0 |
+| level 9-10 | 95 | 59.3 ± 9.8 | 63.2 ± 11.1 | 85.8 ± 0.7 |
+
+**Objects Layout: target displacement**
+
+| bin | tasks | no dropout + proprio | dropout, proprio keep 1.0 | subset |
+|---|---|---|---|---|
+| displacement_1-2 | 38 | 97.4 ± 4.6 | 94.7 ± 4.6 | 96.1 ± 1.9 |
+| displacement_3-5 | 101 | 84.8 ± 1.1 | 88.4 ± 2.1 | 87.1 ± 2.8 |
+
+**Objects Layout: number of distractors**
+
+| bin | tasks | no dropout + proprio | dropout, proprio keep 1.0 | subset |
+|---|---|---|---|---|
+| distractors_1-2 | 45 | 87.4 ± 7.1 | 93.3 ± 2.2 | 85.6 ± 4.7 |
+| distractors_3-5 | 128 | 69.5 ± 6.8 | 83.3 ± 7.4 | 75.0 ± 4.4 |
+
+- **Its lead grows with the difficulty level:** about level with Dirichlet keep 1.0 at level 1 (89.5% vs 91.1%), 12 points above it at level 5 (72.3% vs 60.6%; no dropout + proprio 49.4%).
+- **Camera rotation:** 93.5% up to 30° (vs 78.0% for keep 1.0), 66.1% at 30–60° (vs 55.6%) and 59.3% at 60–90° (vs 40.7%).
+- **Robot initial pose:** 70.7% at 0.3–0.5 rad, against 61.1% and 54.8%.
+- **Sensor noise barely hurts it:** 85.8% at levels 9–10, against 63.2% and 59.3%. It is at 90% or more for every noise type.
+- **Distractors are its weak spot:** 75.0% with three to five distractors, against 83.3% for keep 1.0 (no dropout + proprio 69.5%).
+- The full fine-bin tables are printed by `./run.sh results-libero-tables`.
+
 **LIBERO-PRO**, all inputs (%): `lan` 95.5 (96.0 / 95.0), `object` 51.8 (51.0 / 52.5), `swap` 0.0, `task` 9.5 (9.5 / 9.5).
 
 - **It is the most robust LIBERO model so far.** On LIBERO-Plus it scores 85.2% with all inputs, 5.6 points above the best Dirichlet model (79.6%) and 13–17 points above no dropout. Both seeds (84.4% and 85.9%) are above every Dirichlet seed (70.7–82.3%).

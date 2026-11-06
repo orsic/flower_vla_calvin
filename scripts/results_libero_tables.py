@@ -210,10 +210,11 @@ def size_table(
     doubled: bool,
 ) -> pd.DataFrame:
     """One perturbation-size table: per bin (or doubled group), task count, mean ± sd
-    over seeds per model, and the paired original-LIBERO success pooled over all runs."""
+    over seeds per model (one column per key of sev), and the paired original-LIBERO
+    success pooled over all runs."""
     rows: Dict[str, List[pd.DataFrame]] = {}
     order: List[str] = []
-    for m in MODELS:
+    for m in sev:
         per_seed = []
         for d in sev[m].values():
             d = d[d.category == cat].copy()
@@ -227,7 +228,7 @@ def size_table(
         groups = merge_bins(order)
         order = [span_label(g) for g in groups]
         rows = {m: [merged_counts(g, groups, order) for g in ps] for m, ps in rows.items()}
-    ref = rows["no dropout"][0]
+    ref = next(iter(rows.values()))[0]
     allruns = sum(g[["orig_successes", "orig_n"]] for ps in rows.values() for g in ps)
     t = {}
     for r in order:
@@ -412,6 +413,28 @@ def print_subset(a: Artifacts) -> None:
         ds = [a.load(SUBSET_RUNS[sd], f"libero_plus_no_{v}.csv") for sd in seeds]
         t["no " + v] = {c: ms([d[d.task_category == c].success.mean() for d in ds]) for c in CATS}
     print(md(pd.DataFrame(t).rename_axis("category")))
+
+    print("\n### LIBERO-Plus by difficulty level, all inputs")
+    t = {lv: {"subset": cell([plus[sd][plus[sd].difficulty_level == lv].success.mean() for sd in seeds])} for lv in range(1, 6)}
+    print(md(pd.DataFrame(t).rename_axis("model")))
+
+    # Perturbation size next to no dropout + proprio and the most robust Dirichlet model.
+    compare = {
+        "no dropout + proprio": MODELS["no dropout + proprio"],
+        "dropout, proprio keep 1.0": MODELS["dropout, proprio keep 1.0"],
+        "subset": SUBSET_RUNS,
+    }
+    sev = {
+        m: {sd: pd.read_csv(a.path(r, "severity_sr.csv")).query("axis == 'severity'") for sd, r in runs.items()}
+        for m, runs in compare.items()
+    }
+    for doubled in (False, True):
+        print(f"\n### LIBERO-Plus by physical perturbation size{', doubled ranges' if doubled else ''}, all inputs")
+        for cat, title, lab, ranged in GROUPS.values():
+            if doubled and not ranged:
+                continue
+            tab = size_table(sev, cat, lab, doubled=doubled)
+            print(f"\n#### {title} (tasks summed: {tab.tasks.sum()} of {CAT_TASKS[cat]})\n" + md(tab))
 
     print("\n### LIBERO-PRO")
     ps = {sd: pd.read_csv(a.path(r, "pro_sr.csv")) for sd, r in SUBSET_RUNS.items()}
