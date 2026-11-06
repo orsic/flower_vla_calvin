@@ -46,9 +46,12 @@ def pro_lines(use_proprio: bool, skip_pro_combos: bool = False) -> int:
     return 4 + 2 * matched
 
 
-def _write_train_cfg(train_folder: Path, *, dropout: bool, use_proprio: bool, benchmark="libero_10", seed=42):
+def _write_train_cfg(
+    train_folder: Path, *, dropout: bool, use_proprio: bool, benchmark="libero_10", seed=42, modalities=None
+):
     hydra_dir = train_folder / ".hydra"
     hydra_dir.mkdir(parents=True, exist_ok=True)
+    mods = "".join(f"\n    {k}: {str(v).lower()}" for k, v in (modalities or {}).items())
     (hydra_dir / "config.yaml").write_text(
         f"""
 libero_benchmark: {benchmark}
@@ -56,6 +59,7 @@ seed: {seed}
 model:
   use_proprio: {use_proprio}
   modality_dropout: {dropout}
+  modalities:{mods or " {}"}
 logger:
   project: multimodal_florence
   entity: some-entity
@@ -1460,3 +1464,66 @@ def test_plan_lines_skip_multi_off_leaves_a_non_dropout_run_unchanged(tmp_path):
     lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], skip_multi_off=True)
     assert [ov for svc, ov in lines if svc == "eval"] == [ov for svc, ov in full if svc == "eval"]
     assert [ov for svc, ov in lines if svc == "eval-plus"] == [ov for svc, ov in full if svc == "eval-plus"]
+
+
+# ---------------------------------------------------------------------------
+# A run trained on a fixed subset (model.modalities.*=False, no dropout) is only ever
+# evaluated within the inputs it was trained on, and every line names that subset.
+# ---------------------------------------------------------------------------
+
+
+def _combos(lines, svc, matched=None):
+    out = []
+    for s, ov in lines:
+        if s != svc:
+            continue
+        if matched is not None and (("pro_init_states=matched" in ov) != matched):
+            continue
+        out.append(_combo_of(ov))
+    return out
+
+
+def test_fixed_subset_run_is_evaluated_within_its_trained_inputs(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True, modalities={"rgb_gripper": False})
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+    trained = (True, False, True, True)
+
+    assert _combos(lines, "eval") == [trained]
+    plus = _combos(lines, "eval-plus")
+    assert plus[0] == trained
+    # one withheld-input LIBERO-Plus eval per input the model has, none for the wrist camera
+    assert sorted(plus[1:]) == sorted([(False, False, True, True), (True, False, False, True), (True, False, True, False)])
+    assert not any("plus_libero_10_no_wrist" in o for _, ov in lines for o in ov)
+    assert _combos(lines, "eval-pro", matched=False) == [trained] * 4
+    matched = _combos(lines, "eval-pro", matched=True)
+    assert len(matched) == 2 * 6  # {static, lang} non-empty subsets x proprio on/off
+    assert all(not c[1] for c in plus + matched)  # the wrist camera is never switched on
+
+
+def test_fixed_subset_run_with_skip_multi_off_counts_withheld_inputs_from_the_trained_set(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True, modalities={"rgb_gripper": False})
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], skip_multi_off=True)
+    matched = set(_combos(lines, "eval-pro", matched=True))
+    assert matched == {(True, False, True, True), (False, False, True, True), (True, False, False, True), (True, False, True, False)}
+
+
+def test_fixed_subset_with_one_token_input_never_withholds_it(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(
+        train_folder, dropout=False, use_proprio=False, modalities={"rgb_static": False, "rgb_gripper": False}
+    )
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[])
+    combos = _combos(lines, "eval") + _combos(lines, "eval-plus") + _combos(lines, "eval-pro")
+    assert set(combos) == {(False, False, True, True)}
+    assert len(_combos(lines, "eval-plus")) == 1  # no withheld-input evals: nothing left to withhold
+
+
+def test_trained_combo_reads_model_modalities():
+    from eval_pipeline import trained_combo
+    from omegaconf import OmegaConf
+
+    cfg = OmegaConf.create({"model": {"use_proprio": True, "modalities": {"language": False, "proprio": False}}})
+    assert trained_combo(cfg) == {"rgb_static": True, "rgb_gripper": True, "language": False, "proprio": False}
+    assert trained_combo(OmegaConf.create({"model": {"use_proprio": False}})) == full_modality_combo()

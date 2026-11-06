@@ -11,8 +11,9 @@ from calvin_pipeline import csv_path, plan_lines  # noqa: E402
 from flower.evaluation.eval_records import result_dir  # noqa: E402
 
 
-def _write_train_cfg(train_folder: Path, *, modality_dropout=False, use_proprio=False):
+def _write_train_cfg(train_folder: Path, *, modality_dropout=False, use_proprio=False, modalities=None):
     hydra_dir = train_folder / ".hydra"
+    mods = "".join(f"\n    {k}: {str(v).lower()}" for k, v in (modalities or {}).items()) or " {}"
     hydra_dir.mkdir(parents=True, exist_ok=True)
     (hydra_dir / "config.yaml").write_text(
         f"""
@@ -21,6 +22,7 @@ seed: 42
 model:
   use_proprio: {str(use_proprio).lower()}
   modality_dropout: {str(modality_dropout).lower()}
+  modalities:{mods}
 logger:
   project: multimodal_florence
   entity: some-entity
@@ -64,3 +66,17 @@ def test_csv_path_is_calvin_suite_result(tmp_path):
     checkpoint = train_folder / "seed_42" / "saved_models" / "last.ckpt"
 
     assert csv_path(str(train_folder), []) == result_dir(train_folder, checkpoint, "calvin", "ABCD_D") / "result.csv"
+
+
+def test_plan_lines_fixed_subset_run_names_its_trained_inputs(tmp_path):
+    """A no-dropout run trained without an input is evaluated with exactly its trained
+    inputs, stated explicitly so result.csv's use_* columns record them."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, use_proprio=True, modalities={"rgb_static": False})
+    plan = plan_lines(str(train_folder), [], reeval=False)
+    assert len(plan) == 1
+    overrides = plan[0][1]
+    assert "eval_modalities.rgb_static=False" in overrides
+    assert "eval_modalities.rgb_gripper=True" in overrides
+    assert "eval_modalities.language=True" in overrides
+    assert "eval_modalities.proprio=True" in overrides

@@ -25,8 +25,10 @@ def _write_train_cfg(
     entity="some-entity",
     modality_dropout=False,
     use_proprio=False,
+    modalities=None,
 ):
     hydra_dir = train_folder / ".hydra"
+    mods = "".join(f"\n    {k}: {str(v).lower()}" for k, v in (modalities or {}).items()) or " {}"
     hydra_dir.mkdir(parents=True, exist_ok=True)
     (hydra_dir / "config.yaml").write_text(
         f"""
@@ -35,6 +37,7 @@ seed: {seed}
 model:
   use_proprio: {str(use_proprio).lower()}
   modality_dropout: {str(modality_dropout).lower()}
+  modalities:{mods}
 logger:
   project: {project}
   entity: {entity}
@@ -317,3 +320,17 @@ def test_upload_survives_pid_failure(tmp_path, monkeypatch, capsys):
 
     assert logged["files"] == [(str(csv_path), "mimicgen.csv")]
     assert "pid_modality.py failed" in capsys.readouterr().err
+
+
+def test_plan_lines_fixed_subset_run_names_its_trained_inputs(tmp_path):
+    """A no-dropout run trained without an input is evaluated with exactly its trained
+    inputs, stated explicitly so result.csv's use_* columns record them."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, use_proprio=True, modalities={"rgb_static": False})
+    plan = plan_lines(str(train_folder), [], reeval=False)
+    assert len(plan) == 1
+    overrides = plan[0][1]
+    assert "eval_modalities.rgb_static=False" in overrides
+    assert "eval_modalities.rgb_gripper=True" in overrides
+    assert "eval_modalities.language=True" in overrides
+    assert "eval_modalities.proprio=True" in overrides

@@ -236,7 +236,7 @@ esac
 """
 
 
-def _run_train(tmp_path, subcommand, extra_env=None):
+def _run_train(tmp_path, subcommand, extra_env=None, args=("batch_size=8",)):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     stub = bin_dir / "podman-compose"
@@ -250,7 +250,7 @@ def _run_train(tmp_path, subcommand, extra_env=None):
     env.pop("SKIP_PIPELINE", None)
     env.update(extra_env or {})
     result = subprocess.run(
-        ["bash", str(REPO_ROOT / "run.sh"), subcommand, "batch_size=8"],
+        ["bash", str(REPO_ROOT / "run.sh"), subcommand, *args],
         cwd=REPO_ROOT,
         env=env,
         capture_output=True,
@@ -298,3 +298,15 @@ def test_train_mimicgen_unchanged_run_dir_and_no_dropout(tmp_path):
     assert not any(t.startswith("model.modality_dropout") for t in tokens)
     run_dir = next(t for t in tokens if t.startswith("hydra.run.dir=")).split("=", 1)[1]
     assert run_dir.startswith("/saves/train_logs/mimicgen/")
+
+
+def test_train_mimicgen_fixed_subset_names_the_run_by_its_inputs(tmp_path):
+    result, lines = _run_train(
+        tmp_path,
+        "train-mimicgen",
+        {"SKIP_PIPELINE": "1"},
+        args=("model.use_proprio=True", "model.modalities.language=False"),
+    )
+    assert result.returncode == 0, result.stderr
+    run_dir = next(t for t in lines[0].split() if t.startswith("hydra.run.dir=")).split("=", 1)[1]
+    assert run_dir.startswith("/saves/train_logs/mimicgen_static+wrist+proprio/")

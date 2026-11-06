@@ -293,6 +293,23 @@ by `load_mode_from_safetensor`/checkpoint loading — evaluating one of these ch
 `eval_modalities` override re-applies the same subset it was trained on (see the precedence note
 in "Modality-ablation eval" below).
 
+The same `model.modalities.*` overrides work on `./run.sh train-calvin` and `./run.sh train-mimicgen`.
+There, only a run that withholds an input gets a suffix (`calvin_abcd_d_wrist+lang+proprio/<ts>`,
+`mimicgen_static+wrist+proprio/<ts>`); a run that merely adds proprio keeps the plain group, as before.
+
+**Evaluating a fixed-subset run.** The pipelines (`pipeline`, `pipeline-calvin`,
+`pipeline-mimicgen`) evaluate it only within the inputs it was trained on, and name them in
+every eval line, so `result.csv`'s `use_*` columns record what the model actually received:
+- LIBERO-10, LIBERO-Plus and the four standard LIBERO-PRO suites run with the trained inputs;
+- the withheld-input LIBERO-Plus evals run only for inputs the model has (a model trained
+  without the wrist camera gets no `plus_<bench>_no_wrist`, and its `no_static` eval leaves
+  the wrist camera off too), and none that would leave no image or language input;
+- the LIBERO-PRO matched sweep covers only subsets of the trained inputs, and
+  `PIPELINE_SKIP_MULTI_OFF=1` counts withheld inputs from the trained set.
+
+An explicit `eval_modalities` override (e.g. a manual `./run.sh eval`) still switches on an
+input the model never saw, for deliberately probing it off-distribution.
+
 ### Training with proprioception (`model.use_proprio`)
 
 By default FLOWER conditions only on images and language. Setting `model.use_proprio=True`

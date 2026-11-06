@@ -28,7 +28,13 @@ import wandb
 from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).parent))
-from eval_pipeline import artifact_name, modality_combos, modality_overrides, wandb_run_id  # noqa: E402
+from eval_pipeline import (  # noqa: E402
+    artifact_name,
+    modality_combos,
+    modality_overrides,
+    trained_combo,
+    wandb_run_id,
+)
 from mimicgen_pipeline import _eval_overrides, _resolve, write_pid_report  # noqa: E402
 
 from flower.evaluation.eval_records import result_dir  # noqa: E402
@@ -46,7 +52,11 @@ def plan_lines(train_folder: str, extra_overrides: List[str], reeval: bool) -> L
     # `overrides`, resolved above.
     overrides += [o for o in extra_overrides if o.split("=", 1)[0] not in ("train_folder", "checkpoint")]
     if not train_cfg.model.get("modality_dropout", False):
-        return [(SERVICE, overrides + (["reeval=True"] if reeval else []))]
+        # A fixed-subset run is evaluated with its trained inputs (the model applies them
+        # anyway); naming them makes result.csv's use_* columns record them.
+        trained = trained_combo(train_cfg)
+        named = modality_overrides(trained) if not all(trained.values()) else []
+        return [(SERVICE, overrides + named + (["reeval=True"] if reeval else []))]
 
     lines = []
     for i, combo in enumerate(modality_combos(bool(train_cfg.model.use_proprio))):

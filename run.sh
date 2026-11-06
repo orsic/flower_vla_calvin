@@ -171,6 +171,11 @@ run_train_mimicgen() {
     # See run_train's comment: makes the training GPU set explicit for a chained pipeline.
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
     # Not local: read back by the train-mimicgen* cases to chain ./run.sh pipeline-mimicgen.
+    # A fixed-subset run (some model.modalities.*=False) goes to <group>_<inputs it keeps>,
+    # like run_train's LIBERO runs, so its name shows what it was trained on.
+    if [[ " $* " == *" model.modalities."*"=False"* || " $* " == *" model.modalities."*"=false"* ]]; then
+        group="${group}_$(modality_label "$@")"
+    fi
     TRAIN_RUN_DIR="/saves/train_logs/$group/$(date +%Y-%m-%d_%H-%M-%S)"
     podman-compose -f "$COMPOSE" run --rm "$svc" \
         python flower/training_libero.py \
@@ -192,6 +197,11 @@ run_train_calvin() {
     # See run_train's comment: makes the training GPU set explicit for a chained pipeline.
     export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
     # Not local: read back by the train-calvin* cases to chain ./run.sh pipeline-calvin.
+    # A fixed-subset run (some model.modalities.*=False) goes to <group>_<inputs it keeps>,
+    # like run_train's LIBERO runs, so its name shows what it was trained on.
+    if [[ " $* " == *" model.modalities."*"=False"* || " $* " == *" model.modalities."*"=false"* ]]; then
+        group="${group}_$(modality_label "$@")"
+    fi
     TRAIN_RUN_DIR="/saves/train_logs/$group/$(date +%Y-%m-%d_%H-%M-%S)"
     podman-compose -f "$COMPOSE" run --rm "$svc" \
         python flower/training_libero.py \

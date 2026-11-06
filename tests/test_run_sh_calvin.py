@@ -108,3 +108,17 @@ def test_analyze_open_loop_runs_the_analysis(tmp_path):
 
     assert len(lines) == 1
     assert " run --rm -T shell-calvin python scripts/open_loop_analysis.py --n-bins 5" in lines[0]
+
+
+def test_train_calvin_fixed_subset_names_the_run_by_its_inputs(tmp_path):
+    lines = _run(
+        tmp_path,
+        ["train-calvin", "model.use_proprio=True", "model.modalities.rgb_static=False"],
+        {"SKIP_PIPELINE": "1"},
+    )
+    assert "hydra.run.dir=/saves/train_logs/calvin_abcd_d_wrist+lang+proprio/" in lines[0]
+
+
+def test_train_calvin_with_proprio_only_keeps_the_plain_group(tmp_path):
+    lines = _run(tmp_path, ["train-calvin", "model.use_proprio=True"], {"SKIP_PIPELINE": "1"})
+    assert "hydra.run.dir=/saves/train_logs/calvin_abcd_d/" in lines[0]

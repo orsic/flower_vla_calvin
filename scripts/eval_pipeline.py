@@ -190,9 +190,28 @@ def modality_combos(use_proprio: bool) -> List[Dict[str, bool]]:
     return combos
 
 
-def at_most_one_off(combos: List[Dict[str, bool]]) -> List[Dict[str, bool]]:
-    """The combos with at most one modality withheld (full, then each single one off)."""
-    return [c for c in combos if sum(not on for on in c.values()) <= 1]
+def trained_combo(train_cfg) -> Dict[str, bool]:
+    """The inputs a run was trained on: model.modalities (a fixed-subset run withholds some
+    in every forward), all on by default. proprio stays True for a model.use_proprio=False
+    run, the eval_modalities convention for "no proprio to withhold"."""
+    mods = train_cfg.model.get("modalities") or {}
+    combo = {key: bool(mods.get(key, True)) for key in ("rgb_static", "rgb_gripper", "language", "proprio")}
+    if not bool(train_cfg.model.get("use_proprio", False)):
+        combo["proprio"] = True
+    return combo
+
+
+def within(combo: Dict[str, bool], trained: Dict[str, bool]) -> bool:
+    """combo switches on no input the model was not trained on."""
+    return all(trained[k] or not on for k, on in combo.items())
+
+
+def at_most_one_off(
+    combos: List[Dict[str, bool]], reference: Optional[Dict[str, bool]] = None
+) -> List[Dict[str, bool]]:
+    """The combos with at most one modality withheld from `reference` (default: all on)."""
+    reference = reference or full_modality_combo()
+    return [c for c in combos if sum(reference[k] and not on for k, on in c.items()) <= 1]
 
 
 def modality_off_combo(variant: str) -> Dict[str, bool]:
@@ -387,6 +406,9 @@ def plan_lines(
     train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
     dropout = bool(train_cfg.model.modality_dropout)
     use_proprio = bool(train_cfg.model.use_proprio)
+    # A fixed-subset run (model.modalities.*=False) is only evaluated within the inputs it
+    # was trained on, and every line states that subset, so result.csv records it.
+    full = trained_combo(train_cfg)
     benchmark_name, resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
     parsed = parse_overrides(extra_overrides)
 
@@ -440,9 +462,9 @@ def plan_lines(
         rotated_paths.add(path)
         return ["reeval=true"]
 
-    combos = modality_combos(use_proprio) if dropout else [full_modality_combo()]
+    combos = modality_combos(use_proprio) if dropout else [full]
     if skip_multi_off:
-        combos = at_most_one_off(combos)
+        combos = at_most_one_off(combos, full)
 
     lines: List[Tuple[str, List[str]]] = []
     if reeval_variants is None or "orig" in reeval_variants:
@@ -454,7 +476,7 @@ def plan_lines(
             lines.append(("eval", overrides + extra_overrides))
 
     if reeval_variants is None or "plus" in reeval_variants:
-        plus_combo = full_modality_combo()
+        plus_combo = full
         if should_replan("plus", plus_combo):
             overrides = _eval_overrides(benchmark_name, resolved_train_folder, checkpoint, plus_combo)
             overrides += reeval_overrides("plus")
@@ -466,7 +488,12 @@ def plan_lines(
                 continue
             if reeval_variants is not None and variant not in reeval_variants:
                 continue
-            combo = modality_off_combo(variant)
+            key, _suffix = MODALITY_OFF_VARIANTS[variant]
+            # Withhold one input the model has; one it never had cannot be withheld, and
+            # one whose removal leaves no token input cannot be evaluated.
+            combo = {**full, key: False}
+            if not full[key] or not any(combo[m] for m in TOKEN_MODALITIES):
+                continue
             if not should_replan(variant, combo):
                 continue
             csv_dir = _csv_path(resolved_train_folder, checkpoint, variant, benchmark_name).parent
@@ -496,14 +523,14 @@ def plan_lines(
     # will be missing for the withheld combos on a non-dropout run -- pro_sr.py reports
     # those records with empty paired columns rather than inventing a baseline.
     pro_extra = [o for o in extra_overrides if not o.startswith("benchmark_name=")]
-    pro_combos = [full_modality_combo()] if skip_pro_combos else modality_combos(use_proprio)
+    pro_combos = [full] if skip_pro_combos else [c for c in modality_combos(use_proprio) if within(c, full)]
     if skip_multi_off:
-        pro_combos = at_most_one_off(pro_combos)
+        pro_combos = at_most_one_off(pro_combos, full)
     for variant in PRO_VARIANTS:
         if reeval_variants is not None and variant not in reeval_variants:
             continue
         arm, _tag = PRO_VARIANTS[variant]
-        for combo in (pro_combos if arm == "pro_matched" else [full_modality_combo()]):
+        for combo in (pro_combos if arm == "pro_matched" else [full]):
             if not should_replan(variant, combo):
                 continue
             overrides = _eval_overrides(

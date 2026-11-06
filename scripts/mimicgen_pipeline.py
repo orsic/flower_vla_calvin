@@ -36,6 +36,7 @@ from eval_pipeline import (  # noqa: E402
     artifact_name,
     modality_combos,
     modality_overrides,
+    trained_combo,
     parse_overrides,
     wandb_run_id,
 )
@@ -85,7 +86,11 @@ def plan_lines(
         o for o in extra_overrides if o.split("=", 1)[0] not in ("train_folder", "checkpoint")
     ]
     if not train_cfg.model.get("modality_dropout", False):
-        return [("eval-mimicgen", overrides + (["reeval=True"] if reeval else []))]
+        # A fixed-subset run is evaluated with its trained inputs (the model applies them
+        # anyway); naming them makes result.csv's use_* columns record them.
+        trained = trained_combo(train_cfg)
+        named = modality_overrides(trained) if not all(trained.values()) else []
+        return [("eval-mimicgen", overrides + named + (["reeval=True"] if reeval else []))]
 
     lines = []
     for i, combo in enumerate(modality_combos(bool(train_cfg.model.use_proprio))):
