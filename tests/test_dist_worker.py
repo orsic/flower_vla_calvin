@@ -5,8 +5,10 @@ checkpoint. ssh, rsync and run.sh are stubs on PATH; DIST_ONCE=1 makes every GPU
 do a single claim cycle, and DIST_SKIP_AGENT=1 skips the ssh-agent/ssh-add setup."""
 
 import os
+import signal
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -162,3 +164,116 @@ def test_one_loop_per_gpu(tmp_path):
     assert len(claims) == 2
     assert any("hostC:0" in l for l in claims) and any("hostC:3" in l for l in claims)
     assert len(logs["run"]) == 1  # the fake master hands out one task
+
+
+# ---------------------------------------------------------------------------
+# Stopping the worker (Ctrl-C / closed window) releases its tasks
+# ---------------------------------------------------------------------------
+
+STUB_PODMAN = """#!/usr/bin/env bash
+echo "$*" >> "$FAKE_PODMAN_LOG"
+case "$1" in
+  ps) printf '%s\\n' "c0ffee python flower/evaluation/flower_eval_libero.py train_folder=/saves/train_logs/$FAKE_RUN_DIR x=1" \\
+                       "beef00 python flower/evaluation/flower_eval_libero.py train_folder=/saves/train_logs/other/run" ;;
+esac
+"""
+
+STUB_SLOW_RUN_SH = """#!/usr/bin/env bash
+echo $$ > "$FAKE_RUN_LOG.pid"
+echo "started" >> "$FAKE_RUN_LOG"
+sleep 60
+echo "finished" >> "$FAKE_RUN_LOG"
+"""
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_stopping_the_worker_releases_its_task_and_stops_its_containers(tmp_path, sig):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _stub(bin_dir / "ssh", STUB_SSH)
+    _stub(bin_dir / "rsync", STUB_RSYNC)
+    _stub(bin_dir / "podman", STUB_PODMAN)
+    run_sh = tmp_path / "run.sh"
+    _stub(run_sh, STUB_SLOW_RUN_SH)
+    saves = tmp_path / "saves"
+    saves.mkdir()
+    logs = {k: tmp_path / f"{k}.log" for k in ("ssh", "rsync", "run", "podman")}
+    for p in logs.values():
+        p.write_text("")
+    env = dict(os.environ)
+    env.update(
+        PATH=f"{bin_dir}:{env['PATH']}",
+        FAKE_SSH_LOG=str(logs["ssh"]),
+        FAKE_RSYNC_LOG=str(logs["rsync"]),
+        FAKE_RUN_LOG=str(logs["run"]),
+        FAKE_PODMAN_LOG=str(logs["podman"]),
+        FAKE_RUN_DIR=RUN_DIR,
+        FAKE_TASK=f"{RUN}\\tlibero\\thostB\\t{RUN_DIR}\\t",
+        SAVES_DIR=str(saves),
+        DIST_MASTER="masterhost",
+        DIST_MASTER_REPO="/repo",
+        DIST_HOSTS="hostB=/remote/saves",
+        DIST_SELF_HOST="hostC",
+        DIST_RUN_SH=str(run_sh),
+        DIST_SKIP_AGENT="1",
+        DIST_POLL_MIN="10",
+    )
+    worker = subprocess.Popen(
+        ["bash", str(REPO_ROOT / "scripts" / "dist_worker.sh"), "1"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.time() + 20
+    while "started" not in logs["run"].read_text() and time.time() < deadline:
+        time.sleep(0.1)
+    assert "started" in logs["run"].read_text(), "the fake pipeline never started"
+    pipeline_pid = int(Path(str(logs["run"]) + ".pid").read_text())
+
+    worker.send_signal(sig)
+    out, err = worker.communicate(timeout=30)
+    assert worker.returncode == 0, err
+
+    ssh = logs["ssh"].read_text()
+    assert f"release --run {RUN} --worker hostC:1" in ssh
+    assert " fail " not in ssh and " done " not in ssh
+    podman = logs["podman"].read_text().splitlines()
+    assert any(l.startswith("stop") and "c0ffee" in l and "beef00" not in l for l in podman), podman
+    with pytest.raises(ProcessLookupError):
+        os.kill(pipeline_pid, 0)  # the pipeline itself was stopped
+    assert "finished" not in logs["run"].read_text()
+    assert not (saves / "train_logs" / RUN_DIR / "seed_42" / "saved_models" / "last.ckpt").exists()
+
+
+def test_stopping_an_idle_worker_exits_promptly(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _stub(bin_dir / "ssh", STUB_SSH)
+    env = dict(os.environ)
+    ssh_log = tmp_path / "ssh.log"
+    ssh_log.write_text("")
+    env.update(
+        PATH=f"{bin_dir}:{env['PATH']}",
+        FAKE_SSH_LOG=str(ssh_log),
+        FAKE_TASK="",
+        SAVES_DIR=str(tmp_path),
+        DIST_MASTER="masterhost",
+        DIST_MASTER_REPO="/repo",
+        DIST_SELF_HOST="hostC",
+        DIST_SKIP_AGENT="1",
+        DIST_POLL_MIN="10",
+    )
+    worker = subprocess.Popen(
+        ["bash", str(REPO_ROOT / "scripts" / "dist_worker.sh"), "0"],
+        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    deadline = time.time() + 20
+    while "claim" not in ssh_log.read_text() and time.time() < deadline:
+        time.sleep(0.1)
+    start = time.time()
+    worker.send_signal(signal.SIGINT)
+    worker.communicate(timeout=20)
+    assert time.time() - start < 10  # does not wait out the 10-minute poll sleep
+    assert "release" not in ssh_log.read_text()

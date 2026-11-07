@@ -8,6 +8,10 @@
 # and delete the copied checkpoint. A run that trained on this machine is evaluated in
 # place: no ssh, no copy, no deletion. Loops run until the worker is killed (Ctrl-C).
 #
+# Stopping the worker (Ctrl-C, kill, closing the window) stops every running pipeline and
+# the podman containers it started, hands the task back to the queue (`dist-sched
+# release`, not counted as a failed attempt) and deletes a copied checkpoint.
+#
 # Startup starts an ssh-agent for this process tree only (i.e. this tmux window) and
 # adds the IdentityFiles `ssh -G` reports for the master and every DIST_HOSTS host, so
 # passphrases are asked once and no other shell gets the keys.
@@ -80,7 +84,35 @@ setup_agent() {
     done
 }
 
-# Evaluate one claimed task on one GPU; always reports done or fail to the master.
+# Per-GPU-loop state (each loop is its own subshell), read by on_stop when the worker is
+# stopped mid-task.
+WORKER="" CUR_RUN="" CUR_DIR="" CUR_PID="" HB_PID="" CUR_REMOTE=0
+
+# Stop the podman containers whose command names this run's folder: the pipeline's eval,
+# planner and upload containers all take it as train_folder / --train-folder.
+stop_containers() {
+    podman ps --no-trunc --format '{{.ID}} {{.Command}}' 2>/dev/null \
+        | grep -F "/saves/train_logs/$1" | awk '{print $1}' \
+        | xargs -r podman stop -t 10 > /dev/null 2>&1
+}
+
+on_stop() {
+    if [[ -n "$CUR_PID" ]]; then kill "$CUR_PID" 2>/dev/null; fi  # first, so it starts nothing new
+    if [[ -n "$HB_PID" ]]; then kill "$HB_PID" 2>/dev/null; fi
+    if [[ -n "$CUR_RUN" ]]; then
+        stop_containers "$CUR_DIR"
+        master release --run "$CUR_RUN" --worker "$WORKER" > /dev/null 2>&1 \
+            || log "master refused 'release' for $CUR_RUN"
+        if [[ $CUR_REMOTE -eq 1 ]]; then
+            rm -f "$SAVES_DIR/train_logs/$CUR_DIR"/seed_*/saved_models/last.ckpt
+        fi
+        log "$WORKER: stopped, released $CUR_RUN"
+    fi
+    exit 0
+}
+
+# Evaluate one claimed task on one GPU; reports done or fail to the master (or, if the
+# worker is stopped meanwhile, on_stop releases it).
 run_task() {
     local gpu="$1" line="$2" run_id bench host run_dir opts worker local_dir rs sub rc=0 hb
     IFS=$'\t' read -r run_id bench host run_dir opts <<< "$line"
@@ -88,6 +120,7 @@ run_task() {
     local_dir="$SAVES_DIR/train_logs/$run_dir"
     mkdir -p "$SAVES_DIR/dist_logs"
     local tlog="$SAVES_DIR/dist_logs/$run_id.log"
+    CUR_RUN="$run_id" CUR_DIR="$run_dir" CUR_REMOTE=0
     log "GPU $gpu: $run_id ($bench, trained on $host)" | tee -a "$tlog"
 
     # Heartbeat while the task runs. The sleep is waited on (not run in the foreground) so
@@ -102,6 +135,7 @@ run_task() {
         done
     ) > /dev/null 2>&1 < /dev/null &
     hb=$!
+    HB_PID=$hb
 
     case "$bench" in
         libero) sub=pipeline ;;
@@ -115,25 +149,34 @@ run_task() {
         rc=1; opts=""; log "unknown benchmark $bench" >> "$tlog"
     elif [[ "$host" != "$SELF" ]]; then
         remote=1
+        CUR_REMOTE=1
         if ! rs="$(remote_saves "$host")"; then
             rc=1; log "host $host is not in DIST_HOSTS" | tee -a "$tlog"
         else
             mkdir -p "$local_dir"
+            # Background + wait (here and for the pipeline below): a stop signal runs
+            # on_stop right away instead of after the child finishes.
             rsync -a --relative \
                 "$host:$rs/train_logs/$run_dir/./.hydra" \
                 "$host:$rs/train_logs/$run_dir/./seed_*/saved_models/last.ckpt" \
-                "$local_dir/" >> "$tlog" 2>&1 || { rc=$?; log "rsync from $host failed ($rc)" | tee -a "$tlog"; }
+                "$local_dir/" >> "$tlog" 2>&1 &
+            CUR_PID=$!
+            wait "$CUR_PID" || { rc=$?; log "rsync from $host failed ($rc)" | tee -a "$tlog"; }
         fi
     fi
 
     if [[ $rc -eq 0 ]]; then
         # shellcheck disable=SC2086  # opts is a list of VAR=VALUE words
         env CUDA_VISIBLE_DEVICES="$gpu" PIPELINE_RESUME=1 $opts \
-            "$RUN_SH" "$sub" "/saves/train_logs/$run_dir" >> "$tlog" 2>&1 < /dev/null || rc=$?
+            "$RUN_SH" "$sub" "/saves/train_logs/$run_dir" >> "$tlog" 2>&1 < /dev/null &
+        CUR_PID=$!
+        wait "$CUR_PID" || rc=$?
     fi
+    CUR_PID=""
 
     kill "$hb" 2>/dev/null
     wait "$hb" 2>/dev/null
+    HB_PID=""
     if [[ $rc -eq 0 ]]; then
         master done --run "$run_id" --worker "$worker" > /dev/null || log "master refused 'done' for $run_id"
         log "GPU $gpu: $run_id done" | tee -a "$tlog"
@@ -143,6 +186,7 @@ run_task() {
         master fail --run "$run_id" --worker "$worker" --msg "$msg" > /dev/null || log "master refused 'fail' for $run_id"
         log "GPU $gpu: $run_id FAILED ($msg), see $tlog" | tee -a "$tlog"
     fi
+    CUR_RUN=""
     if [[ $remote -eq 1 ]]; then
         rm -f "$local_dir"/seed_*/saved_models/last.ckpt
     fi
@@ -150,6 +194,8 @@ run_task() {
 
 gpu_loop() {
     local gpu="$1" line
+    WORKER="$SELF:$gpu"
+    trap on_stop TERM
     while true; do
         if ! line="$(master claim --worker "$SELF:$gpu")"; then
             log "GPU $gpu: could not reach the master's queue"
@@ -159,14 +205,23 @@ gpu_loop() {
             run_task "$gpu" "$line"
         fi
         [[ -n "${DIST_ONCE:-}" ]] && return 0
-        [[ -z "$line" ]] && sleep "$POLL_S"
+        if [[ -z "$line" ]]; then
+            sleep "$POLL_S" &
+            CUR_PID=$!
+            wait "$CUR_PID"
+            CUR_PID=""
+        fi
     done
 }
 
 [[ -z "${DIST_SKIP_AGENT:-}" ]] && setup_agent
 log "worker $SELF: GPUs ${GPUS[*]}, master $DIST_MASTER"
-trap 'log "stopping"; kill $(jobs -p) 2>/dev/null; exit 0' INT TERM
+# Background loops ignore Ctrl-C (SIGINT), so this trap is what stops them: each loop's
+# own TERM trap (on_stop) stops its pipeline and releases its task before it exits.
+LOOPS=()
+trap 'log "stopping"; kill -TERM "${LOOPS[@]}" 2>/dev/null; wait; exit 0' INT TERM HUP
 for gpu in "${GPUS[@]}"; do
     gpu_loop "$gpu" &
+    LOOPS+=($!)
 done
 wait

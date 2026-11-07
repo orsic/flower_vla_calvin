@@ -15,7 +15,7 @@ last heartbeat, which returns it to the queue; a failed evaluation is retried on
 then marked failed.
 
     ./run.sh dist-sched refresh | status | claim --worker H:G | heartbeat --run R --worker H:G
-    ./run.sh dist-sched done|fail --run R --worker H:G [--msg M] | requeue --run R | skip --run R
+    ./run.sh dist-sched done|fail|release --run R --worker H:G [--msg M] | requeue --run R | skip --run R
 """
 
 import argparse
@@ -195,6 +195,16 @@ def finish(state: Dict, run_id: str, worker: str, ok: bool, msg: str, now: datet
     return True
 
 
+def release(state: Dict, run_id: str, worker: str, now: Optional[datetime] = None) -> bool:
+    """The worker stopped (Ctrl-C) before finishing: back to todo at once, and the
+    interrupted attempt does not count towards MAX_ATTEMPTS."""
+    task = _owned(state, run_id, worker)
+    if task is None:
+        return False
+    task.update(state="todo", worker=None, attempts=max(task["attempts"] - 1, 0), error=f"released by {worker}")
+    return True
+
+
 def requeue(state: Dict, run_id: str) -> None:
     state["tasks"][run_id].update(state="todo", worker=None, attempts=0, error=None)
 
@@ -282,11 +292,11 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("refresh")
     sub.add_parser("status")
-    for name in ("claim", "heartbeat", "done", "fail", "requeue", "skip"):
+    for name in ("claim", "heartbeat", "done", "fail", "release", "requeue", "skip"):
         p = sub.add_parser(name)
         if name != "claim":
             p.add_argument("--run", required=True)
-        if name in ("claim", "heartbeat", "done", "fail"):
+        if name in ("claim", "heartbeat", "done", "fail", "release"):
             p.add_argument("--worker", required=True)
         if name == "fail":
             p.add_argument("--msg", default="")
@@ -312,6 +322,9 @@ def main() -> None:
                 sys.exit(3)
         elif args.cmd in ("done", "fail"):
             if not finish(state, args.run, args.worker, args.cmd == "done", args.msg, now):
+                sys.exit(3)
+        elif args.cmd == "release":
+            if not release(state, args.run, args.worker):
                 sys.exit(3)
         elif args.cmd == "requeue":
             requeue(state, args.run)

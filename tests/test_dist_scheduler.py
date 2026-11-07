@@ -213,3 +213,14 @@ def test_since_compares_with_the_local_date_in_the_run_name_not_utc_created_at()
     late = FakeRun("calvin_abcd_d_dropout_2026-11-05_23-59-59", created_at="2026-11-05T22:59:59Z")
     assert ds.task_from_run(late, "2026-11-06", []) is None
     assert ds.run_date(FakeRun(LIB)) == "2026-11-06_08-00-00"
+
+
+def test_release_returns_the_task_without_using_an_attempt():
+    state = _state(FakeRun(LIB))
+    ds.claim(state, "w:0", T0)
+    assert not ds.release(state, LIB, "other:1")  # only the owner can release it
+    assert ds.release(state, LIB, "w:0")
+    task = state["tasks"][LIB]
+    assert task["state"] == "todo" and task["worker"] is None and task["attempts"] == 0
+    assert "released by w:0" in task["error"]
+    assert ds.claim(state, "w:1", T0)["run_id"] == LIB

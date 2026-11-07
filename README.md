@@ -1782,8 +1782,13 @@ Host names are those of `~/.ssh/config`, which are also the host names W&B recor
   `last.ckpt`. `.hydra` and `eval_logs` stay as a local copy of the results.
 - A run that trained on the worker's own machine is evaluated in place: no ssh, no copy, no
   deletion.
-- With nothing queued it asks again every `DIST_POLL_MIN` minutes. It runs until you stop it
-  (Ctrl-C or close the window); its tasks then time out and go back to the queue.
+- With nothing queued it asks again every `DIST_POLL_MIN` minutes. It runs until you stop it.
+- **Stopping it** (Ctrl-C, `kill`, or closing the window) stops each running pipeline and the
+  podman containers it started (those whose command names the run's folder), hands the task
+  back to the queue at once (`dist-sched release`; the interrupted attempt does not count as a
+  failure), and deletes a copied checkpoint. A worker that dies without that chance (power loss,
+  `kill -9`) leaves its tasks `running` until their lease expires, `DIST_LEASE_MIN` minutes
+  after the last heartbeat; the `heartbeat` column of `dist-status` shows that age.
 - Per-task logs: `$SAVES_DIR/dist_logs/<run_id>.log` on the worker.
 
 **Status and fixes** (on the master):
@@ -1793,6 +1798,7 @@ Host names are those of `~/.ssh/config`, which are also the host names W&B recor
 ./run.sh dist-sched refresh                # read W&B now
 ./run.sh dist-sched requeue --run <run_id> # e.g. after fixing whatever made it fail
 ./run.sh dist-sched skip --run <run_id>    # never hand it out
+./run.sh dist-sched release --run <run_id> --worker <host:gpu>   # what a stopping worker does
 ```
 
 A running task sends a heartbeat every 5 minutes; after `DIST_LEASE_MIN` minutes without one it
