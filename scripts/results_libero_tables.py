@@ -70,6 +70,10 @@ FIXED_RUNS: Dict[str, Dict[int, str]] = {
         42: "libero_10_wrist+lang+proprio_2026-11-06_15-31-06",
         5: "libero_10_wrist+lang+proprio_2026-11-06_15-31-13",
     },
+    "lang": {
+        42: "libero_10_static+wrist+proprio_2026-11-06_15-30-50",
+        5: "libero_10_static+wrist+proprio_2026-11-06_15-30-57",
+    },
 }
 # Multi-GPU evaluations leave eval_timestamp empty (rank shards are written without it);
 # their validity was checked by file modification time or training date instead.
