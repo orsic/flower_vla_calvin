@@ -63,6 +63,14 @@ SUBSET_RUNS: Dict[int, str] = {
     42: "libero_10_dropout_2026-11-04_21-49-24",
     5: "libero_10_dropout_2026-11-04_21-51-57",
 }
+# No dropout with proprioception, trained without one input (model.modalities.<x>=False),
+# keyed by that input; evaluated only within their trained inputs.
+FIXED_RUNS: Dict[str, Dict[int, str]] = {
+    "static": {
+        42: "libero_10_wrist+lang+proprio_2026-11-06_15-31-06",
+        5: "libero_10_wrist+lang+proprio_2026-11-06_15-31-13",
+    },
+}
 # Multi-GPU evaluations leave eval_timestamp empty (rank shards are written without it);
 # their validity was checked by file modification time or training date instead.
 NO_TS = {
@@ -373,6 +381,7 @@ def main() -> None:
         print(f"\n### {title} (tasks summed: {tab.tasks.sum()} of {CAT_TASKS[cat]})\n" + md(tab))
 
     print_subset(a)
+    print_fixed(a)
 
 
 def print_subset(a: Artifacts) -> None:
@@ -446,6 +455,66 @@ def print_subset(a: Artifacts) -> None:
                 f"   seed {sd} matched {r.perturbation} {r.modality_combo} pro {100 * r.success_rate:.1f} "
                 f"orig {100 * r.orig_success_rate:.1f} delta {100 * r.delta:+.1f} p={r.mcnemar_p:.3g}"
             )
+
+
+
+def print_fixed(a: Artifacts) -> None:
+    """Runs trained without one input (FIXED_RUNS), next to the 3-seed Dirichlet keep 0.5 +
+    proprio keep 0.5 model and the subset runs with the same input withheld at evaluation,
+    and no dropout + proprio with all inputs."""
+    dirichlet = MODELS["dropout, proprio keep 0.5"]
+    ref = MODELS["no dropout + proprio"]
+    for x, runs in FIXED_RUNS.items():
+        trained = "+".join(n for n, _ in NAMES if n != x)
+        seeds = list(runs)
+        orig = {sd: a.load(r, "libero_orig.csv") for sd, r in runs.items()}
+        plus = {sd: a.load(r, "libero_plus.csv") for sd, r in runs.items()}
+        for sd in seeds:
+            assert len(orig[sd]) == 200 and set(orig[sd].combo) == {trained}, sd
+            assert len(plus[sd]) == 2519 and set(plus[sd].combo) == {trained}, sd
+
+        def withheld(group: Dict[int, str]) -> List[pd.DataFrame]:
+            return [a.load(r, f"libero_plus_no_{x}.csv") for r in group.values()]
+
+        def on(group: Dict[int, str], combo: str) -> List[float]:
+            return [a.load(r, "libero_orig.csv").pipe(lambda d: d[d.combo == combo]).success.mean() for r in group.values()]
+
+        print(f"\n## No dropout + proprio trained without {x} ({trained}), seeds {' / '.join(map(str, seeds))}, %")
+        cols = {
+            f"trained without {x}": (
+                [orig[sd].success.mean() for sd in seeds],
+                [plus[sd].success.mean() for sd in seeds],
+            ),
+            f"Dirichlet pk0.5, {x} withheld": (on(dirichlet, trained), [d.success.mean() for d in withheld(dirichlet)]),
+            f"subset, {x} withheld": (on(SUBSET_RUNS, trained), [d.success.mean() for d in withheld(SUBSET_RUNS)]),
+            "no dropout + proprio, all inputs": (
+                on(ref, "static+wrist+lang+proprio"),
+                [a.load(r, "libero_plus.csv").success.mean() for r in ref.values()],
+            ),
+        }
+        t = {c: {"LIBERO-10": ms(o), "LIBERO-Plus": ms(p), "per seed (Plus)": " / ".join(f"{100 * v:.1f}" for v in p)} for c, (o, p) in cols.items()}
+        print(md(pd.DataFrame(t).T.rename_axis("model")))
+
+        print("\n### LIBERO-Plus with a further input withheld")
+        t = {"none": ms([plus[sd].success.mean() for sd in seeds])}
+        for v in (n for n, _ in NAMES if n != x):
+            ds = [a.load(r, f"libero_plus_no_{v}.csv") for r in runs.values()]
+            assert all(len(d) == 2519 for d in ds)
+            t["no " + v] = ms([d.success.mean() for d in ds])
+        print(md(pd.DataFrame({"LIBERO-Plus": t}).rename_axis("also withheld")))
+
+        print("\n### LIBERO-Plus by category")
+        groups = {
+            f"trained without {x}": list(plus.values()),
+            f"Dirichlet pk0.5, {x} withheld": withheld(dirichlet),
+            f"subset, {x} withheld": withheld(SUBSET_RUNS),
+        }
+        t = {c: {g: ms([d[d.task_category == c].success.mean() for d in ds]) for g, ds in groups.items()} for c in CATS}
+        print(md(pd.DataFrame(t).T.rename_axis("category")))
+
+        print("\n### LIBERO-PRO, native")
+        nat = [pd.read_csv(a.path(r, "pro_sr.csv")).query("libero_variant == 'pro'").set_index("perturbation").success_rate for r in runs.values()]
+        print(md(pd.DataFrame({k: {f"trained without {x}": ms([n[k] for n in nat])} for k in ("lan", "object", "swap", "task")}).rename_axis("")))
 
 
 if __name__ == "__main__":

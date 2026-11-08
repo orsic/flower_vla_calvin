@@ -224,3 +224,17 @@ def test_release_returns_the_task_without_using_an_attempt():
     assert task["state"] == "todo" and task["worker"] is None and task["attempts"] == 0
     assert "released by w:0" in task["error"]
     assert ds.claim(state, "w:1", T0)["run_id"] == LIB
+
+
+@pytest.mark.parametrize("cmd", ["done", "fail"])
+def test_cli_done_and_fail_finish_the_task(tmp_path, monkeypatch, cmd):
+    """`done` is called without --msg; it used to crash on args.msg, so no task ever
+    reached done through a worker (the lease expired and refresh found the artifact)."""
+    path = tmp_path / "state.json"
+    with ds.locked_state(path) as state:
+        ds.refresh(state, [FakeRun(LIB)], SINCE, [], datetime.now(timezone.utc))
+        ds.claim(state, "w:0", datetime.now(timezone.utc))
+    monkeypatch.setattr(sys, "argv", ["dist_scheduler.py", "--state", str(path), cmd, "--run", LIB, "--worker", "w:0"])
+    ds.main()
+    with ds.locked_state(path) as state:
+        assert state["tasks"][LIB]["state"] == ("done" if cmd == "done" else "todo")

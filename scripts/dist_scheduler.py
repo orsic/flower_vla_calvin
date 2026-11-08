@@ -298,7 +298,7 @@ def main() -> None:
             p.add_argument("--run", required=True)
         if name in ("claim", "heartbeat", "done", "fail", "release"):
             p.add_argument("--worker", required=True)
-        if name == "fail":
+        if name in ("done", "fail"):
             p.add_argument("--msg", default="")
     args = ap.parse_args()
     now = datetime.now(timezone.utc)
