@@ -70,6 +70,7 @@ FIXED_RUNS: Dict[str, Dict[int, str]] = {
     "static": {
         42: "libero_10_wrist+lang+proprio_2026-11-06_15-31-06",
         5: "libero_10_wrist+lang+proprio_2026-11-06_15-31-13",
+        100: "libero_10_wrist+lang+proprio_2026-11-07_12-40-58",
     },
     "wrist": {
         42: "libero_10_static+lang+proprio_2026-11-06_15-30-31",
@@ -78,6 +79,7 @@ FIXED_RUNS: Dict[str, Dict[int, str]] = {
     "lang": {
         42: "libero_10_static+wrist+proprio_2026-11-06_15-30-50",
         5: "libero_10_static+wrist+proprio_2026-11-06_15-30-57",
+        100: "libero_10_static+wrist+proprio_2026-11-07_12-41-16",
     },
 }
 # Multi-GPU evaluations leave eval_timestamp empty (rank shards are written without it);
@@ -212,10 +214,13 @@ class Artifacts:
 
     def load(self, run: str, member: str) -> pd.DataFrame:
         d = pd.read_csv(self.path(run, member))
-        if d["eval_timestamp"].isna().all():
+        # rows without a timestamp are only allowed for NO_TS runs, whose later
+        # re-evaluations (more input combinations) add timestamped rows
+        stamped = d["eval_timestamp"].dropna()
+        if len(stamped) < len(d):
             assert run in NO_TS, (run, member)
-        else:
-            assert d["eval_timestamp"].min() >= CUT, (run, member)
+        if len(stamped):
+            assert stamped.min() >= CUT, (run, member)
         d["combo"] = d.apply(lambda r: "+".join(n for n, c in NAMES if int(r[c])), axis=1)
         return d
 
@@ -293,7 +298,9 @@ def main() -> None:
         vals = {}
         for c in order:
             v = [d.pipe(lambda d: d[d["combo"] == c]).success.mean() for d in orig[m].values() if (d.combo == c).any()]
-            vals[c] = ms(v) if v else "n/a"
+            # a combination only some seeds were evaluated on says so
+            partial = f" ({len(v)} seeds)" if 0 < len(v) < len(orig[m]) else ""
+            vals[c] = ms(v) + partial if v else "n/a"
         t[m] = vals
     tab = pd.DataFrame(t).rename_axis("inputs")
     print(md(tab[~(tab == "n/a").all(axis=1)]))
