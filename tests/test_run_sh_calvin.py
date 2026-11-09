@@ -40,7 +40,10 @@ def _run(tmp_path, args, extra_env=None):
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["FAKE_LOG"] = str(log)
-    for key in ("PIPELINE_REEVAL", "SKIP_PIPELINE"):
+    for key in (
+        "PIPELINE_REEVAL", "SKIP_PIPELINE", "PIPELINE_RESUME", "PIPELINE_ALL_COMBOS", "PIPELINE_SKIP_MULTI_OFF",
+        "PIPELINE_RESTORE",
+    ):
         env.pop(key, None)
     env.update(extra_env or {})
     result = subprocess.run(
@@ -122,3 +125,17 @@ def test_train_calvin_fixed_subset_names_the_run_by_its_inputs(tmp_path):
 def test_train_calvin_with_proprio_only_keeps_the_plain_group(tmp_path):
     lines = _run(tmp_path, ["train-calvin", "model.use_proprio=True"], {"SKIP_PIPELINE": "1"})
     assert "hydra.run.dir=/saves/train_logs/calvin_abcd_d/" in lines[0]
+
+
+def test_pipeline_calvin_passes_resume_all_combos_and_skip_multi_off(tmp_path):
+    env = {"PIPELINE_RESUME": "1", "PIPELINE_ALL_COMBOS": "1", "PIPELINE_SKIP_MULTI_OFF": "1"}
+    lines = _run(tmp_path, ["pipeline-calvin", "/fake/train_dir"], env)
+    assert all(f in lines[0] for f in ("--resume", "--all-combos", "--skip-multi-off"))
+
+
+def test_pipeline_calvin_restores_before_planning(tmp_path):
+    lines = _run(tmp_path, ["pipeline-calvin", "/fake/train_dir"], {"PIPELINE_RESTORE": "1"})
+    assert "calvin_pipeline.py restore --train-folder /fake/train_dir" in lines[0]
+    assert "pipeline-artifacts-calvin" in lines[0]
+    assert "calvin_pipeline.py plan" in lines[1]
+    assert len([line for line in lines if "flower_evaluate.py" in line]) == 3

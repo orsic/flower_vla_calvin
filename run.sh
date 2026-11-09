@@ -383,6 +383,14 @@ case "$CMD" in
     #   PIPELINE_SKIP_MULTI_OFF=1 ./run.sh pipeline /saves/train_logs/.../<run>
     #                      # LIBERO-10 and the PRO matched sweep only with all inputs or one
     #                      # withheld (5 combos, or 4 without proprio, instead of 14 / 7)
+    #   PIPELINE_ALL_COMBOS=1 ./run.sh pipeline /saves/train_logs/libero_10/<run>
+    #                      # sweep a non-dropout run's LIBERO-10 like a dropout run's
+    #                      # (within its trained inputs; add PIPELINE_SKIP_MULTI_OFF=1 for
+    #                      # all inputs + each one withheld)
+    #   PIPELINE_RESTORE=1 PIPELINE_RESUME=1 ./run.sh pipeline /saves/train_logs/.../<run>
+    #                      # first put the result CSVs of the run's latest W&B eval
+    #                      # artifact back into eval_logs (never over a local file), so
+    #                      # only the missing combos run and upload publishes them all
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline <train_run_dir> [hydra_overrides...]" >&2
         exit 1
@@ -403,11 +411,17 @@ case "$CMD" in
     [[ -n "${PIPELINE_SKIP_PRO_COMBOS:-}" ]] && skip_pro_combos_flag=(--skip-pro-combos)
     skip_multi_off_flag=()
     [[ -n "${PIPELINE_SKIP_MULTI_OFF:-}" ]] && skip_multi_off_flag=(--skip-multi-off)
+    all_combos_flag=()
+    [[ -n "${PIPELINE_ALL_COMBOS:-}" ]] && all_combos_flag=(--all-combos)
 
+    if [[ -n "${PIPELINE_RESTORE:-}" ]]; then
+        podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts \
+            python scripts/eval_pipeline.py restore --train-folder "$train_dir" -- "$@"
+    fi
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell \
         python scripts/eval_pipeline.py plan --train-folder "$train_dir" \
         "${resume_flag[@]}" "${reeval_flag[@]}" "${skip_modality_off_flag[@]}" \
-        "${skip_pro_combos_flag[@]}" "${skip_multi_off_flag[@]}" -- "$@")"
+        "${skip_pro_combos_flag[@]}" "${skip_multi_off_flag[@]}" "${all_combos_flag[@]}" -- "$@")"
 
     # Read every plan line into memory before launching anything -- a long-running eval
     # container previously held the loop's plan text on a shared fd for its entire
@@ -525,18 +539,29 @@ case "$CMD" in
     # uploads result.csv to that run's W&B artifact. Trailing Hydra overrides reach
     # both the planner and the eval it launches.
     #   ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/2026-09-08_10-00-00
+    #   PIPELINE_RESUME=1 ./run.sh pipeline-mimicgen ...   # skip combos already in result.csv
+    #   PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1 ./run.sh pipeline-mimicgen ...
+    #       # a non-dropout run with all inputs and each one withheld (see ./run.sh pipeline)
+    #   PIPELINE_RESTORE=1 ./run.sh pipeline-mimicgen ...  # restore W&B results first
     #   PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/.../<run>
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline-mimicgen <train_run_dir> [hydra_overrides...]" >&2
         exit 1
     fi
     train_dir="$1"; shift
-    reeval_flag=()
-    [[ -n "${PIPELINE_REEVAL:-}" ]] && reeval_flag=(--reeval)
+    flags=()
+    [[ -n "${PIPELINE_REEVAL:-}" ]] && flags+=(--reeval)
+    [[ -n "${PIPELINE_RESUME:-}" ]] && flags+=(--resume)
+    [[ -n "${PIPELINE_ALL_COMBOS:-}" ]] && flags+=(--all-combos)
+    [[ -n "${PIPELINE_SKIP_MULTI_OFF:-}" ]] && flags+=(--skip-multi-off)
 
+    if [[ -n "${PIPELINE_RESTORE:-}" ]]; then
+        podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-mimicgen \
+            python scripts/mimicgen_pipeline.py restore --train-folder "$train_dir" -- "$@"
+    fi
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell-mimicgen \
         python scripts/mimicgen_pipeline.py plan --train-folder "$train_dir" \
-        "${reeval_flag[@]}" -- "$@")"
+        "${flags[@]}" -- "$@")"
 
     # See ./run.sh pipeline's identical comment: read the whole plan into memory before
     # launching anything, so no long-lived eval container can affect later iterations.
@@ -620,18 +645,29 @@ case "$CMD" in
     # sharded across CUDA_VISIBLE_DEVICES, then uploads result.csv to that run's W&B
     # artifact. Trailing Hydra overrides reach both the planner and the eval it launches.
     #   ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/2026-10-07_10-00-00
+    #   PIPELINE_RESUME=1 ./run.sh pipeline-calvin ...   # skip combos already in result.csv
+    #   PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1 ./run.sh pipeline-calvin ...
+    #       # a non-dropout run with all inputs and each one withheld (see ./run.sh pipeline)
+    #   PIPELINE_RESTORE=1 ./run.sh pipeline-calvin ...  # restore W&B results first
     #   PIPELINE_REEVAL=1 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/<run>
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline-calvin <train_run_dir> [hydra_overrides...]" >&2
         exit 1
     fi
     train_dir="$1"; shift
-    reeval_flag=()
-    [[ -n "${PIPELINE_REEVAL:-}" ]] && reeval_flag=(--reeval)
+    flags=()
+    [[ -n "${PIPELINE_REEVAL:-}" ]] && flags+=(--reeval)
+    [[ -n "${PIPELINE_RESUME:-}" ]] && flags+=(--resume)
+    [[ -n "${PIPELINE_ALL_COMBOS:-}" ]] && flags+=(--all-combos)
+    [[ -n "${PIPELINE_SKIP_MULTI_OFF:-}" ]] && flags+=(--skip-multi-off)
 
+    if [[ -n "${PIPELINE_RESTORE:-}" ]]; then
+        podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \
+            python scripts/calvin_pipeline.py restore --train-folder "$train_dir" -- "$@"
+    fi
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell-calvin \
         python scripts/calvin_pipeline.py plan --train-folder "$train_dir" \
-        "${reeval_flag[@]}" -- "$@")"
+        "${flags[@]}" -- "$@")"
 
     # See ./run.sh pipeline's identical comment: read the whole plan into memory before
     # launching anything, so no long-lived eval container can affect later iterations.
@@ -688,7 +724,8 @@ case "$CMD" in
 
   dist-sched)
     # Distributed-evaluation queue on the master (scripts/dist_scheduler.py): refresh,
-    # status, claim, heartbeat, done, fail, requeue, skip. Workers call this over ssh.
+    # status, claim, heartbeat, done, fail, requeue, skip, and add (queue an existing run
+    # again with its own options). Workers call this over ssh.
     # Settings from vars.env: DIST_SINCE, DIST_EVAL_OPTS, DIST_LEASE_MIN.
     mkdir -p "$SAVES_DIR/dist_scheduler"
     podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts \

@@ -334,3 +334,33 @@ def test_plan_lines_fixed_subset_run_names_its_trained_inputs(tmp_path):
     assert "eval_modalities.rgb_gripper=True" in overrides
     assert "eval_modalities.language=True" in overrides
     assert "eval_modalities.proprio=True" in overrides
+
+
+def test_plan_lines_all_combos_sweeps_a_non_dropout_run(tmp_path):
+    train_folder = tmp_path / "mimicgen" / "run1"
+    _write_train_cfg(train_folder, use_proprio=True)
+    plan = plan_lines(str(train_folder), [], reeval=False, all_combos=True, skip_multi_off=True)
+    combos = [_combo(o) for _, o in plan]
+    assert len(combos) == 5 and combos[0] == ("True", "True", "True", "True")
+
+
+def test_plan_lines_resume_skips_combos_in_result_csv(tmp_path):
+    train_folder = tmp_path / "mimicgen" / "run1"
+    _write_train_cfg(train_folder, modality_dropout=True)
+    _write_result_csv(train_folder, [(1, 1, 1), (1, 0, 1)])  # use_proprio=0: a no-proprio model
+    plan = plan_lines(str(train_folder), [], reeval=False, resume=True)
+    combos = [_combo(o) for _, o in plan]
+    assert len(combos) == 5
+    assert ("True", "True", "True", "True") not in combos and ("True", "False", "True", "True") not in combos
+
+
+def test_restore_puts_mimicgen_csv_back(tmp_path, monkeypatch):
+    from flower.evaluation.eval_records import read_csv
+
+    train_folder = tmp_path / "mimicgen" / "run1"
+    _write_train_cfg(train_folder)
+    art = tmp_path / "artifact"
+    write_csv(art / "mimicgen.csv", [{"use_rgb_static": 1, "success": 1}])
+    monkeypatch.setattr(mimicgen_pipeline, "download_eval_artifact", lambda *a, **k: art)
+    mimicgen_pipeline.restore(str(train_folder), [])
+    assert len(read_csv(mimicgen_pipeline.csv_path(str(train_folder), []))) == 1

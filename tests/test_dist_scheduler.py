@@ -238,3 +238,70 @@ def test_cli_done_and_fail_finish_the_task(tmp_path, monkeypatch, cmd):
     ds.main()
     with ds.locked_state(path) as state:
         assert state["tasks"][LIB]["state"] == ("done" if cmd == "done" else "todo")
+
+
+# ---------------------------------------------------------------------------
+# add: queue an existing run again (e.g. evaluate missing combinations), with its own opts
+# ---------------------------------------------------------------------------
+
+
+def test_run_dir_of_splits_group_and_timestamp():
+    assert ds.run_dir_of("calvin_abcd_d_2026-10-14_13-37-34") == "calvin_abcd_d/2026-10-14_13-37-34"
+    assert ds.run_dir_of("libero_10_static+wrist+lang+proprio_2026-09-18_16-47-17") == (
+        "libero_10_static+wrist+lang+proprio/2026-09-18_16-47-17"
+    )
+    assert ds.run_dir_of("mimicgen_dropout_2026-10-05_09-31-11_pkeep0.5") == "mimicgen_dropout/2026-10-05_09-31-11_pkeep0.5"
+
+
+def test_add_queues_a_forced_task_that_refresh_does_not_complete():
+    state = ds.empty_state()
+    run_id = "calvin_abcd_d_2026-10-14_13-37-34"
+    task = ds.add(state, run_id, T0, host="hostB", opts="PIPELINE_RESTORE=1 PIPELINE_ALL_COMBOS=1")
+    assert task["state"] == "todo" and task["forced"] and task["attempts"] == 0
+    assert task["benchmark"] == "calvin" and task["host"] == "hostB"
+    assert task["run_dir"] == "calvin_abcd_d/2026-10-14_13-37-34"
+    assert task["opts"] == "PIPELINE_RESTORE=1 PIPELINE_ALL_COMBOS=1"
+    ds.refresh(state, [FakeRun(LIB), _evaluated_run(run_id)], SINCE, [], T0)
+    assert state["tasks"][run_id]["state"] == "todo"
+    assert ds.task_line(ds.claim(state, "w:0", T0)).split("\t")[0] in (run_id, LIB)
+
+
+def _evaluated_run(run_id):
+    run = FakeRun(LIB, artifacts=("evaluation",))
+    run.id = run_id
+    return run
+
+
+def test_add_keeps_the_training_host_and_run_dir_of_an_earlier_task():
+    """W&B's metadata.host is the last machine that uploaded (the evaluator); the queue's
+    own task remembers where the run trained."""
+    state = _state(FakeRun(LIB, host="trainer"))
+    ds.claim(state, "w:0", T0)
+    ds.finish(state, LIB, "w:0", ok=True, msg="", now=T0)
+    task = ds.add(state, LIB, T0, rules=ds.parse_opts("libero_*:A=1"))
+    assert task["host"] == "trainer" and task["run_dir"] == "libero_10_dropout/2026-11-06_08-00-00"
+    assert task["opts"] == "A=1" and task["state"] == "todo" and task["error"] is None
+
+
+def test_add_refuses_a_running_task_and_needs_a_host():
+    state = _state(FakeRun(LIB))
+    ds.claim(state, "w:0", T0)
+    assert ds.add(state, LIB, T0, host="h") is None
+    with pytest.raises(ValueError):
+        ds.add(ds.empty_state(), CAL, T0)  # no host anywhere
+    with pytest.raises(ValueError):
+        ds.add(ds.empty_state(), "other_2026-11-06_08-00-00", T0, host="h")
+
+
+def test_cli_add_uses_the_wandb_host_only_as_a_fallback(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    monkeypatch.setattr(ds, "_wandb_host", lambda run_id: "wandbhost")
+    for argv in (
+        ["add", "--run", CAL, "--opts", "PIPELINE_RESTORE=1"],
+        ["add", "--run", MG, "--host", "given"],
+    ):
+        monkeypatch.setattr(sys, "argv", ["dist_scheduler.py", "--state", str(path), *argv])
+        ds.main()
+    with ds.locked_state(path) as state:
+        assert state["tasks"][CAL]["host"] == "wandbhost" and state["tasks"][CAL]["opts"] == "PIPELINE_RESTORE=1"
+        assert state["tasks"][MG]["host"] == "given" and state["tasks"][MG]["forced"]

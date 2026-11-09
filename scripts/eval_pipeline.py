@@ -9,6 +9,11 @@ Usage:
   python scripts/eval_pipeline.py plan --train-folder <dir> [--resume]
       [--reeval [--reeval-suites orig_<bench>,plus_<bench>]] [-- overrides...]
   python scripts/eval_pipeline.py upload --train-folder <dir> [-- overrides...]
+  python scripts/eval_pipeline.py restore --train-folder <dir> [-- overrides...]
+
+`restore` (PIPELINE_RESTORE=1) writes the raw result CSVs of the run's latest W&B
+evaluation artifact back into eval_logs where no local file exists, so `--resume` plans
+only what is missing and `upload` publishes the earlier suites too.
 
 `plan` prints one line per evaluation to run, tab-separated:
     <service>\t<override1>\t<override2>\t...
@@ -72,6 +77,8 @@ Branching (read from <train-folder>/.hydra/config.yaml):
     do (pro_sr.py groups by combo, so it needs no csv_dir= split the way LIBERO-Plus
     does). --skip-pro-combos (PIPELINE_SKIP_PRO_COMBOS=1) collapses the sweep back to
     full modality only, leaving 6 PRO lines.
+  - --all-combos (PIPELINE_ALL_COMBOS=1) gives a non-dropout run the dropout run's
+    LIBERO-10 sweep, limited to the inputs it was trained on.
   - --skip-multi-off (PIPELINE_SKIP_MULTI_OFF=1) keeps only the combos with at most one
     modality withheld -- full plus each single withheld modality, 5 with proprio and 4
     without -- in both the orig sweep and the PRO matched sweep (14 or 12 PRO lines).
@@ -101,8 +108,10 @@ derived files without re-evaluating anything.
 import argparse
 import itertools
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -358,6 +367,37 @@ def _matches(row: Dict[str, str], combo: Dict[str, bool]) -> bool:
     return all(int(row.get(col) or 0) == int(combo[key]) for key, col in FLAG_COLUMNS.items())
 
 
+def planned_combos(train_cfg, all_combos: bool = False, skip_multi_off: bool = False) -> List[Dict[str, bool]]:
+    """The modality combos a run is evaluated on (shared with calvin_pipeline.py and
+    mimicgen_pipeline.py): every combo within its trained inputs for a dropout run, or for
+    any run with all_combos; otherwise just the trained inputs. skip_multi_off keeps the
+    trained inputs and each single one withheld."""
+    full = trained_combo(train_cfg)
+    if not (bool(train_cfg.model.get("modality_dropout", False)) or all_combos):
+        return [full]
+    combos = [c for c in modality_combos(bool(train_cfg.model.get("use_proprio", False))) if within(c, full)]
+    return at_most_one_off(combos, full) if skip_multi_off else combos
+
+
+def combo_in_csv(csv_path: Path, combo: Dict[str, bool], use_proprio: bool) -> bool:
+    """result.csv already holds a full (unfiltered) evaluation of this combo."""
+    # A model with use_proprio=False never receives proprio regardless of
+    # eval_modalities.proprio (flower_eval_libero.py's EvaluateLibero.uses_proprio),
+    # so that's what actually lands in the CSV's use_proprio column -- match on it,
+    # not on the raw (always-True) combo value, or a no-proprio run never resumes.
+    effective_combo = {**combo, "proprio": combo["proprio"] and use_proprio}
+    # task_category_filter empty <=> the row came from a full (unfiltered) run --
+    # see eval_records.py's module docstring. Without this, a row merged in by a
+    # narrower `task_category=`-filtered eval (e.g. a manual
+    # `./run.sh eval-plus task_category="..."` targeting the same result.csv) would
+    # look identical to full-suite completion to a check keyed only on modality
+    # flags, permanently stalling `--resume` on a suite that's actually still
+    # missing most of its tasks. A pre-existing row with no such column at all
+    # (written before this column existed) reads as "full" -- same backward-compat
+    # treatment as use_proprio in eval_records._row_key.
+    return any(_matches(row, effective_combo) and not row.get("task_category_filter") for row in read_csv(csv_path))
+
+
 def _eval_overrides(benchmark_name: str, train_folder: str, checkpoint: str, combo: Dict[str, bool]) -> List[str]:
     overrides = [
         f"benchmark_name={benchmark_name}",
@@ -397,6 +437,7 @@ def plan_lines(
     skip_modality_off: bool = False,
     skip_pro_combos: bool = False,
     skip_multi_off: bool = False,
+    all_combos: bool = False,
 ) -> List[Tuple[str, List[str]]]:
     """reeval_variants, when given, restricts the plan to those variants only, and each
     of them is replanned unconditionally (see should_replan below) -- the caller
@@ -404,7 +445,6 @@ def plan_lines(
     not to have touched any result.csv; that now happens lazily, per suite, inside
     flower_eval_libero.py itself (see the module docstring)."""
     train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
-    dropout = bool(train_cfg.model.modality_dropout)
     use_proprio = bool(train_cfg.model.use_proprio)
     # A fixed-subset run (model.modalities.*=False) is only evaluated within the inputs it
     # was trained on, and every line states that subset, so result.csv records it.
@@ -416,24 +456,7 @@ def plan_lines(
         if not resume:
             return False
         csv_path = _variant_csv_path(variant, parsed, resolved_train_folder, checkpoint, benchmark_name)
-        # A model with use_proprio=False never receives proprio regardless of
-        # eval_modalities.proprio (flower_eval_libero.py's EvaluateLibero.uses_proprio),
-        # so that's what actually lands in the CSV's use_proprio column -- match on it,
-        # not on the raw (always-True) combo value, or a no-proprio run never resumes.
-        effective_combo = {**combo, "proprio": combo["proprio"] and use_proprio}
-        # task_category_filter empty <=> the row came from a full (unfiltered) run --
-        # see eval_records.py's module docstring. Without this, a row merged in by a
-        # narrower `task_category=`-filtered eval (e.g. a manual
-        # `./run.sh eval-plus task_category="..."` targeting the same result.csv) would
-        # look identical to full-suite completion to a check keyed only on modality
-        # flags, permanently stalling `--resume` on a suite that's actually still
-        # missing most of its tasks. A pre-existing row with no such column at all
-        # (written before this column existed) reads as "full" -- same backward-compat
-        # treatment as use_proprio in eval_records._row_key.
-        return any(
-            _matches(row, effective_combo) and not row.get("task_category_filter")
-            for row in read_csv(csv_path)
-        )
+        return combo_in_csv(csv_path, combo, use_proprio)
 
     # Tracks which target result.csv paths have already been assigned the `reeval=true`
     # override this planning pass, so a dropout run's several "orig" combo lines --
@@ -462,9 +485,7 @@ def plan_lines(
         rotated_paths.add(path)
         return ["reeval=true"]
 
-    combos = modality_combos(use_proprio) if dropout else [full]
-    if skip_multi_off:
-        combos = at_most_one_off(combos, full)
+    combos = planned_combos(train_cfg, all_combos, skip_multi_off)
 
     lines: List[Tuple[str, List[str]]] = []
     if reeval_variants is None or "orig" in reeval_variants:
@@ -743,6 +764,64 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
     print(f"Logged eval-{run_id} artifact to {train_cfg.logger.project}/{run_id}")
 
 
+def download_eval_artifact(train_cfg, run_id: str, root: Path) -> Optional[Path]:
+    """Download the run's latest evaluation artifact into root; None if it has none."""
+    name = f"{train_cfg.logger.entity}/{train_cfg.logger.project}/{artifact_name(run_id)}:latest"
+    try:
+        artifact = wandb.Api(timeout=120).artifact(name, type="evaluation")
+    except wandb.errors.CommError:
+        return None
+    return Path(artifact.download(root=str(root)))
+
+
+def restore_files(artifact_dir: Path, targets: Dict[str, Path]) -> List[Path]:
+    """Copy each artifact member (name -> result.csv path) that exists into place, unless
+    a local file is already there: a local result is never overwritten."""
+    written = []
+    for name, path in targets.items():
+        source = artifact_dir / name
+        if source.exists() and not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, path)
+            written.append(path)
+    return written
+
+
+def restore(train_folder: str, extra_overrides: List[str]) -> None:
+    """Put the raw result CSVs of the run's latest W&B evaluation artifact back into
+    eval_logs (PIPELINE_RESTORE=1), so a worker holding only .hydra and the checkpoint
+    resumes where the earlier evaluation stopped and uploads a complete artifact. The
+    derived members (severity, pro_sr, pid) are not restored: upload recomputes them."""
+    train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
+    benchmark_name, resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
+    use_proprio = _use_proprio(train_folder)
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact_dir = download_eval_artifact(train_cfg, wandb_run_id(resolved_train_folder), Path(tmp))
+        if artifact_dir is None:
+            print("restore: the run has no evaluation artifact -- nothing to restore")
+            return
+        targets = {
+            "libero_orig.csv": _csv_path(resolved_train_folder, checkpoint, "orig", benchmark_name),
+            "libero_plus.csv": _csv_path(resolved_train_folder, checkpoint, "plus", benchmark_name),
+        }
+        for variant, path in modality_off_csv_paths(resolved_train_folder, checkpoint, benchmark_name, use_proprio).items():
+            targets[modality_off_member(variant)] = path
+        written = restore_files(artifact_dir, targets)
+        # libero_pro.csv concatenates the PRO suites (write_pro_csv); split it back by arm
+        # and suite into each suite's own result.csv.
+        if (artifact_dir / "libero_pro.csv").exists():
+            rows = read_csv(artifact_dir / "libero_pro.csv")
+            for variant, path in pro_csv_paths(resolved_train_folder, checkpoint, benchmark_name).items():
+                arm, _tag = PRO_VARIANTS[variant]
+                suite = pro_benchmark_name(variant, benchmark_name)
+                selected = [r for r in rows if r.get("libero_variant") == arm and r.get("suite") == suite]
+                if selected and not path.exists():
+                    write_csv(path, selected)
+                    written.append(path)
+    for path in written:
+        print(f"restore: {path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     subparsers = parser.add_subparsers(dest="cmd", required=True)
@@ -755,15 +834,22 @@ def main() -> None:
     plan_p.add_argument("--skip-modality-off", action="store_true")
     plan_p.add_argument("--skip-pro-combos", action="store_true")
     plan_p.add_argument("--skip-multi-off", action="store_true")
+    plan_p.add_argument("--all-combos", action="store_true")
     plan_p.add_argument("overrides", nargs="*")
 
     upload_p = subparsers.add_parser("upload")
     upload_p.add_argument("--train-folder", required=True)
     upload_p.add_argument("overrides", nargs="*")
 
+    restore_p = subparsers.add_parser("restore")
+    restore_p.add_argument("--train-folder", required=True)
+    restore_p.add_argument("overrides", nargs="*")
+
     args = parser.parse_args()
 
-    if args.cmd == "plan":
+    if args.cmd == "restore":
+        restore(args.train_folder, args.overrides)
+    elif args.cmd == "plan":
         if args.reeval_suites is not None and not args.reeval:
             sys.exit("--reeval-suites requires --reeval")
 
@@ -796,6 +882,7 @@ def main() -> None:
             args.skip_modality_off,
             args.skip_pro_combos,
             args.skip_multi_off,
+            args.all_combos,
         ):
             print("\t".join([service] + overrides))
     elif args.cmd == "upload":

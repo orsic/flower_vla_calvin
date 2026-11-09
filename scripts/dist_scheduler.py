@@ -16,6 +16,12 @@ then marked failed.
 
     ./run.sh dist-sched refresh | status | claim --worker H:G | heartbeat --run R --worker H:G
     ./run.sh dist-sched done|fail|release --run R --worker H:G [--msg M] | requeue --run R | skip --run R
+    ./run.sh dist-sched add --run R [--host H] [--run-dir D] [--opts "VAR=VAL ..."]
+
+`add` queues any run again, evaluated or not, e.g. to evaluate input combinations it is
+missing (--opts "PIPELINE_RESTORE=1 PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1").
+The host holding its checkpoint is --host, else the one the queue recorded when the run
+was first queued, else W&B's metadata.host (the last machine that ran an upload for it).
 """
 
 import argparse
@@ -125,6 +131,53 @@ def task_from_run(run, since: str, rules: Rules) -> Optional[Dict]:
     }
 
 
+def run_dir_of(run_id: str) -> Optional[str]:
+    """<group>_<YYYY-MM-DD_HH-MM-SS[suffix]> -> <group>/<YYYY-MM-DD_HH-MM-SS[suffix]>."""
+    m = re.search(r"_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}.*)$", run_id)
+    return f"{run_id[: m.start()]}/{m.group(1)}" if m else None
+
+
+def add(
+    state: Dict,
+    run_id: str,
+    now: datetime,
+    host: Optional[str] = None,
+    run_dir: Optional[str] = None,
+    opts: Optional[str] = None,
+    rules: Rules = (),
+) -> Optional[Dict]:
+    """Queue run_id as a forced todo task, which refresh never completes on its own. None
+    if it is running. Host and run dir default to the run's earlier task."""
+    bench = benchmark_of(run_id)
+    if bench is None:
+        raise ValueError(f"{run_id}: not a LIBERO, CALVIN or MimicGen run")
+    old = state["tasks"].get(run_id) or {}
+    if old.get("state") == "running":
+        return None
+    host = host or old.get("host")
+    run_dir = run_dir or old.get("run_dir") or run_dir_of(run_id)
+    if not host or not run_dir:
+        raise ValueError(f"{run_id}: pass --host (and --run-dir if the name has no timestamp)")
+    task = {
+        "run_id": run_id,
+        "benchmark": bench,
+        "host": host,
+        "run_dir": run_dir,
+        "opts": opts if opts is not None else opts_for(run_id, rules),
+        "created": _iso(now),
+        "state": "todo",
+        "worker": None,
+        "attempts": 0,
+        "claimed": None,
+        "heartbeat": None,
+        "finished": None,
+        "error": None,
+        "forced": True,
+    }
+    state["tasks"][run_id] = task
+    return task
+
+
 def empty_state() -> Dict:
     return {"refreshed": None, "tasks": {}}
 
@@ -143,7 +196,7 @@ def refresh(state: Dict, runs: Iterable, since: str, rules: Rules, now: datetime
     for run in runs:
         if run.id in tasks:
             task = tasks[run.id]
-            if task["state"] == "todo" and _evaluated(run):
+            if task["state"] == "todo" and not task.get("forced") and _evaluated(run):
                 task.update(state="done", finished=_iso(now), error="evaluated outside the scheduler")
             continue
         task = task_from_run(run, since, rules)
@@ -283,6 +336,14 @@ def _wandb_runs(since: str) -> List:
     return list(api.runs(f"{logger['entity']}/{logger['project']}", filters={"created_at": {"$gte": day_before}}))
 
 
+def _wandb_host(run_id: str) -> Optional[str]:
+    import wandb
+
+    logger = yaml.safe_load((REPO_ROOT / CONFIGS["libero"]).read_text())["logger"]
+    run = wandb.Api(timeout=120).run(f"{logger['entity']}/{logger['project']}/{run_id}")
+    return (run.metadata or {}).get("host")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--state", type=Path, default=Path("/saves/dist_scheduler/state.json"))
@@ -300,6 +361,11 @@ def main() -> None:
             p.add_argument("--worker", required=True)
         if name in ("done", "fail"):
             p.add_argument("--msg", default="")
+    p = sub.add_parser("add")
+    p.add_argument("--run", required=True)
+    p.add_argument("--host")
+    p.add_argument("--run-dir")
+    p.add_argument("--opts", dest="task_opts", help="this task's options (default: the --opts rules)")
     args = ap.parse_args()
     now = datetime.now(timezone.utc)
 
@@ -326,6 +392,13 @@ def main() -> None:
         elif args.cmd == "release":
             if not release(state, args.run, args.worker):
                 sys.exit(3)
+        elif args.cmd == "add":
+            known = (state["tasks"].get(args.run) or {}).get("host")
+            host = args.host or known or _wandb_host(args.run)
+            task = add(state, args.run, now, host, args.run_dir, args.task_opts, rules)
+            if task is None:
+                sys.exit(f"dist_scheduler: {args.run} is running; release or wait for it first")
+            print(task_line(task))
         elif args.cmd == "requeue":
             requeue(state, args.run)
         elif args.cmd == "skip":

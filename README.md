@@ -538,6 +538,8 @@ CUDA_VISIBLE_DEVICES=2,3 ./run.sh train-calvin-dropout batch_size=4 accumulate_g
 # modality combo (7) for a dropout run, then upload of result.csv ("calvin.csv") + PID report.
 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d_dropout/<ts>
 PIPELINE_REEVAL=1 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/<ts>   # discard + redo
+# a baseline run with all inputs and each one withheld, keeping what is already evaluated:
+PIPELINE_RESUME=1 PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/<ts>
 
 # One-off eval of a checkpoint (eval_modalities.* to withhold a modality, num_sequences=... to shorten):
 ./run.sh eval-calvin train_folder=/saves/train_logs/calvin_abcd_d/<ts> \
@@ -692,6 +694,8 @@ the only train/rollout difference is train-only RandomShifts augmentation.
 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run>
 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run> n_eval=20         # quicker check
 PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run>   # discard + redo
+# a baseline run with all inputs and each one withheld, keeping what is already evaluated:
+PIPELINE_RESUME=1 PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/<run>
 
 # One-off longer-horizon re-evaluation: max_steps_scale multiplies every dataset's
 # registered rollout limit (the CSV's max_steps column records the scaled value). Write it
@@ -1578,6 +1582,24 @@ modality-off suites — resume covers those exactly like `orig_<bench>`/`plus_<b
 regenerate and re-upload `pid_modality.txt`/`severity_sr.csv` (e.g. after a fix to either
 script) with no GPU work at all.
 
+**Evaluating more input combinations of an evaluated run** (all three pipelines:
+`pipeline`, `pipeline-calvin`, `pipeline-mimicgen`):
+- `PIPELINE_ALL_COMBOS=1` gives a run trained without dropout the sweep a dropout run gets:
+  every combination of its trained inputs (LIBERO-10 for `pipeline`). With
+  `PIPELINE_SKIP_MULTI_OFF=1` it is all trained inputs plus each one withheld, which is what
+  the conventional policy's reliance and extrapolation bias need. Without it, such a run is
+  evaluated with its trained inputs only.
+- `PIPELINE_RESUME=1` skips combinations already in `result.csv` (CALVIN and MimicGen too).
+- `PIPELINE_RESTORE=1` first downloads the run's latest W&B `evaluation` artifact and writes
+  its raw result CSVs back into `eval_logs`, where no local file exists (`libero_pro.csv` is
+  split back into its six suites). On a machine holding only the checkpoint, the pipeline then
+  evaluates only what is missing and uploads an artifact with the earlier results too.
+
+```bash
+PIPELINE_RESTORE=1 PIPELINE_RESUME=1 PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1 \
+    ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/<run>
+```
+
 `PIPELINE_REEVAL=1` does the opposite: instead of merging into the existing `result.csv`
 (which keeps every row the new run doesn't overwrite — stale rows from a category or
 modality combo no longer evaluated), each selected suite's own eval invocation backs its
@@ -1760,7 +1782,7 @@ were evaluated some other way, are never handed out. The queue is
 | `DIST_HOSTS` | workers | `"hostA=/path/to/saves hostB=/path/to/saves"`: every training host and its `SAVES_DIR` |
 | `DIST_POLL_MIN` | workers | how often an idle GPU asks again (default 10) |
 | `DIST_SINCE` | master | queue runs created on or after this date, e.g. `2026-11-05` |
-| `DIST_EVAL_OPTS` | master | pipeline options per run-id glob: `"libero_10_dropout_*:PIPELINE_SKIP_MULTI_OFF=1;calvin_*:VAR=VAL"`, first match wins |
+| `DIST_EVAL_OPTS` | master | pipeline options per run-id glob: `"calvin_abcd_d_*+*:PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1;calvin_*:VAR=VAL"`, first match wins |
 | `DIST_LEASE_MIN` | master | minutes without a heartbeat before a running task is re-queued (default 30) |
 
 Host names are those of `~/.ssh/config`, which are also the host names W&B records.
@@ -1804,6 +1826,27 @@ Host names are those of `~/.ssh/config`, which are also the host names W&B recor
 A running task sends a heartbeat every 5 minutes; after `DIST_LEASE_MIN` minutes without one it
 returns to the queue. A failed evaluation is retried once (possibly on another worker), then
 marked `failed` with its exit status.
+
+**Re-evaluating existing runs.** `dist-sched add` queues any run, evaluated or not, with its own
+pipeline options, e.g. to evaluate input combinations it is missing:
+
+```bash
+./run.sh dist-sched add --run calvin_abcd_d_2026-10-14_13-37-34 \
+    --opts "PIPELINE_RESTORE=1 PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1"
+```
+
+- `PIPELINE_RESTORE=1` matters here: the worker copies only `.hydra` and the checkpoint, so it
+  first restores the earlier results from W&B, evaluates only what is missing, and uploads a
+  complete artifact.
+- The host holding the checkpoint is `--host`, else the training host the queue recorded when it
+  first queued the run, else W&B's `metadata.host`. W&B's value is the last machine that
+  uploaded an evaluation for the run: the training host for runs evaluated before this queue
+  existed, but the evaluating worker for runs it handled. `--run-dir` overrides
+  `<group>/<timestamp>`, derived from the run id.
+- An added task is never marked done just because the run already has an evaluation artifact.
+  `--opts` defaults to the `DIST_EVAL_OPTS` rules; `add` refuses a task that is running.
+- Workers run the pipelines from their own checkout, so update them before adding tasks that
+  use new options.
 
 ### Results tables for docs/results.md
 

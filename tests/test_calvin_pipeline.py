@@ -80,3 +80,56 @@ def test_plan_lines_fixed_subset_run_names_its_trained_inputs(tmp_path):
     assert "eval_modalities.rgb_gripper=True" in overrides
     assert "eval_modalities.language=True" in overrides
     assert "eval_modalities.proprio=True" in overrides
+
+
+def _flags(overrides):
+    flags = dict(o.split("=", 1) for o in overrides if o.startswith("eval_modalities."))
+    return tuple(flags[f"eval_modalities.{k}"] == "True" for k in ("rgb_static", "rgb_gripper", "language", "proprio"))
+
+
+def test_plan_lines_all_combos_sweeps_a_non_dropout_run(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, use_proprio=True)
+    plan = plan_lines(str(train_folder), [], reeval=True, all_combos=True)
+    assert len(plan) == 14
+    assert _flags(plan[0][1]) == (True, True, True, True)
+    assert ["reeval=True" in o for _, o in plan] == [True] + [False] * 13
+
+
+def test_plan_lines_all_combos_with_skip_multi_off_within_trained_inputs(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, use_proprio=True, modalities={"language": False})
+    plan = plan_lines(str(train_folder), [], reeval=False, all_combos=True, skip_multi_off=True)
+    assert {_flags(o) for _, o in plan} == {
+        (True, True, False, True),
+        (False, True, False, True),
+        (True, False, False, True),
+        (True, True, False, False),
+    }
+
+
+def test_plan_lines_resume_skips_combos_in_result_csv(tmp_path):
+    from flower.evaluation.eval_records import write_csv
+
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, use_proprio=True)
+    row = {"use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1, "use_proprio": 1, "success": 1}
+    write_csv(csv_path(str(train_folder), []), [row])
+    plan = plan_lines(str(train_folder), [], reeval=False, all_combos=True, skip_multi_off=True, resume=True)
+    assert len(plan) == 4
+    assert (True, True, True, True) not in {_flags(o) for _, o in plan}
+    # nothing left: an empty plan
+    assert plan_lines(str(train_folder), [], reeval=False, resume=True) == []
+
+
+def test_restore_puts_calvin_csv_back(tmp_path, monkeypatch):
+    import calvin_pipeline
+    from flower.evaluation.eval_records import read_csv, write_csv
+
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, use_proprio=True)
+    art = tmp_path / "artifact"
+    write_csv(art / "calvin.csv", [{"use_rgb_static": 1, "success": 1}])
+    monkeypatch.setattr(calvin_pipeline, "download_eval_artifact", lambda *a, **k: art)
+    calvin_pipeline.restore(str(train_folder), [])
+    assert len(read_csv(csv_path(str(train_folder), []))) == 1

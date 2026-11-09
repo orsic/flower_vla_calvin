@@ -1527,3 +1527,122 @@ def test_trained_combo_reads_model_modalities():
     cfg = OmegaConf.create({"model": {"use_proprio": True, "modalities": {"language": False, "proprio": False}}})
     assert trained_combo(cfg) == {"rgb_static": True, "rgb_gripper": True, "language": False, "proprio": False}
     assert trained_combo(OmegaConf.create({"model": {"use_proprio": False}})) == full_modality_combo()
+
+
+# ---------------------------------------------------------------------------
+# --all-combos: a non-dropout run gets the LIBERO-10 sweep a dropout run gets, within its
+# trained inputs (the conventional policy's reliance R and extrapolation bias).
+# ---------------------------------------------------------------------------
+
+
+def test_all_combos_sweeps_a_non_dropout_run_like_a_dropout_run(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], all_combos=True)
+    assert _combos(lines, "eval") == [tuple(c[k] for k in ("rgb_static", "rgb_gripper", "language", "proprio")) for c in modality_combos(True)]
+    dropout_folder = tmp_path / "dropout"
+    _write_train_cfg(dropout_folder, dropout=True, use_proprio=True)
+    dropout = plan_lines(str(dropout_folder), resume=False, extra_overrides=[])
+    assert [svc for svc, _ in lines] == [svc for svc, _ in dropout]
+
+
+def test_all_combos_with_skip_multi_off_is_all_inputs_and_each_withheld(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], all_combos=True, skip_multi_off=True)
+    orig = _combos(lines, "eval")
+    assert len(orig) == 5 and orig[0] == (True, True, True, True)
+    assert all(sum(not on for on in c) <= 1 for c in orig)
+
+
+def test_all_combos_keeps_a_fixed_subset_run_within_its_inputs(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True, modalities={"rgb_static": False})
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=[], all_combos=True, skip_multi_off=True)
+    assert set(_combos(lines, "eval")) == {
+        (False, True, True, True),
+        (False, False, True, True),
+        (False, True, False, True),
+        (False, True, True, False),
+    }
+
+
+def test_all_combos_resume_plans_only_the_missing_withheld_combos(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    write_csv(train_folder / "eval_logs" / "last" / "orig_libero_10" / "result.csv", [_row(True, True, True, True)])
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[], all_combos=True, skip_multi_off=True)
+    assert len(_combos(lines, "eval")) == 4
+    assert (True, True, True, True) not in _combos(lines, "eval")
+
+
+# ---------------------------------------------------------------------------
+# restore: put the raw result CSVs of the run's latest W&B evaluation artifact back into
+# eval_logs (never over a local file), so --resume plans only what is missing and upload
+# publishes everything.
+# ---------------------------------------------------------------------------
+
+
+def _fake_artifact(tmp_path, members):
+    d = tmp_path / "artifact"
+    for name, rows in members.items():
+        write_csv(d / name, rows)
+    return d
+
+
+def _pro_row(variant, suite, proprio=1):
+    return {**_row(True, True, True, proprio), "libero_variant": variant, "suite": suite}
+
+
+def test_restore_writes_raw_members_to_their_result_dirs(tmp_path, monkeypatch):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    pro_rows = [_pro_row("pro", "libero_10_lan"), _pro_row("pro_matched", "libero_10_lan", 0), _pro_row("pro", "libero_10_swap")]
+    art = _fake_artifact(
+        tmp_path,
+        {
+            "libero_orig.csv": [_row(True, True, True, True)],
+            "libero_plus.csv": [_row(True, True, True, True)],
+            "libero_plus_no_lang.csv": [_row(True, True, False, True)],
+            "libero_pro.csv": pro_rows,
+            "severity_sr.csv": [{"x": 1}],
+        },
+    )
+    monkeypatch.setattr(eval_pipeline, "download_eval_artifact", lambda *a, **k: art)
+
+    eval_pipeline.restore(str(train_folder), [])
+
+    logs = train_folder / "eval_logs" / "last"
+    assert len(read_csv(logs / "orig_libero_10" / "result.csv")) == 1
+    assert len(read_csv(logs / "plus_libero_10" / "result.csv")) == 1
+    assert read_csv(logs / "plus_libero_10_no_lang" / "result.csv")[0]["use_language"] == "0"
+    assert len(read_csv(logs / "pro_libero_10_lan" / "result.csv")) == 1
+    assert read_csv(logs / "pro_matched_libero_10_lan" / "result.csv")[0]["use_proprio"] == "0"
+    assert len(read_csv(logs / "pro_libero_10_swap" / "result.csv")) == 1
+    assert not (logs / "pro_libero_10_task").exists()
+    # derived members are recomputed by upload, not restored
+    assert not any(p.name == "severity_sr.csv" for p in logs.rglob("*"))
+    # and the restored suites are what --resume now skips
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[], all_combos=True, skip_multi_off=True)
+    assert [svc for svc, _ in lines].count("eval") == 4
+
+
+def test_restore_never_overwrites_a_local_result(tmp_path, monkeypatch):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    local = train_folder / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    write_csv(local, [_row(True, True, True, True), _row(True, False, True, True)])
+    art = _fake_artifact(tmp_path, {"libero_orig.csv": [_row(True, True, True, True)]})
+    monkeypatch.setattr(eval_pipeline, "download_eval_artifact", lambda *a, **k: art)
+
+    eval_pipeline.restore(str(train_folder), [])
+
+    assert len(read_csv(local)) == 2
+
+
+def test_restore_without_an_artifact_does_nothing(tmp_path, monkeypatch):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    monkeypatch.setattr(eval_pipeline, "download_eval_artifact", lambda *a, **k: None)
+    eval_pipeline.restore(str(train_folder), [])
+    assert not (train_folder / "eval_logs").exists()

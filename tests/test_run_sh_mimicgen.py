@@ -29,6 +29,9 @@ case "$joined" in
   *"mimicgen_pipeline.py upload"*)
     [[ -n "${FAKE_UPLOAD_LOG:-}" ]] && echo "$joined" >> "$FAKE_UPLOAD_LOG"
     ;;
+  *"mimicgen_pipeline.py restore"*)
+    [[ -n "${FAKE_PLAN_LOG:-}" ]] && echo "$joined" >> "$FAKE_PLAN_LOG"
+    ;;
   *)
     echo "unexpected podman-compose invocation: $joined" >&2
     exit 1
@@ -56,7 +59,10 @@ def _run_pipeline_mimicgen(tmp_path, extra_env=None):
     env["FAKE_EVAL_LOG"] = str(eval_log)
     env["FAKE_PLAN_LOG"] = str(plan_log)
     env["FAKE_UPLOAD_LOG"] = str(upload_log)
-    for key in ("PIPELINE_REEVAL", "FAKE_PLAN_EMPTY"):
+    for key in (
+        "PIPELINE_REEVAL", "PIPELINE_RESUME", "PIPELINE_ALL_COMBOS", "PIPELINE_SKIP_MULTI_OFF", "PIPELINE_RESTORE",
+        "FAKE_PLAN_EMPTY",
+    ):
         env.pop(key, None)
     env.update(extra_env or {})
 
@@ -310,3 +316,22 @@ def test_train_mimicgen_fixed_subset_names_the_run_by_its_inputs(tmp_path):
     assert result.returncode == 0, result.stderr
     run_dir = next(t for t in lines[0].split() if t.startswith("hydra.run.dir=")).split("=", 1)[1]
     assert run_dir.startswith("/saves/train_logs/mimicgen_static+wrist+proprio/")
+
+
+def test_pipeline_mimicgen_passes_resume_all_combos_and_skip_multi_off(tmp_path):
+    env = {"PIPELINE_RESUME": "1", "PIPELINE_ALL_COMBOS": "1", "PIPELINE_SKIP_MULTI_OFF": "1"}
+    result, _, plan, _ = _run_pipeline_mimicgen(tmp_path, env)
+    assert result.returncode == 0, result.stderr
+    assert all(f in plan[0] for f in ("--resume", "--all-combos", "--skip-multi-off"))
+    (tmp_path / "default").mkdir()
+    _, _, default, _ = _run_pipeline_mimicgen(tmp_path / "default")
+    assert not any(f in default[0] for f in ("--resume", "--all-combos", "--skip-multi-off"))
+
+
+def test_pipeline_mimicgen_restores_before_planning(tmp_path):
+    result, evals, plan, _ = _run_pipeline_mimicgen(tmp_path, {"PIPELINE_RESTORE": "1"})
+    assert result.returncode == 0, result.stderr
+    assert "mimicgen_pipeline.py restore --train-folder /fake/train_dir" in plan[0]
+    assert "pipeline-artifacts-mimicgen" in plan[0]
+    assert "mimicgen_pipeline.py plan" in plan[1]
+    assert len(evals) == 1
