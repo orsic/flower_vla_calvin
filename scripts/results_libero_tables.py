@@ -62,6 +62,7 @@ MODELS: Dict[str, Dict[int, str]] = {
 SUBSET_RUNS: Dict[int, str] = {
     42: "libero_10_dropout_2026-11-04_21-49-24",
     5: "libero_10_dropout_2026-11-04_21-51-57",
+    100: "libero_10_dropout_2026-11-07_12-40-49",
 }
 # No dropout with proprioception, trained without one input (model.modalities.<x>=False),
 # keyed by that input; evaluated only within their trained inputs.
@@ -69,6 +70,10 @@ FIXED_RUNS: Dict[str, Dict[int, str]] = {
     "static": {
         42: "libero_10_wrist+lang+proprio_2026-11-06_15-31-06",
         5: "libero_10_wrist+lang+proprio_2026-11-06_15-31-13",
+    },
+    "wrist": {
+        42: "libero_10_static+lang+proprio_2026-11-06_15-30-31",
+        5: "libero_10_static+lang+proprio_2026-11-06_15-30-36",
     },
     "lang": {
         42: "libero_10_static+wrist+proprio_2026-11-06_15-30-50",
