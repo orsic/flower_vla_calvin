@@ -75,6 +75,7 @@ FIXED_RUNS: Dict[str, Dict[int, str]] = {
     "wrist": {
         42: "libero_10_static+lang+proprio_2026-11-06_15-30-31",
         5: "libero_10_static+lang+proprio_2026-11-06_15-30-36",
+        100: "libero_10_static+lang+proprio_2026-11-07_12-41-07",
     },
     "lang": {
         42: "libero_10_static+wrist+proprio_2026-11-06_15-30-50",
@@ -407,7 +408,7 @@ def print_subset(a: Artifacts) -> None:
     orig = {sd: a.load(r, "libero_orig.csv") for sd, r in SUBSET_RUNS.items()}
     plus = {sd: a.load(r, "libero_plus.csv") for sd, r in SUBSET_RUNS.items()}
     for sd in seeds:
-        assert orig[sd].groupby("combo").size().eq(200).all() and orig[sd].combo.nunique() == 5, sd
+        assert orig[sd].groupby("combo").size().eq(200).all() and orig[sd].combo.nunique() in (5, 14), sd
         assert len(plus[sd]) == 2519 and set(plus[sd].combo) == {full}, sd
 
     def cell(vals: List[float]) -> str:
@@ -415,10 +416,16 @@ def print_subset(a: Artifacts) -> None:
 
     print(f"\n## Whole-modality dropout (subset), seeds {' / '.join(map(str, seeds))}: mean ± sd (per seed), %")
     print("\n### LIBERO-10 by inputs")
-    combos = [c for c in orig[seeds[0]].combo.unique()]
-    combos.sort(key=lambda c: (-c.count("+"), c))
+    combos = sorted(set.intersection(*(set(orig[sd].combo) for sd in seeds)), key=lambda c: (-c.count("+"), c))
     t = {c: {"LIBERO-10": cell([orig[sd][orig[sd].combo == c].success.mean() for sd in seeds])} for c in combos}
     print(md(pd.DataFrame(t).T.rename_axis("inputs")))
+
+    lattice = [sd for sd in seeds if orig[sd].combo.nunique() == 14]
+    if lattice:
+        print(f"\n### LIBERO-10, every input combination (seeds {' / '.join(map(str, lattice))})")
+        combos = sorted(orig[lattice[0]].combo.unique(), key=lambda c: (-c.count("+"), c))
+        t = {c: {"LIBERO-10": cell([orig[sd][orig[sd].combo == c].success.mean() for sd in lattice])} for c in combos}
+        print(md(pd.DataFrame(t).T.rename_axis("inputs")))
 
     print("\n### LIBERO-Plus, all inputs and one withheld")
     t = {"all inputs": cell([plus[sd].success.mean() for sd in seeds])}

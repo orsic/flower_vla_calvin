@@ -20,7 +20,8 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
 - **Removing whole modalities in training matters, not just removing tokens.** The *uniform* variant drops a random 50% of all tokens and rarely removes a whole camera. Over three seeds it does worse with all inputs (3.63 vs 4.19 for Dirichlet) and collapses without the wrist camera (0.28 vs 3.76). On MimicGen (2 seeds) it matches Dirichlet with all inputs but gets 0–4% with either camera missing.
 - **On CALVIN, Dirichlet keep 0.5 trained with proprioception (3 seeds) does not depend on it.** With all inputs it is the most consistent dropout model (4.31 ± 0.03), and without the wrist camera it is somewhat better than without proprioception training (3.94 vs 3.76 with static camera and language), within the seed spread.
   - With proprioception always kept in training (proprio keep 1.0, 3 seeds), the CALVIN model depends on it as on MimicGen and LIBERO: withholding it halves avg_seq_len (e.g. 4.10 → 1.97 with all inputs).
-- **Whole-modality dropout (`subset`) with proprioception is the best CALVIN model so far** (3 seeds). With all inputs it matches no dropout (4.45 ± 0.05 vs 4.44–4.46), and without one camera it keeps most of it: 4.27 with static camera and language, 3.88 with wrist camera and language (Dirichlet keep 0.5 + proprio: 3.94 and 2.70).
+  - The no dropout + proprio model also relies on it (4.46 → 3.73 without it, 3 seeds), although adding proprioception does not raise its result.
+- **Whole-modality dropout (`subset`) with proprioception is the best CALVIN model so far** (3 seeds). With all inputs it matches no dropout (4.45 ± 0.05 vs 4.44–4.46), and without one camera it keeps most of it: 4.27 with static camera and language, 3.88 with wrist camera and language (Dirichlet keep 0.5 + proprio: 3.94 and 2.70). The conventional no dropout + proprio model, evaluated with the same camera withheld, reaches only 1.30 and 1.71.
 - **Language is indispensable on CALVIN and nearly irrelevant on MimicGen.**
   - CALVIN puts several tasks in one scene, so the instruction picks the task. Without language, no CALVIN model completes more than about 0.2 subtasks per chain on average.
   - Each MimicGen scene has one task, so dropping language changes success by at most a few points. The one exception, uniform seed 42 (46.9% → 34.7%), was not reproduced by seed 5.
@@ -33,6 +34,7 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
   - Removing less (Dirichlet keep 0.75) does not close the gap (46.4%), and it gives up almost all robustness: 2–4% without either camera.
   - Both cameras matter. Without the wrist camera success falls to about 18%, without the static camera to about 10%.
   - Proprioception has to be dropped in training too: a model that always saw it falls from 47.0% to 15.2% without it (2 seeds).
+  - Whole-modality dropout (`subset`, seed 100 so far) keeps 29% without the wrist camera and 22% without the static camera (Dirichlet keep 0.5: 18% and 10%), at 48.8% with all inputs.
 - **On LIBERO-10, dropout costs nothing on the original tasks and makes the model more robust to perturbations** (3 seeds per model).
   - With all inputs every model scores 91.5–95.3% on LIBERO-10.
   - On the 2519 perturbed LIBERO-Plus tasks the dropout models average 74.5–79.6%, against 68.3–72.2% without dropout. Two dropout seeds (70.7% and 73.7%) fall inside the no-dropout range (64.6–75.4%).
@@ -41,8 +43,8 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
   - Proprio keep 1.0 is the most robust (79.6%) but, as on MimicGen, collapses without proprioception.
   - Without dropout, withholding language or the wrist camera gives 0%. The dropout models keep 62–73% on LIBERO-Plus without language or the static camera.
   - Whole-modality dropout (`subset`, 3 seeds) is the most robust: 85.8% on LIBERO-Plus with all inputs, and the best model trained with every input when any single input is withheld (e.g. 37% vs 19–23% without the wrist camera).
-  - No-dropout models trained without one input: without the static camera (3 seeds) they lose little on LIBERO-10 (88.8%) and are somewhat more robust on LIBERO-Plus (74.0% vs 72.2%), but `subset` with that camera withheld does as well (90.2%, 80.6%). Without the wrist camera (2 seeds), the dedicated model (87.8%, 48.8%) is far better than `subset` with it withheld (70.8%, 36.9%). Without language (3 seeds) it loses 10 points on LIBERO-10 (81.2%) and is below both dropout models evaluated without language.
-  - Withholding an input from the conventional no dropout + proprio model at evaluation gives 0–52.5% on LIBERO-10 (2 seeds), against 81–89% for a model trained without it: the standard ablation overstates each input's importance by 36–88 points.
+  - No-dropout models trained without one input: without the static camera (3 seeds) they lose little on LIBERO-10 (88.8%) and are somewhat more robust on LIBERO-Plus (74.0% vs 72.2%), but `subset` with that camera withheld does as well (90.2%, 80.6%). Without the wrist camera (3 seeds), the dedicated model (86.7%, 48.0%) is far better than `subset` with it withheld (70.8%, 36.9%). Without language (3 seeds) it loses 10 points on LIBERO-10 (81.2%) and is below both dropout models evaluated without language.
+  - Withholding an input from the conventional no dropout + proprio model at evaluation gives 0–47% on LIBERO-10 (3 seeds), against 81–89% for a model trained without it: the standard ablation overstates each input's importance by 42–87 points. The same holds on CALVIN, where it reaches 1.30–1.71 avg_seq_len without one camera, against 3.88–4.27 for `subset`.
   - No model survives a changed task on LIBERO-PRO (0–12%).
   - Excluded runs and evaluations are listed under [missing or unusable results](#missing-or-unusable-libero-results).
 
@@ -186,7 +188,20 @@ Chain success by position, mean over the three seeds (%):
 | no dropout + proprio | 96.7 | 92.8 | 89.3 | 85.6 | 81.1 | 4.46 |
 
 - **Proprioception does not measurably change CALVIN performance.** The means differ by 0.01, the per-seed differences go both ways (+0.06, −0.15, +0.12), and the two models' seed ranges overlap (4.40–4.50 vs 4.35–4.55).
-- These runs cannot show how much the model relies on proprioception: without dropout it is only evaluated with it. On MimicGen, withholding proprioception from a model that always saw it cost about 30 points. The dropout run below answers it for CALVIN.
+**One input withheld at evaluation.** The same three no dropout + proprio models evaluated with each input withheld in turn (1000 chains per seed). avg_seq_len, mean ± sd over the seeds (5/5 %), against the dropout models with proprioception below (3 seeds each):
+
+| inputs | no dropout + proprio | per seed (42 / 5 / 100) | `subset` + proprio | Dirichlet keep 0.5 + proprio |
+|---|---|---|---|---|
+| all inputs | **4.455 ± 0.097** (81.1) | 4.467 / 4.353 / 4.545 | 4.453 ± 0.047 | 4.309 ± 0.029 |
+| proprio withheld | 3.733 ± 0.146 (56.6) | 3.825 / 3.809 / 3.564 | **4.408 ± 0.028** | 4.267 ± 0.062 |
+| static camera withheld | 1.711 ± 0.261 (6.3) | 1.972 / 1.450 / 1.711 | **3.880 ± 0.187** | 2.700 ± 0.154 |
+| wrist camera withheld | 1.303 ± 0.161 (6.2) | 1.485 / 1.180 / 1.244 | **4.267 ± 0.041** | 3.936 ± 0.286 |
+| language withheld | 0.044 ± 0.043 (0.0) | 0.032 / 0.091 / 0.008 | 0.164 ± 0.020 | 0.158 ± 0.022 |
+
+- **The model trained with proprioception relies on it, although adding it does not help.** Withholding it costs 0.72 avg_seq_len (4.46 → 3.73) and lowers 5/5 from 81% to 57%, on every seed. The dropout models lose 0.04–0.05.
+- **Without one camera it keeps only about a third of its performance.** Without the static camera it reaches 1.71, without the wrist camera 1.30. `subset` keeps 3.88 and 4.27 in the same conditions, so withholding an input from the conventional model overstates what that input is worth to a model that can do without it, as on LIBERO.
+  - Unlike `subset`, this model loses more from the wrist camera than from the static camera.
+- **Without language it fails, like every CALVIN model** (0.04).
 
 #### Dirichlet dropout with proprioception
 
@@ -376,25 +391,25 @@ All 26 MimicGen `core` datasets (12 task families, difficulty variants d0–d2),
 ### Modality combinations
 
 Success rate (%) per input combination, on 100 episodes per dataset × 26 datasets = 2600 per cell and seed (95% Wilson interval about ±1.9 points for one seed, ±1.4 for two pooled seeds).
-- The dropout runs use proprioception and are evaluated on every combination: Dirichlet keep 0.5 with proprio keep 0.5 and with proprio keep 1.0 (seeds 42 and 5 each, pooled), uniform keep 0.5 with proprio keep 0.5 (seeds 42 and 5, pooled), and Dirichlet keep 0.75 with proprio keep 0.5 (seed 42).
+- The dropout runs use proprioception and are evaluated on every combination: Dirichlet keep 0.5 with proprio keep 0.5 and with proprio keep 1.0 (seeds 42 and 5 each, pooled), uniform keep 0.5 with proprio keep 0.5 (seeds 42 and 5, pooled), Dirichlet keep 0.75 with proprio keep 0.5 (seed 42), and whole-modality dropout (`subset`) with proprioception, which keeps a random non-empty subset of the four inputs per sample (seed 100, `mimicgen_dropout/2026-11-06_13-28-35`; seeds 42 and 5 are still being evaluated).
 - The no-dropout runs are evaluated with all inputs only: without proprioception (seeds 42, 5 and 100: 53.2%, 48.4% and 52.0%) and with it (seeds 42, 5 and 100: 53.1%, 52.9% and 49.0%).
 
-| inputs | no dropout (3 seeds) | no dropout + proprio (3 seeds) | keep 0.5, proprio keep 0.5 (2 seeds) | keep 0.5, proprio keep 1.0 (2 seeds) | keep 0.75, proprio keep 0.5 | uniform keep 0.5, proprio keep 0.5 (2 seeds) |
-|---|---|---|---|---|---|---|
-| static+wrist+lang+proprio | n/a | **51.7** | 45.1 | 47.0 | 46.4 | 48.2 |
-| static+wrist+lang | 51.2 | n/a | 44.4 | 15.2 | 45.5 | 47.0 |
-| static+wrist+proprio | n/a | n/a | 45.6 | 46.7 | 47.3 | 41.4 |
-| static+wrist | n/a | n/a | 45.2 | 16.3 | 45.3 | 40.3 |
-| static+lang+proprio | n/a | n/a | 17.5 | 16.5 | 3.7 | 0.1 |
-| static+lang | n/a | n/a | 17.8 | 5.1 | 4.0 | 0.2 |
-| wrist+lang+proprio | n/a | n/a | 9.9 | 18.1 | 2.2 | 4.0 |
-| wrist+lang | n/a | n/a | 6.4 | 2.1 | 1.7 | 2.8 |
-| static+proprio | n/a | n/a | 17.3 | 16.2 | 2.6 | 0.2 |
-| static | n/a | n/a | 17.7 | 5.2 | 2.6 | 0.2 |
-| wrist+proprio | n/a | n/a | 8.9 | 16.1 | 4.3 | 2.2 |
-| wrist | n/a | n/a | 5.2 | 2.6 | 2.7 | 1.6 |
-| lang+proprio | n/a | n/a | 0.0 | 0.0 | 0.0 | 0.0 |
-| lang | n/a | n/a | 0.0 | 0.0 | 0.0 | 0.0 |
+| inputs | no dropout (3 seeds) | no dropout + proprio (3 seeds) | keep 0.5, proprio keep 0.5 (2 seeds) | keep 0.5, proprio keep 1.0 (2 seeds) | keep 0.75, proprio keep 0.5 | uniform keep 0.5, proprio keep 0.5 (2 seeds) | `subset` + proprio (seed 100) |
+|---|---|---|---|---|---|---|---|
+| static+wrist+lang+proprio | n/a | **51.7** | 45.1 | 47.0 | 46.4 | 48.2 | 48.8 |
+| static+wrist+lang | 51.2 | n/a | 44.4 | 15.2 | 45.5 | 47.0 | 41.7 |
+| static+wrist+proprio | n/a | n/a | 45.6 | 46.7 | 47.3 | 41.4 | 49.3 |
+| static+wrist | n/a | n/a | 45.2 | 16.3 | 45.3 | 40.3 | 43.0 |
+| static+lang+proprio | n/a | n/a | 17.5 | 16.5 | 3.7 | 0.1 | 29.4 |
+| static+lang | n/a | n/a | 17.8 | 5.1 | 4.0 | 0.2 | 27.8 |
+| wrist+lang+proprio | n/a | n/a | 9.9 | 18.1 | 2.2 | 4.0 | 22.4 |
+| wrist+lang | n/a | n/a | 6.4 | 2.1 | 1.7 | 2.8 | 10.8 |
+| static+proprio | n/a | n/a | 17.3 | 16.2 | 2.6 | 0.2 | 28.5 |
+| static | n/a | n/a | 17.7 | 5.2 | 2.6 | 0.2 | 27.1 |
+| wrist+proprio | n/a | n/a | 8.9 | 16.1 | 4.3 | 2.2 | 21.7 |
+| wrist | n/a | n/a | 5.2 | 2.6 | 2.7 | 1.6 | 10.4 |
+| lang+proprio | n/a | n/a | 0.0 | 0.0 | 0.0 | 0.0 | 0.1 |
+| lang | n/a | n/a | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
 
 **Seed spread.** The seeds of a model differ by up to about 6 points in a cell (keep 0.5 with proprio keep 1.0 without proprio: 18.0% vs 12.3%), more than the ±1.9-point sampling interval: no dropout 53.2%, 48.4% and 52.0%, keep 0.5 with proprio keep 0.5 46.6% vs 43.5%, keep 0.5 with proprio keep 1.0 48.4% vs 45.7%, uniform keep 0.5 46.9% vs 49.5% (all inputs). No dropout with proprioception gave nearly the same result for seeds 42 and 5 (53.1% vs 52.9%), but 49.0% for seed 100, mostly through `coffee_preparation_d0` (17%, against 71% and 91%). The largest seed difference is uniform's without language: 34.7% (seed 42) vs 48.1% (seed 5). Differences of a few points between single runs are therefore not meaningful.
 
@@ -411,6 +426,9 @@ Findings:
   - With keep 1.0 (proprioception always present in training), removing it collapses success: 47.0% → 15.2% with every other input (18.0% and 12.3% for the two seeds).
   - With keep 0.5 the model is indifferent to it (45.1% vs 44.4%).
   - With all inputs keep 1.0 is 2 points above keep 0.5 (47.0% vs 45.1%), less than the spread between seeds.
+- **Whole-modality dropout (`subset`) keeps much more without a camera** (seed 100 only, so far). Without the wrist camera it reaches 29.4% and without the static camera 22.4%, against 17.5% and 9.9% for Dirichlet keep 0.5 (2 seeds). With all inputs it scores 48.8%, between the Dirichlet runs (45.1–47.0%) and no dropout + proprio (51.7%).
+  - Unlike the other proprio keep 0.5 models it uses proprioception: withholding it costs 7 points with every other input (48.8% → 41.7%) and up to 12 without the static camera (22.4% → 10.8%).
+  - Dropping language costs nothing (49.3% without it).
 - **Proprioception alone does not clearly help.** Without dropout, adding it gives 51.7% against 51.2% without (3 seeds each), and the seeds overlap (49.0–53.1% with it, 48.4–53.2% without).
 - **Dropout with all inputs is 4–6 points below no dropout** (45.1–47.0% vs 51.2%). Every dropout seed is at or below the worst no-dropout seed (48.4%). The gap is largest on `threading_d0` (17–43% vs 49–62%) and `coffee_preparation_d1` (11–20% vs 25–35%; see the [appendix](#mimicgen-per-dataset-success-all-inputs)).
   - On `threading_d0` the no-dropout runs with proprioception are low too (37%, 42% and 29%), so that gap comes partly from proprioception, not from dropout.
@@ -523,12 +541,12 @@ Values below are mean ± sd over the three seeds, in %.
 | inputs | no dropout | no dropout + proprio | dropout, no proprio | dropout, proprio keep 1.0 | dropout, proprio keep 0.75 | dropout, proprio keep 0.5 | dropout, proprio keep 0.25 |
 |---|---|---|---|---|---|---|---|
 | static+wrist+lang+proprio | n/a | 91.5 ± 3.0 | n/a | 94.3 ± 1.4 | 92.8 ± 0.6 | 95.3 ± 2.0 | 94.3 ± 2.3 |
-| static+wrist+lang | 92.7 ± 1.8 | 51.2 ± 5.3 (2 seeds) | 94.3 ± 1.8 | 39.7 ± 12.7 | 94.5 ± 1.0 | 95.5 ± 1.8 | 95.3 ± 2.5 |
-| static+wrist+proprio | n/a | 0.0 (2 seeds) | n/a | 82.0 ± 1.3 | 84.3 ± 1.5 | 84.7 ± 1.9 | 84.5 ± 1.3 |
+| static+wrist+lang | 92.7 ± 1.8 | 52.0 ± 4.0 | 94.3 ± 1.8 | 39.7 ± 12.7 | 94.5 ± 1.0 | 95.5 ± 1.8 | 95.3 ± 2.5 |
+| static+wrist+proprio | n/a | 1.3 ± 2.3 | n/a | 82.0 ± 1.3 | 84.3 ± 1.5 | 84.7 ± 1.9 | 84.5 ± 1.3 |
 | static+wrist | n/a | n/a | 83.7 ± 1.9 | 34.2 ± 9.6 | 84.3 ± 0.3 | 85.5 ± 1.5 | 84.7 ± 3.7 |
-| static+lang+proprio | n/a | 0.0 (2 seeds) | n/a | 43.3 ± 8.4 | 43.7 ± 6.2 | 44.8 ± 5.3 | 41.0 ± 4.4 |
+| static+lang+proprio | n/a | 0.0 | n/a | 43.3 ± 8.4 | 43.7 ± 6.2 | 44.8 ± 5.3 | 41.0 ± 4.4 |
 | static+lang | n/a | n/a | 44.5 ± 4.3 | 3.7 ± 0.8 | 40.0 ± 3.9 | 43.8 ± 5.7 | 44.0 ± 6.4 |
-| wrist+lang+proprio | n/a | 52.5 ± 7.1 (2 seeds) | n/a | 87.3 ± 2.8 | 83.0 ± 3.8 | 82.7 ± 1.8 | 81.3 ± 3.3 |
+| wrist+lang+proprio | n/a | 47.0 ± 10.8 | n/a | 87.3 ± 2.8 | 83.0 ± 3.8 | 82.7 ± 1.8 | 81.3 ± 3.3 |
 | wrist+lang | n/a | n/a | 81.8 ± 4.1 | 18.8 ± 6.9 | 77.8 ± 6.0 | 82.8 ± 2.4 | 80.2 ± 3.0 |
 | static+proprio | n/a | n/a | n/a | 38.8 ± 12.9 | 39.5 ± 7.5 | 36.7 ± 7.8 | 37.3 ± 1.6 |
 | static | n/a | n/a | 39.7 ± 3.7 | 2.8 ± 1.0 | 34.2 ± 3.1 | 33.5 ± 8.4 | 36.5 ± 4.6 |
@@ -542,7 +560,7 @@ Values below are mean ± sd over the three seeds, in %.
   - The wrist camera alone gives 62–75%; the static camera alone gives 37–40%.
 - **Language matters much less than on CALVIN.** Without it the dropout models still reach 82–85% (static+wrist, with or without proprio). With all inputs they reach 92–96%.
 - **Proprioception must be dropped in training, as on MimicGen.** With proprio keep 1.0, every combination without proprioception collapses: 39.7% with both cameras and language, 3–34% otherwise. With keep 0.75, 0.5 and 0.25 the model is indifferent to it.
-- **No dropout + proprio with one input withheld** (seeds 42 and 100, `2026-09-18_16-47-17` and `16-47-49`; seed 5 is queued): 0% without language or the wrist camera, about half its all-inputs success without proprioception (51.2%) or the static camera (52.5%). Every dropout model keeps 81–96% in those two combinations.
+- **No dropout + proprio with one input withheld** (seeds 42, 5 and 100, `2026-09-18_16-47-17`, `16-47-22` and `16-47-49`): 0–1% without language or the wrist camera, about half its all-inputs success without proprioception (52.0%) or the static camera (47.0%; seeds 36.0–57.5%). Every dropout model keeps 81–96% in those two combinations.
 
 ### Whole-modality dropout (`subset`)
 
@@ -676,34 +694,49 @@ By physical perturbation size, all inputs, each range doubled as in [perturbatio
   - without the wrist camera, 70.8% on LIBERO-10 and 36.9% on LIBERO-Plus, against 41–45% and 19–23% for every Dirichlet model;
   - without the static camera, 80.6% on LIBERO-Plus, against 63–71%;
   - without proprioception it loses 6 points on LIBERO-Plus (79.9% vs 85.8%).
-  - A model trained without the wrist camera does better without it, though (87.8% and 48.8%; [below](#no-dropout-trained-without-one-input)).
+  - A model trained without the wrist camera does better without it, though (86.7% and 48.0%; [below](#no-dropout-trained-without-one-input)).
 - **Its gains are largest under camera-viewpoint changes and sensor noise** (81.5% and 94.7%, against at most 65.0% and 86.3% for the Dirichlet models). It is 3–4 points below the best Dirichlet model on language instructions and object layout.
 - **On LIBERO-PRO its object generalization is between the no-dropout and the Dirichlet models** (48.0% on replaced objects, against 52.5% without dropout and 37–44% for the Dirichlet models); seed 100 scores 40.5%, the other two 51–53%. Like every model, it fails on swapped positions and changed tasks (0.2% and 9.7%).
   - Paired with the same LIBERO-10 episodes, rewording changes success by at most 2.5 points with all inputs (−2.0, +2.5 and −0.5; p ≥ 0.27).
   - With proprio withheld, seed 42 drops 6.5 points (p = 0.004); seeds 5 and 100 do not (+2.0 and 0.0).
-- The combinations with two or more inputs withheld were not evaluated.
+- **Two or more inputs withheld** (seed 5 so far, `2026-11-04_21-51-57`; seeds 42 and 100 are being evaluated). LIBERO-10 (%), against Dirichlet keep 0.5 with proprio keep 0.5 (3 seeds):
+
+  | inputs | `subset`, seed 5 | Dirichlet keep 0.5 |
+  |---|---|---|
+  | static+wrist | 86.5 | 85.5 ± 1.5 |
+  | static+lang | **62.0** | 43.8 ± 5.7 |
+  | static+proprio | **62.0** | 36.7 ± 7.8 |
+  | static | **56.5** | 33.5 ± 8.4 |
+  | wrist+lang | 84.0 | 82.8 ± 2.4 |
+  | wrist+proprio | 76.0 | 69.8 ± 2.4 |
+  | wrist | 71.0 | 65.8 ± 1.6 |
+  | lang+proprio | 0.5 | 0.0 |
+  | lang | 0.0 | 0.0 |
+
+  - With the static camera as the only view it is 18–25 points above Dirichlet, as with only the wrist camera withheld (above). With the wrist camera it is 1–6 points above.
+  - Without either camera it fails like every model.
 
 ### No dropout, trained without one input
 
-The no-dropout recipe with proprioception, with one input removed from training altogether (`model.modalities.<input>=False`). It is evaluated only within its trained inputs: LIBERO-10 and LIBERO-PRO with all of them, LIBERO-Plus with all of them and with each one withheld. Seeds 42 / 5 / 100 without the static camera and without language; seeds 42 / 5 without the wrist camera, whose seed 100 is still being evaluated.
+The no-dropout recipe with proprioception, with one input removed from training altogether (`model.modalities.<input>=False`). It is evaluated only within its trained inputs: LIBERO-10 and LIBERO-PRO with all of them, LIBERO-Plus with all of them and with each one withheld. Seeds 42 / 5 / 100.
 - **Without the static camera** (group `libero_10_wrist+lang+proprio`): `2026-11-06_15-31-06` / `2026-11-06_15-31-13` / `2026-11-07_12-40-58`.
-- **Without the wrist camera** (group `libero_10_static+lang+proprio`): `2026-11-06_15-30-31` / `2026-11-06_15-30-36`.
+- **Without the wrist camera** (group `libero_10_static+lang+proprio`): `2026-11-06_15-30-31` / `2026-11-06_15-30-36` / `2026-11-07_12-41-07`.
 - **Without language** (group `libero_10_static+wrist+proprio`): `2026-11-06_15-30-50` / `2026-11-06_15-30-57` / `2026-11-07_12-41-16`.
 
-Each is compared with the models trained with every input and evaluated with the same input withheld: no dropout + proprio (LIBERO-10 for seeds 42 and 100 only), Dirichlet keep 0.5 with proprio keep 0.5 (3 seeds) and `subset` (3 seeds). No dropout + proprio with all inputs scores 91.5 ± 3.0% on LIBERO-10 and 72.2 ± 3.4% on LIBERO-Plus. Values in %, mean ± sd over seeds:
+Each is compared with the models trained with every input and evaluated with the same input withheld: no dropout + proprio, Dirichlet keep 0.5 with proprio keep 0.5 (3 seeds) and `subset` (3 seeds). No dropout + proprio with all inputs scores 91.5 ± 3.0% on LIBERO-10 and 72.2 ± 3.4% on LIBERO-Plus. Values in %, mean ± sd over seeds:
 
 | missing input | model | LIBERO-10 | LIBERO-Plus | LIBERO-Plus per seed |
 |---|---|---|---|---|
 | static camera | trained without it | 88.8 ± 3.8 | 74.0 ± 2.6 | 73.1 / 76.9 / 71.9 |
-| | no dropout + proprio, withheld | 52.5 ± 7.1 | 31.6 ± 3.9 | |
+| | no dropout + proprio, withheld | 47.0 ± 10.8 | 31.6 ± 3.9 | |
 | | Dirichlet, withheld | 82.7 ± 1.8 | 62.7 ± 5.7 | 56.3 / 67.0 / 64.9 |
 | | `subset`, withheld | 90.2 ± 3.3 | **80.6 ± 5.4** | 74.8 / 81.5 / 85.5 |
-| wrist camera | trained without it | **87.8 ± 1.1** | **48.8 ± 1.5** | 49.8 / 47.7 |
+| wrist camera | trained without it | **86.7 ± 2.0** | **48.0 ± 1.7** | 49.8 / 47.7 / 46.4 |
 | | no dropout + proprio, withheld | 0.0 | 0.0 | |
 | | Dirichlet, withheld | 44.8 ± 5.3 | 22.6 ± 5.7 | 21.4 / 28.9 / 17.6 |
 | | `subset`, withheld | 70.8 ± 3.2 | 36.9 ± 2.9 | 35.2 / 35.3 / 40.3 |
 | language | trained without it | 81.2 ± 2.4 | 64.1 ± 1.9 | 65.9 / 64.2 / 62.1 |
-| | no dropout + proprio, withheld | 0.0 | 1.0 ± 1.2 | |
+| | no dropout + proprio, withheld | 1.3 ± 2.3 | 1.0 ± 1.2 | |
 | | Dirichlet, withheld | 84.7 ± 1.9 | 70.7 ± 0.9 | 70.9 / 69.7 / 71.4 |
 | | `subset`, withheld | **85.8 ± 1.8** | **76.7 ± 2.0** | 74.4 / 77.7 / 78.0 |
 
@@ -711,21 +744,21 @@ LIBERO-Plus by category (%; T = trained without the input, D = Dirichlet with it
 
 | category | no static: T | D | S | no wrist: T | D | S | no language: T | D | S | all inputs |
 |---|---|---|---|---|---|---|---|---|---|---|
-| Camera Viewpoints | 92.9 | 75.7 | 92.6 | 14.3 | 3.5 | 9.0 | 38.7 | 41.4 | 72.0 | 43.3 |
-| Robot Initial States | 64.5 | 51.1 | 66.1 | 73.0 | 25.4 | 47.5 | 59.6 | 68.9 | 71.1 | 64.2 |
-| Language Instructions | 77.2 | 75.9 | 85.8 | 72.1 | 47.0 | 61.1 | 78.7 | 94.5 | 90.5 | 86.5 |
-| Light Conditions | 67.4 | 45.1 | 70.4 | 48.9 | 17.3 | 33.7 | 69.8 | 71.3 | 74.3 | 75.5 |
-| Background Textures | 40.9 | 44.5 | 72.8 | 54.7 | 28.0 | 40.1 | 70.6 | 69.7 | 72.7 | 80.2 |
-| Sensor Noise | 93.3 | 77.7 | 93.2 | 30.4 | 13.0 | 23.6 | 66.6 | 78.0 | 83.7 | 80.8 |
-| Objects Layout | 65.1 | 54.6 | 74.7 | 56.7 | 28.5 | 50.2 | 71.0 | 72.9 | 68.9 | 80.4 |
+| Camera Viewpoints | 92.9 | 75.7 | 92.6 | 13.4 | 3.5 | 9.0 | 38.7 | 41.4 | 72.0 | 43.3 |
+| Robot Initial States | 64.5 | 51.1 | 66.1 | 71.8 | 25.4 | 47.5 | 59.6 | 68.9 | 71.1 | 64.2 |
+| Language Instructions | 77.2 | 75.9 | 85.8 | 72.9 | 47.0 | 61.1 | 78.7 | 94.5 | 90.5 | 86.5 |
+| Light Conditions | 67.4 | 45.1 | 70.4 | 48.7 | 17.3 | 33.7 | 69.8 | 71.3 | 74.3 | 75.5 |
+| Background Textures | 40.9 | 44.5 | 72.8 | 54.4 | 28.0 | 40.1 | 70.6 | 69.7 | 72.7 | 80.2 |
+| Sensor Noise | 93.3 | 77.7 | 93.2 | 29.3 | 13.0 | 23.6 | 66.6 | 78.0 | 83.7 | 80.8 |
+| Objects Layout | 65.1 | 54.6 | 74.7 | 54.2 | 28.5 | 50.2 | 71.0 | 72.9 | 68.9 | 80.4 |
 
-LIBERO-Plus with a further input withheld (trained-without models): without the static camera, also withholding the wrist camera gives 0.0%, language 14.9%, proprioception 31.3%; without the wrist camera, also withholding the static camera 0.0%, language 0.2%, proprioception 20.4%; without language, also withholding the static camera 27.4%, the wrist camera 0.0%, proprioception 28.7%.
+LIBERO-Plus with a further input withheld (trained-without models): without the static camera, also withholding the wrist camera gives 0.0%, language 14.9%, proprioception 31.3%; without the wrist camera, also withholding the static camera 0.0%, language 0.1%, proprioception 21.8%; without language, also withholding the static camera 27.4%, the wrist camera 0.0%, proprioception 28.7%.
 
-LIBERO-PRO, all trained inputs (`lan` / `object` / `swap` / `task`): without the static camera 84.5 / 42.8 / 0.3 / 9.8, without the wrist camera 73.8 / 35.0 / 0.0 / 7.8, without language 80.8 / 44.7 / 0.0 / 10.2.
+LIBERO-PRO, all trained inputs (`lan` / `object` / `swap` / `task`): without the static camera 84.5 / 42.8 / 0.3 / 9.8, without the wrist camera 75.2 / 34.3 / 0.0 / 7.5, without language 80.8 / 44.7 / 0.0 / 10.2.
 
-- **A conventional model cannot simply be ablated.** Withholding an input from no dropout + proprio at evaluation gives 0–52.5% on LIBERO-10, while a model trained without that input gets 81–89%. The gap is the extrapolation bias of the standard ablation: 36 points for the static camera, 81–88 for the wrist camera and language (LIBERO-10, seeds 42 and 100 for the withheld evaluations).
+- **A conventional model cannot simply be ablated.** Withholding an input from no dropout + proprio at evaluation gives 0–47% on LIBERO-10, while a model trained without that input gets 81–89%. The gap is the extrapolation bias of the standard ablation: 42 points for the static camera, 80–87 for language and the wrist camera (LIBERO-10, 3 seeds each).
 - **The static camera can be left out of training at little cost on LIBERO-10** (88.8% vs 91.5%, within the seed spread), and it makes the model somewhat more robust on LIBERO-Plus (74.0% vs 72.2%). It is nearly unaffected by camera-viewpoint changes (92.9% vs 43.3%), which move the static camera, and by sensor noise (93.3% vs 80.8%), which then apparently barely affects the wrist view. It is worse under background textures (40.9% vs 80.2%), light and object layout. `subset` with the static camera withheld matches it on LIBERO-10 (90.2%), is better on LIBERO-Plus (80.6%), and handles background textures much better (72.8%).
-- **Without the wrist camera, a dedicated model is far better than any dropout model.** Trained without it, the model keeps 87.8% on LIBERO-10 and 48.8% on LIBERO-Plus; `subset` with it withheld gets 70.8% and 36.9%, Dirichlet 44.8% and 22.6%. LIBERO-Plus stays low for every model without the wrist camera: the static camera alone is weak under camera-viewpoint changes (14.3%) and sensor noise (30.4%).
+- **Without the wrist camera, a dedicated model is far better than any dropout model.** Trained without it, the model keeps 86.7% on LIBERO-10 and 48.0% on LIBERO-Plus; `subset` with it withheld gets 70.8% and 36.9%, Dirichlet 44.8% and 22.6%. LIBERO-Plus stays low for every model without the wrist camera: the static camera alone is weak under camera-viewpoint changes (13.4%) and sensor noise (29.3%).
 - **Language is worth keeping in training.** The model trained without it scores 81.2% on LIBERO-10, 10 points below the full-input model. Two LIBERO-10 tasks share the same scene (`LIVING_ROOM_SCENE2`), so without the instruction the model has to guess which one to do: seed 42 completes them 10 and 5 times out of 20, against 14–20 for every other task. Models trained with language and evaluated without it do better (`subset` 85.8% and 76.7%, Dirichlet 84.7% and 70.7%, against 81.2% and 64.1%). Rewording the instruction does not matter to it (Language Instructions 78.7%, close to its LIBERO-10 score), as expected for a model that never reads it.
 - **Without dropout, every remaining input is required:** withholding a further camera gives 0–27%, language 0–15%, proprioception 20–31%.
 
@@ -945,7 +978,7 @@ Success on all 2519 LIBERO-Plus tasks with one input removed at evaluation. In b
 | model | all inputs | no language | no static camera | no wrist camera | no proprio |
 |---|---|---|---|---|---|
 | no dropout | 68.3 ± 3.3 | 0.0 | 21.8 ± 6.7 | 0.0 | n/a |
-| no dropout + proprio | 72.2 ± 3.4 | 1.0 ± 1.2 (0.0, 2 seeds) | 31.6 ± 3.9 (52.5 ± 7.1, 2 seeds) | 0.0 (0.0, 2 seeds) | 39.7 ± 3.7 (51.2 ± 5.3, 2 seeds) |
+| no dropout + proprio | 72.2 ± 3.4 | 1.0 ± 1.2 (1.3 ± 2.3) | 31.6 ± 3.9 (47.0 ± 10.8) | 0.0 (0.0) | 39.7 ± 3.7 (52.0 ± 4.0) |
 | dropout, no proprio | 74.5 ± 3.4 | 65.3 ± 5.0 (83.7 ± 1.9) | 61.7 ± 6.3 (81.8 ± 4.1) | 21.0 ± 1.5 (44.5 ± 4.3) | n/a |
 | dropout, proprio keep 1.0 | 79.6 ± 2.7 | 73.0 ± 0.7 (82.0 ± 1.3) | 70.9 ± 4.3 (87.3 ± 2.8) | 20.2 ± 6.8 (43.3 ± 8.4) | 30.4 ± 6.7 (39.7 ± 12.7) |
 | dropout, proprio keep 0.75 | 78.5 ± 1.6 | 69.0 ± 4.4 (84.3 ± 1.5) | 67.2 ± 5.6 (83.0 ± 3.8) | 21.1 ± 2.4 (43.7 ± 6.2) | 76.5 ± 0.7 (94.5 ± 1.0) |
@@ -1029,10 +1062,11 @@ Training runs live under `$SAVES_DIR/train_logs/`, and closed-loop results in `<
 | CALVIN Dirichlet keep 0.5 + proprio, proprio keep 1.0, seeds 42 / 5 / 101 | `calvin_abcd_d_dropout/2026-11-03_13-49-49` / `2026-11-03_13-50-01` / `2026-11-04_15-07-22` |
 | CALVIN no dropout + proprio, seeds 42 / 5 | `calvin_abcd_d/2026-10-14_13-37-34` / `2026-10-14_13-37-42` (W&B runs `calvin_abcd_d_2026-10-14_13-37-34` / `_13-37-42`; trained on another host) |
 | CALVIN no dropout + proprio, seed 100 | `calvin_abcd_d/2026-10-27_22-04-48` |
+| CALVIN no dropout + proprio, one input withheld, seeds 42 / 5 / 100 | the same three runs, re-evaluated through the queue (`dist-sched add` with `PIPELINE_RESTORE=1 PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1`) |
 | CALVIN whole-modality dropout (`subset`) + proprio, seeds 42 / 5 / 100 | `calvin_abcd_d_dropout/2026-11-06_00-00-24` / `2026-11-06_00-00-18` / `2026-11-06_13-27-58` |
 | LIBERO whole-modality dropout (`subset`) + proprio, seeds 42 / 5 / 100 | `libero_10_dropout/2026-11-04_21-49-24` / `2026-11-04_21-51-57` / `2026-11-07_12-40-49` |
 | LIBERO no dropout + proprio, trained without the static camera, seeds 42 / 5 / 100 | `libero_10_wrist+lang+proprio/2026-11-06_15-31-06` / `2026-11-06_15-31-13` / `2026-11-07_12-40-58` |
-| LIBERO no dropout + proprio, trained without the wrist camera, seeds 42 / 5 | `libero_10_static+lang+proprio/2026-11-06_15-30-31` / `2026-11-06_15-30-36` |
+| LIBERO no dropout + proprio, trained without the wrist camera, seeds 42 / 5 / 100 | `libero_10_static+lang+proprio/2026-11-06_15-30-31` / `2026-11-06_15-30-36` / `2026-11-07_12-41-07` |
 | LIBERO no dropout + proprio, trained without language, seeds 42 / 5 / 100 | `libero_10_static+wrist+proprio/2026-11-06_15-30-50` / `2026-11-06_15-30-57` / `2026-11-07_12-41-16` |
 | MimicGen no dropout, seeds 42 / 5 / 100 | `mimicgen/2026-10-01_19-26-58` / `2026-10-27_02-50-24` / `2026-11-08_12-35-41` |
 | MimicGen no dropout + proprio, seeds 42 / 5 / 100 | `mimicgen/2026-10-16_16-38-11` / `2026-10-16_16-38-21` / `2026-11-06_16-39-08` |
@@ -1040,6 +1074,7 @@ Training runs live under `$SAVES_DIR/train_logs/`, and closed-loop results in `<
 | MimicGen dropout, proprio keep 0.5 / 1.0, seed 5 | `mimicgen_dropout/2026-10-19_11-46-58` / `2026-10-25_11-13-31` |
 | MimicGen uniform keep 0.5, proprio keep 0.5, seeds 42 / 5 | `mimicgen_dropout/2026-10-25_11-13-39` / `2026-11-04_20-35-43` |
 | MimicGen Dirichlet keep 0.75, proprio keep 0.5 | `mimicgen_dropout/2026-10-19_11-47-04` |
+| MimicGen whole-modality dropout (`subset`) + proprio, seed 100 | `mimicgen_dropout/2026-11-06_13-28-35` (seeds 42 / 5, `2026-11-06_00-00-29` / `2026-11-06_00-51-16`, are being evaluated) |
 
 **CALVIN and MimicGen runs on W&B (`multimodal_florence`) that are not reported:**
 - Smoke tests: `mimicgen_2026-10-01_18-57-09`, `mimicgen_dropout_2026-10-05_09-08-12` and `calvin_abcd_d_dropout_2026-10-10_10-56-08`.
@@ -1066,6 +1101,8 @@ CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-calvin-dropout batch_size=8 accumulate_g
     model.modality_dropout_strategy=subset seed=42           # whole-modality dropout
 CUDA_VISIBLE_DEVICES=0 ./run.sh open-loop-calvin /saves/train_logs/calvin_abcd_d_dropout/<ts>
 ./run.sh analyze-open-loop
+# re-evaluate an existing no-dropout run with each input withheld, through the distributed queue (on the master)
+./run.sh dist-sched add --run calvin_abcd_d_2026-10-14_13-37-34 --opts "PIPELINE_RESTORE=1 PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1"
 
 # MimicGen
 ./run.sh train-mimicgen
