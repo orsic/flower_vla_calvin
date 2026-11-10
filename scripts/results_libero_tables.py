@@ -543,8 +543,8 @@ def print_withheld_sizes(a: Artifacts) -> None:
     No paired original-LIBERO column: each model pairs with its own LIBERO-10 combination."""
     with_all = {
         "no dropout + proprio": MODELS["no dropout + proprio"],
-        "Dirichlet pk0.5": MODELS["dropout, proprio keep 0.5"],
-        "Dirichlet pk1.0": MODELS["dropout, proprio keep 1.0"],
+        "dropout, proprio keep 0.5": MODELS["dropout, proprio keep 0.5"],
+        "dropout, proprio keep 1.0": MODELS["dropout, proprio keep 1.0"],
         "subset": SUBSET_RUNS,
     }
     for v in ("static", "wrist", "lang", "proprio"):
@@ -552,7 +552,7 @@ def print_withheld_sizes(a: Artifacts) -> None:
         if v in FIXED_RUNS:
             groups[f"trained without {v}"] = (FIXED_RUNS[v], "libero_plus.csv", "severity_sr.csv")
         for m, runs in with_all.items():
-            groups[f"{m}, withheld"] = (runs, f"libero_plus_no_{v}.csv", f"severity_sr_no_{v}.csv")
+            groups[m] = (runs, f"libero_plus_no_{v}.csv", f"severity_sr_no_{v}.csv")
         seeds = {g: "/".join(map(str, runs)) for g, (runs, _, _) in groups.items()}
         print(f"\n## LIBERO-Plus with {v} withheld, by difficulty and perturbation size (%), mean ± sd over seeds")
         print("seeds: " + "; ".join(f"{g} {sd}" for g, sd in seeds.items()))
@@ -576,7 +576,7 @@ def print_withheld_sizes(a: Artifacts) -> None:
                 if doubled and not ranged:
                     continue
                 tab = size_table(sev, cat, lab, doubled=doubled, paired=False)
-                print(f"\n#### {title} (tasks summed: {tab.tasks.sum()} of {CAT_TASKS[cat]})\n" + md(tab))
+                print(f"\n#### {title}, {v} withheld (tasks summed: {tab.tasks.sum()} of {CAT_TASKS[cat]})\n" + md(tab))
 
 
 if __name__ == "__main__":
