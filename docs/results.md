@@ -1035,6 +1035,244 @@ The largest perturbations (doubled ranges; tasks per bin in brackets):
 | | joint offset 0.3–0.5 rad (275) | n/a | 34.9 | 63.0 | 30.3 | **66.2** |
 | | 3–5 distractors (128) | n/a | 36.5 | **76.6** | 28.1 | 59.9 |
 
+All doubled-range tables with one input withheld (adjacent fine bins merged in pairs, as in [Doubled ranges](#doubled-ranges); mean ± sd over seeds; no paired LIBERO-10 column, since each model pairs with a different input combination):
+
+**Static camera withheld**
+
+*Camera Viewpoints: rotation* (342 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| rot~0-30deg | 162 | 92.4 ± 9.7 | 34.8 ± 21.8 | 83.7 ± 16.1 | 86.6 ± 14.8 | 96.5 ± 6.1 |
+| rot~30-60deg | 121 | 91.2 ± 12.5 | 40.5 ± 9.3 | 75.8 ± 1.9 | 84.8 ± 26.2 | 92.3 ± 13.4 |
+| rot~60-90deg | 59 | 98.9 ± 2.0 | 47.5 ± 1.7 | 52.5 ± 44.9 | 68.9 ± 50.9 | 83.1 ± 29.4 |
+
+*Camera Viewpoints: distance scale* (77 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| scale~1.2-1.3x | 15 | 100.0 ± 0.0 | 77.8 ± 13.9 | 100.0 ± 0.0 | 77.8 ± 38.5 | 100.0 ± 0.0 |
+| scale~1.4-1.5x | 18 | 100.0 ± 0.0 | 33.3 ± 28.9 | 83.3 ± 28.9 | 83.3 ± 28.9 | 83.3 ± 28.9 |
+| scale~1.6-1.7x | 19 | 84.2 ± 27.3 | 36.8 ± 39.7 | 31.6 ± 18.2 | 73.7 ± 24.1 | 84.2 ± 27.3 |
+| scale~1.8-2.0x | 25 | 88.0 ± 20.8 | 9.3 ± 16.2 | 90.7 ± 16.2 | 84.0 ± 21.2 | 100.0 ± 0.0 |
+
+*Robot Initial States: initial joint offset* (393 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| 0.1-0.2rad | 118 | 85.0 ± 0.5 | 29.1 ± 2.7 | 72.0 ± 5.6 | 78.2 ± 3.8 | 85.9 ± 1.0 |
+| 0.3-0.5rad | 275 | 55.6 ± 1.0 | 19.3 ± 3.2 | 42.1 ± 2.8 | 49.6 ± 1.5 | 57.6 ± 1.5 |
+
+*Light Conditions: light severity* (274 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| severity~0.1-0.2 | 23 | 75.4 ± 2.5 | 34.8 ± 15.7 | 49.3 ± 23.9 | 72.5 ± 13.3 | 89.9 ± 6.6 |
+| severity~0.3-0.4 | 80 | 73.8 ± 3.3 | 35.8 ± 11.3 | 49.2 ± 5.1 | 58.8 ± 8.8 | 76.2 ± 14.2 |
+| severity~0.5-0.6 | 116 | 59.5 ± 4.8 | 29.6 ± 12.4 | 35.9 ± 11.2 | 47.7 ± 8.8 | 60.9 ± 13.3 |
+| severity~0.7-0.9 | 55 | 71.5 ± 6.4 | 30.9 ± 4.8 | 57.0 ± 10.3 | 63.6 ± 8.3 | 73.9 ± 20.0 |
+
+*Sensor Noise: level, pooled over the five noise types* (449 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| level 1-2 | 80 | 92.5 ± 6.5 | 41.7 ± 5.9 | 75.8 ± 15.4 | 80.0 ± 16.0 | 92.1 ± 13.7 |
+| level 3-4 | 88 | 93.6 ± 5.6 | 42.4 ± 7.6 | 75.4 ± 16.1 | 81.8 ± 16.7 | 92.8 ± 12.5 |
+| level 5-6 | 93 | 93.5 ± 5.6 | 38.7 ± 8.8 | 78.9 ± 13.9 | 83.9 ± 14.5 | 93.5 ± 11.2 |
+| level 7-8 | 93 | 93.5 ± 5.7 | 39.1 ± 10.4 | 79.6 ± 13.7 | 83.9 ± 13.5 | 93.9 ± 10.6 |
+| level 9-10 | 95 | 93.3 ± 5.8 | 39.3 ± 11.6 | 78.6 ± 14.0 | 83.9 ± 13.7 | 93.3 ± 11.5 |
+
+*Objects Layout: target displacement* (139 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| displacement_1-2 | 38 | 86.8 ± 4.6 | 32.5 ± 8.5 | 70.2 ± 5.5 | 84.2 ± 9.5 | 92.1 ± 0.0 |
+| displacement_3-5 | 101 | 76.9 ± 2.1 | 27.4 ± 1.5 | 56.8 ± 9.0 | 68.3 ± 3.6 | 80.5 ± 1.1 |
+
+*Objects Layout: number of distractors* (173 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| distractors_1-2 | 45 | 72.6 ± 3.4 | 31.1 ± 4.4 | 66.7 ± 3.8 | 74.8 ± 9.0 | 81.5 ± 1.3 |
+| distractors_3-5 | 128 | 46.6 ± 3.0 | 15.9 ± 6.0 | 44.0 ± 6.6 | 59.4 ± 7.9 | 62.5 ± 7.2 |
+
+**Wrist camera withheld**
+
+*Camera Viewpoints: rotation* (342 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| rot~0-30deg | 162 | 34.2 ± 4.3 | 0.0 ± 0.0 | 8.8 ± 2.3 | 10.9 ± 5.6 | 22.6 ± 4.2 |
+| rot~30-60deg | 121 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 |
+| rot~60-90deg | 59 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 |
+
+*Camera Viewpoints: distance scale* (77 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| scale~1.2-1.3x | 15 | 6.7 ± 0.0 | 0.0 ± 0.0 | 2.2 ± 3.8 | 2.2 ± 3.8 | 6.7 ± 0.0 |
+| scale~1.4-1.5x | 18 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 |
+| scale~1.6-1.7x | 19 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 |
+| scale~1.8-2.0x | 25 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 |
+
+*Robot Initial States: initial joint offset* (393 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| 0.1-0.2rad | 118 | 88.4 ± 2.1 | 0.0 ± 0.0 | 33.6 ± 13.9 | 31.4 ± 11.8 | 63.3 ± 5.0 |
+| 0.3-0.5rad | 275 | 64.6 ± 3.3 | 0.0 ± 0.0 | 21.9 ± 2.9 | 18.9 ± 5.9 | 40.7 ± 5.6 |
+
+*Light Conditions: light severity* (274 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| severity~0.1-0.2 | 23 | 72.5 ± 6.6 | 0.0 ± 0.0 | 30.4 ± 15.7 | 36.2 ± 10.9 | 50.7 ± 18.1 |
+| severity~0.3-0.4 | 80 | 52.5 ± 3.3 | 0.0 ± 0.0 | 19.2 ± 10.5 | 27.5 ± 7.8 | 40.0 ± 18.9 |
+| severity~0.5-0.6 | 116 | 44.0 ± 2.6 | 0.0 ± 0.0 | 14.4 ± 11.1 | 22.7 ± 7.8 | 28.4 ± 11.3 |
+| severity~0.7-0.9 | 55 | 43.0 ± 2.1 | 0.0 ± 0.0 | 15.2 ± 10.5 | 16.4 ± 10.1 | 28.5 ± 13.2 |
+
+*Sensor Noise: level, pooled over the five noise types* (449 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| level 1-2 | 80 | 81.2 ± 4.5 | 0.0 ± 0.0 | 40.4 ± 18.8 | 35.4 ± 13.7 | 57.1 ± 3.1 |
+| level 3-4 | 88 | 54.9 ± 4.0 | 0.0 ± 0.0 | 21.2 ± 8.1 | 22.0 ± 5.6 | 43.2 ± 3.4 |
+| level 5-6 | 93 | 17.9 ± 3.1 | 0.0 ± 0.0 | 7.2 ± 0.6 | 10.4 ± 4.5 | 21.9 ± 4.5 |
+| level 7-8 | 93 | 1.8 ± 1.2 | 0.0 ± 0.0 | 0.7 ± 0.6 | 1.4 ± 1.6 | 2.2 ± 1.1 |
+| level 9-10 | 95 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 0.0 ± 0.0 |
+
+*Objects Layout: target displacement* (139 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| displacement_1-2 | 38 | 92.1 ± 7.9 | 0.0 ± 0.0 | 49.1 ± 10.6 | 50.9 ± 18.5 | 76.3 ± 0.0 |
+| displacement_3-5 | 101 | 69.0 ± 3.2 | 0.0 ± 0.0 | 32.3 ± 5.6 | 28.7 ± 7.9 | 47.5 ± 3.6 |
+
+*Objects Layout: number of distractors* (173 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| distractors_1-2 | 45 | 64.4 ± 6.7 | 0.0 ± 0.0 | 43.7 ± 6.8 | 45.9 ± 9.0 | 62.2 ± 8.0 |
+| distractors_3-5 | 128 | 27.6 ± 8.3 | 0.0 ± 0.0 | 14.1 ± 4.9 | 20.6 ± 11.0 | 40.4 ± 0.5 |
+
+**Language withheld**
+
+*Camera Viewpoints: rotation* (342 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| rot~0-30deg | 162 | 53.1 ± 3.9 | 0.2 ± 0.4 | 57.0 ± 8.9 | 61.5 ± 9.8 | 74.5 ± 5.0 |
+| rot~30-60deg | 121 | 24.0 ± 18.2 | 0.3 ± 0.5 | 30.6 ± 11.7 | 52.3 ± 2.7 | 71.1 ± 5.8 |
+| rot~60-90deg | 59 | 12.4 ± 18.7 | 0.0 ± 0.0 | 6.8 ± 6.1 | 42.4 ± 10.6 | 56.5 ± 9.6 |
+
+*Camera Viewpoints: distance scale* (77 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| scale~1.2-1.3x | 15 | 48.9 ± 30.1 | 8.9 ± 15.4 | 66.7 ± 24.0 | 84.4 ± 15.4 | 91.1 ± 3.8 |
+| scale~1.4-1.5x | 18 | 66.7 ± 14.7 | 0.0 ± 0.0 | 63.0 ± 14.0 | 72.2 ± 5.6 | 92.6 ± 12.8 |
+| scale~1.6-1.7x | 19 | 86.0 ± 3.0 | 1.8 ± 3.0 | 66.7 ± 21.3 | 80.7 ± 21.3 | 94.7 ± 5.3 |
+| scale~1.8-2.0x | 25 | 16.0 ± 6.9 | 0.0 ± 0.0 | 25.3 ± 10.1 | 64.0 ± 16.0 | 53.3 ± 27.2 |
+
+*Robot Initial States: initial joint offset* (393 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| 0.1-0.2rad | 118 | 75.4 ± 5.3 | 0.0 ± 0.0 | 86.2 ± 1.3 | 85.3 ± 2.0 | 83.1 ± 2.2 |
+| 0.3-0.5rad | 275 | 52.8 ± 2.7 | 0.5 ± 0.8 | 61.5 ± 2.0 | 58.5 ± 1.9 | 65.9 ± 2.4 |
+
+*Light Conditions: light severity* (274 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| severity~0.1-0.2 | 23 | 82.6 ± 4.3 | 1.4 ± 2.5 | 75.4 ± 10.0 | 84.1 ± 2.5 | 82.6 ± 4.3 |
+| severity~0.3-0.4 | 80 | 71.2 ± 6.6 | 0.8 ± 1.4 | 72.5 ± 7.0 | 71.2 ± 9.0 | 72.5 ± 3.3 |
+| severity~0.5-0.6 | 116 | 68.1 ± 4.6 | 0.6 ± 1.0 | 64.9 ± 3.3 | 67.2 ± 4.8 | 71.8 ± 1.0 |
+| severity~0.7-0.9 | 55 | 66.1 ± 6.4 | 0.0 ± 0.0 | 81.2 ± 4.2 | 77.0 ± 6.4 | 78.8 ± 2.1 |
+
+*Sensor Noise: level, pooled over the five noise types* (449 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| level 1-2 | 80 | 84.2 ± 0.7 | 1.7 ± 1.4 | 97.9 ± 0.7 | 94.2 ± 1.4 | 95.8 ± 0.7 |
+| level 3-4 | 88 | 84.8 ± 2.9 | 1.1 ± 1.1 | 91.3 ± 2.9 | 86.4 ± 6.3 | 90.9 ± 2.0 |
+| level 5-6 | 93 | 71.7 ± 7.3 | 0.7 ± 1.2 | 82.4 ± 0.6 | 80.6 ± 2.2 | 82.1 ± 1.6 |
+| level 7-8 | 93 | 57.0 ± 1.1 | 0.0 ± 0.0 | 69.5 ± 3.8 | 67.4 ± 2.7 | 78.1 ± 1.6 |
+| level 9-10 | 95 | 39.3 ± 8.4 | 0.0 ± 0.0 | 52.6 ± 6.6 | 50.9 ± 8.5 | 74.0 ± 4.4 |
+
+*Objects Layout: target displacement* (139 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| displacement_1-2 | 38 | 81.6 ± 5.3 | 1.8 ± 3.0 | 85.1 ± 3.0 | 78.1 ± 6.6 | 79.8 ± 4.0 |
+| displacement_3-5 | 101 | 74.3 ± 1.7 | 1.3 ± 2.3 | 74.9 ± 2.5 | 74.6 ± 3.0 | 73.9 ± 2.5 |
+
+*Objects Layout: number of distractors* (173 tasks)
+
+| bin | tasks | trained without it | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| distractors_1-2 | 45 | 75.6 ± 4.4 | 2.2 ± 3.8 | 82.2 ± 4.4 | 83.7 ± 2.6 | 76.3 ± 1.3 |
+| distractors_3-5 | 128 | 63.8 ± 1.8 | 1.3 ± 2.3 | 64.3 ± 6.6 | 73.4 ± 4.7 | 59.1 ± 2.7 |
+
+**Proprio withheld**
+
+*Camera Viewpoints: rotation* (342 tasks)
+
+| bin | tasks | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|
+| rot~0-30deg | 162 | 40.7 ± 8.1 | 74.5 ± 10.0 | 30.2 ± 8.1 | 85.8 ± 1.2 |
+| rot~30-60deg | 121 | 6.9 ± 5.3 | 27.8 ± 7.4 | 11.0 ± 3.4 | 62.0 ± 6.0 |
+| rot~60-90deg | 59 | 11.3 ± 10.8 | 6.2 ± 5.4 | 1.1 ± 1.0 | 37.3 ± 18.3 |
+
+*Camera Viewpoints: distance scale* (77 tasks)
+
+| bin | tasks | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|
+| scale~1.2-1.3x | 15 | 35.6 ± 16.8 | 84.4 ± 21.4 | 55.6 ± 16.8 | 95.6 ± 7.7 |
+| scale~1.4-1.5x | 18 | 22.2 ± 14.7 | 46.3 ± 22.5 | 7.4 ± 12.8 | 46.3 ± 8.5 |
+| scale~1.6-1.7x | 19 | 19.3 ± 13.2 | 66.7 ± 13.2 | 33.3 ± 24.9 | 42.1 ± 10.5 |
+| scale~1.8-2.0x | 25 | 0.0 ± 0.0 | 14.7 ± 10.1 | 6.7 ± 8.3 | 26.7 ± 4.6 |
+
+*Robot Initial States: initial joint offset* (393 tasks)
+
+| bin | tasks | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|
+| 0.1-0.2rad | 118 | 55.1 ± 9.2 | 95.2 ± 1.0 | 44.4 ± 9.9 | 91.2 ± 4.3 |
+| 0.3-0.5rad | 275 | 34.9 ± 6.6 | 63.0 ± 2.1 | 30.3 ± 5.3 | 66.2 ± 1.1 |
+
+*Light Conditions: light severity* (274 tasks)
+
+| bin | tasks | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|
+| severity~0.1-0.2 | 23 | 47.8 ± 19.0 | 89.9 ± 2.5 | 23.2 ± 19.6 | 91.3 ± 8.7 |
+| severity~0.3-0.4 | 80 | 42.9 ± 9.5 | 80.0 ± 3.3 | 23.3 ± 12.0 | 82.1 ± 6.3 |
+| severity~0.5-0.6 | 116 | 26.4 ± 12.4 | 67.2 ± 4.6 | 18.4 ± 11.8 | 70.7 ± 3.8 |
+| severity~0.7-0.9 | 55 | 35.8 ± 9.3 | 85.5 ± 7.3 | 20.0 ± 12.7 | 83.0 ± 1.0 |
+
+*Sensor Noise: level, pooled over the five noise types* (449 tasks)
+
+| bin | tasks | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|
+| level 1-2 | 80 | 59.2 ± 4.7 | 94.6 ± 4.4 | 46.2 ± 8.8 | 97.9 ± 2.6 |
+| level 3-4 | 88 | 47.0 ± 6.3 | 93.9 ± 4.6 | 40.9 ± 9.7 | 97.3 ± 1.3 |
+| level 5-6 | 93 | 41.2 ± 1.6 | 88.5 ± 3.5 | 31.5 ± 8.6 | 92.1 ± 3.1 |
+| level 7-8 | 93 | 29.0 ± 2.2 | 73.5 ± 7.2 | 23.3 ± 11.0 | 85.3 ± 3.3 |
+| level 9-10 | 95 | 15.4 ± 2.4 | 56.8 ± 10.0 | 7.4 ± 3.6 | 77.2 ± 3.2 |
+
+*Objects Layout: target displacement* (139 tasks)
+
+| bin | tasks | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|
+| displacement_1-2 | 38 | 57.9 ± 4.6 | 100.0 ± 0.0 | 48.2 ± 11.9 | 96.5 ± 6.1 |
+| displacement_3-5 | 101 | 45.2 ± 3.2 | 86.5 ± 1.5 | 33.3 ± 11.0 | 86.5 ± 4.0 |
+
+*Objects Layout: number of distractors* (173 tasks)
+
+| bin | tasks | no dropout + proprio | Dirichlet, proprio keep 0.5 | Dirichlet, proprio keep 1.0 | `subset` |
+|---|---|---|---|---|---|
+| distractors_1-2 | 45 | 42.2 ± 2.2 | 91.9 ± 5.6 | 37.8 ± 7.7 | 79.3 ± 7.1 |
+| distractors_3-5 | 128 | 36.5 ± 10.5 | 76.6 ± 3.4 | 28.1 ± 12.6 | 59.9 ± 2.7 |
+
 - **Camera-viewpoint changes and sensor noise act on the static camera.** Without the static camera they barely matter: the model trained without it keeps 91–99% in every doubled camera-rotation range and 92–94% at every noise level, and `subset` keeps 83–97% and 92–94%. With only the static camera (wrist withheld), every model gets 0% at rotations of 30° or more and 0–2% from noise level 7 on.
   - So the all-inputs gains on these categories (above) come from the models leaning on the wrist camera when the static view is disturbed.
 - **Without the wrist camera, the model trained without it is ahead at every level** and on the robot's initial pose (65% vs 41% for `subset` at 0.3–0.5 rad), but `subset` is ahead with three to five distractors (40% vs 28%).
