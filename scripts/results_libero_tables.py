@@ -231,10 +231,11 @@ def size_table(
     cat: str,
     lab: Callable[[str], Optional[str]],
     doubled: bool,
+    paired: bool = True,
 ) -> pd.DataFrame:
     """One perturbation-size table: per bin (or doubled group), task count, mean ± sd
-    over seeds per model (one column per key of sev), and the paired original-LIBERO
-    success pooled over all runs."""
+    over seeds per model (one column per key of sev), and, if paired, the paired
+    original-LIBERO success pooled over all runs."""
     rows: Dict[str, List[pd.DataFrame]] = {}
     order: List[str] = []
     for m in sev:
@@ -259,7 +260,8 @@ def size_table(
         for m, ps in rows.items():
             assert all(int(g.loc[r, "n"]) == t[r]["tasks"] for g in ps), (cat, r, m)
             t[r][m] = ms([g.loc[r, "successes"] / g.loc[r, "n"] for g in ps])
-        t[r]["orig, paired"] = f"{100 * allruns.loc[r, 'orig_successes'] / allruns.loc[r, 'orig_n']:.0f}"
+        if paired:
+            t[r]["orig, paired"] = f"{100 * allruns.loc[r, 'orig_successes'] / allruns.loc[r, 'orig_n']:.0f}"
     return pd.DataFrame(t).T.rename_axis("bin")
 
 
@@ -399,6 +401,7 @@ def main() -> None:
 
     print_subset(a)
     print_fixed(a)
+    print_withheld_sizes(a)
 
 
 def print_subset(a: Artifacts) -> None:
@@ -531,6 +534,49 @@ def print_fixed(a: Artifacts) -> None:
         print("\n### LIBERO-PRO, native")
         nat = [pd.read_csv(a.path(r, "pro_sr.csv")).query("libero_variant == 'pro'").set_index("perturbation").success_rate for r in runs.values()]
         print(md(pd.DataFrame({k: {f"trained without {x}": ms([n[k] for n in nat])} for k in ("lan", "object", "swap", "task")}).rename_axis("")))
+
+
+def print_withheld_sizes(a: Artifacts) -> None:
+    """LIBERO-Plus by difficulty level and physical perturbation size with one input
+    withheld at evaluation (severity_sr_no_<input>.csv), for the models trained with every
+    input, next to the model trained without that input (FIXED_RUNS) where there is one.
+    No paired original-LIBERO column: each model pairs with its own LIBERO-10 combination."""
+    with_all = {
+        "no dropout + proprio": MODELS["no dropout + proprio"],
+        "Dirichlet pk0.5": MODELS["dropout, proprio keep 0.5"],
+        "Dirichlet pk1.0": MODELS["dropout, proprio keep 1.0"],
+        "subset": SUBSET_RUNS,
+    }
+    for v in ("static", "wrist", "lang", "proprio"):
+        groups = {}
+        if v in FIXED_RUNS:
+            groups[f"trained without {v}"] = (FIXED_RUNS[v], "libero_plus.csv", "severity_sr.csv")
+        for m, runs in with_all.items():
+            groups[f"{m}, withheld"] = (runs, f"libero_plus_no_{v}.csv", f"severity_sr_no_{v}.csv")
+        seeds = {g: "/".join(map(str, runs)) for g, (runs, _, _) in groups.items()}
+        print(f"\n## LIBERO-Plus with {v} withheld, by difficulty and perturbation size (%), mean ± sd over seeds")
+        print("seeds: " + "; ".join(f"{g} {sd}" for g, sd in seeds.items()))
+
+        print("\n### By difficulty level")
+        t = {}
+        for g, (runs, member, _) in groups.items():
+            ds = [a.load(r, member) for r in runs.values()]
+            assert all(len(d) == 2519 for d in ds), g
+            t[g] = {lv: ms([d[d.difficulty_level == lv].success.mean() for d in ds]) for lv in range(1, 6)}
+            t[g]["all"] = ms([d.success.mean() for d in ds])
+        print(md(pd.DataFrame(t).T.rename_axis("model")))
+
+        sev = {
+            g: {sd: pd.read_csv(a.path(r, member)).query("axis == 'severity'") for sd, r in runs.items()}
+            for g, (runs, _, member) in groups.items()
+        }
+        for doubled in (False, True):
+            print(f"\n### By physical perturbation size{', doubled ranges' if doubled else ''}")
+            for cat, title, lab, ranged in GROUPS.values():
+                if doubled and not ranged:
+                    continue
+                tab = size_table(sev, cat, lab, doubled=doubled, paired=False)
+                print(f"\n#### {title} (tasks summed: {tab.tasks.sum()} of {CAT_TASKS[cat]})\n" + md(tab))
 
 
 if __name__ == "__main__":

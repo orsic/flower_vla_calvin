@@ -981,6 +981,67 @@ The same data with each range doubled: adjacent fine bins merged in pairs from t
 - **Light severity has no monotone effect.** Success is lowest at severity 0.5–0.6 (64–73%) and recovers at 0.7–0.9 (70–90%).
 - **The camera distance scale is too sparse to read** (15–25 tasks per doubled group, seed sd up to 36 points). Only the largest scale, 1.8–2.0×, clearly hurts: 11–37% for every model except proprio keep 1.0 (57%).
 
+#### With one input withheld
+
+The same breakdown with one input withheld at evaluation, from each run's `severity_sr_no_<input>.csv` and `libero_plus_no_<input>.csv`. The models trained with every input, all 3 seeds, are compared with the no-dropout model trained without that input (3 seeds; there is none trained without proprioception):
+- no dropout + proprio;
+- Dirichlet keep 0.5 with proprio keep 0.5 and with proprio keep 1.0;
+- `subset`.
+
+`./run.sh results-libero-tables` prints every fine-bin and doubled-range table; below are the difficulty levels and the largest perturbations. Values in %, mean over seeds.
+
+By LIBERO-Plus difficulty level (1 = mildest):
+
+| withheld | model | 1 | 2 | 3 | 4 | 5 | all |
+|---|---|---|---|---|---|---|---|
+| static camera | trained without it | 77.4 | 80.4 | 78.1 | 73.1 | 65.9 | 74.0 |
+| | no dropout + proprio | 30.2 | 36.6 | 33.6 | 32.6 | 27.1 | 31.6 |
+| | Dirichlet, proprio keep 0.5 | 67.6 | 67.0 | 64.5 | 64.3 | 55.1 | 62.7 |
+| | Dirichlet, proprio keep 1.0 | 76.3 | 77.0 | 72.9 | 70.6 | 63.1 | 70.9 |
+| | `subset` | **83.2** | **85.4** | **82.8** | **82.1** | **73.7** | **80.6** |
+| wrist camera | trained without it | **66.8** | **63.8** | **60.4** | **43.3** | **23.4** | **48.0** |
+| | no dropout + proprio | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| | Dirichlet, proprio keep 0.5 | 31.0 | 27.7 | 28.8 | 23.3 | 10.5 | 22.6 |
+| | Dirichlet, proprio keep 1.0 | 29.6 | 25.3 | 27.3 | 18.7 | 8.3 | 20.2 |
+| | `subset` | 54.2 | 50.7 | 44.1 | 32.8 | 17.4 | 36.9 |
+| language | trained without it | 70.8 | 68.5 | 71.3 | 68.3 | 49.7 | 64.1 |
+| | no dropout + proprio | 1.7 | 1.6 | 1.4 | 0.7 | 0.2 | 1.0 |
+| | Dirichlet, proprio keep 0.5 | 74.6 | 74.5 | 78.2 | 78.1 | 55.6 | 70.7 |
+| | Dirichlet, proprio keep 1.0 | **75.8** | **75.6** | 80.2 | 78.1 | 61.2 | 73.0 |
+| | `subset` | 72.3 | 73.8 | **80.3** | **83.3** | **73.5** | **76.7** |
+| proprio | no dropout + proprio | 52.4 | 47.3 | 44.8 | 41.8 | 23.5 | 39.7 |
+| | Dirichlet, proprio keep 0.5 | **89.5** | 89.0 | 85.2 | 77.9 | 52.4 | 75.8 |
+| | Dirichlet, proprio keep 1.0 | 41.5 | 37.0 | 34.8 | 32.6 | 15.8 | 30.4 |
+| | `subset` | 84.9 | **89.4** | **85.3** | **83.7** | **64.9** | **79.9** |
+
+The largest perturbations (doubled ranges; tasks per bin in brackets):
+
+| withheld | perturbation | trained without it | no dropout + proprio | Dirichlet, pk 0.5 | Dirichlet, pk 1.0 | `subset` |
+|---|---|---|---|---|---|---|
+| static camera | camera rotation 60–90° (59) | **98.9** | 47.5 | 52.5 | 68.9 | 83.1 |
+| | sensor noise level 9–10 (95) | **93.3** | 39.3 | 78.6 | 83.9 | **93.3** |
+| | joint offset 0.3–0.5 rad (275) | 55.6 | 19.3 | 42.1 | 49.6 | **57.6** |
+| | 3–5 distractors (128) | 46.6 | 15.9 | 44.0 | 59.4 | **62.5** |
+| wrist camera | camera rotation 0–30° (162) | **34.2** | 0.0 | 8.8 | 10.9 | 22.6 |
+| | sensor noise level 5–6 (93) | 17.9 | 0.0 | 7.2 | 10.4 | **21.9** |
+| | joint offset 0.3–0.5 rad (275) | **64.6** | 0.0 | 21.9 | 18.9 | 40.7 |
+| | 3–5 distractors (128) | 27.6 | 0.0 | 14.1 | 20.6 | **40.4** |
+| language | camera rotation 60–90° (59) | 12.4 | 0.0 | 6.8 | 42.4 | **56.5** |
+| | sensor noise level 9–10 (95) | 39.3 | 0.0 | 52.6 | 50.9 | **74.0** |
+| | joint offset 0.3–0.5 rad (275) | 52.8 | 0.5 | 61.5 | 58.5 | **65.9** |
+| | 3–5 distractors (128) | 63.8 | 1.3 | 64.3 | **73.4** | 59.1 |
+| proprio | camera rotation 60–90° (59) | n/a | 11.3 | 6.2 | 1.1 | **37.3** |
+| | sensor noise level 9–10 (95) | n/a | 15.4 | 56.8 | 7.4 | **77.2** |
+| | joint offset 0.3–0.5 rad (275) | n/a | 34.9 | 63.0 | 30.3 | **66.2** |
+| | 3–5 distractors (128) | n/a | 36.5 | **76.6** | 28.1 | 59.9 |
+
+- **Camera-viewpoint changes and sensor noise act on the static camera.** Without the static camera they barely matter: the model trained without it keeps 91–99% in every doubled camera-rotation range and 92–94% at every noise level, and `subset` keeps 83–97% and 92–94%. With only the static camera (wrist withheld), every model gets 0% at rotations of 30° or more and 0–2% from noise level 7 on.
+  - So the all-inputs gains on these categories (above) come from the models leaning on the wrist camera when the static view is disturbed.
+- **Without the wrist camera, the model trained without it is ahead at every level** and on the robot's initial pose (65% vs 41% for `subset` at 0.3–0.5 rad), but `subset` is ahead with three to five distractors (40% vs 28%).
+- **Without language, `subset` holds up best under the largest perturbations:** 57% at 60–90° camera rotation and 74% at noise levels 9–10, against 12% and 39% for the model trained without language. At difficulty level 5 it keeps 73.5%, against 50–61% for the other models (no dropout + proprio: 0%). Dirichlet with proprio keep 1.0 is best with many distractors (73%).
+- **Without proprioception, `subset` and Dirichlet keep 0.5 are close on mild perturbations (85–90% each at difficulty levels 1–3); `subset` keeps far more at large ones.** At 60–90° it keeps 37% (Dirichlet 6%), at noise levels 9–10 77% (57%). Dirichlet keep 0.5 is better with many distractors (77% vs 60%). Proprio keep 1.0 and no dropout + proprio fall at every size.
+- **The conventional model withheld is low everywhere,** not just under large perturbations: 27–37% at every difficulty level without the static camera, and 0–2% without the wrist camera or language at any size.
+
 ### LIBERO-Plus with one modality withheld
 
 Success on all 2519 LIBERO-Plus tasks with one input removed at evaluation. In brackets: the same combination on unperturbed LIBERO-10.

@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from results_libero_tables import merge_bins, merged_counts  # noqa: E402
+from results_libero_tables import merge_bins, merged_counts, size_table  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -48,3 +48,35 @@ def test_merged_counts_sum_counts_then_divide():
     assert m.loc["x–y", "n"] == 20
     assert m.loc["x–y", "successes"] / m.loc["x–y", "n"] == pytest.approx(0.5)  # not mean(0.9, 0.1)
     assert m.loc["z", "orig_successes"] == 2
+
+
+def _sev(successes):
+    """A severity_sr.csv slice: one category, two size bins, 10 tasks each."""
+    return pd.DataFrame(
+        {
+            "category": ["Light Conditions"] * 2,
+            "bin": ["severity~0.1", "severity~0.2"],
+            "successes": successes,
+            "n": [10, 10],
+            "orig_successes": [9, 9],
+            "orig_n": [10, 10],
+        }
+    )
+
+
+def test_size_table_pairs_with_original_libero_by_default():
+    sev = {"m": {42: _sev([5, 3]), 5: _sev([7, 1])}}
+    tab = size_table(sev, "Light Conditions", lambda b: b, doubled=False)
+    assert list(tab.columns) == ["tasks", "m", "orig, paired"]
+    assert tab.loc["severity~0.1", "m"] == "60.0 ± 14.1"
+    assert tab.loc["severity~0.1", "orig, paired"] == "90"
+
+
+def test_size_table_without_pairing_omits_the_pooled_original_column():
+    # models withheld on different inputs pair with different LIBERO-10 combinations,
+    # so their original-LIBERO counts must not be pooled into one column
+    sev = {"a": {42: _sev([5, 3])}, "b": {42: _sev([1, 0])}}
+    tab = size_table(sev, "Light Conditions", lambda b: b, doubled=True, paired=False)
+    assert list(tab.columns) == ["tasks", "a", "b"]
+    assert tab.loc["severity~0.1-0.2", "tasks"] == 20
+    assert tab.loc["severity~0.1-0.2", "a"] == "40.0"
