@@ -44,7 +44,7 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
   - Without dropout, withholding language or the wrist camera gives 0%. The dropout models keep 62–73% on LIBERO-Plus without language or the static camera.
   - Whole-modality dropout (`subset`, 3 seeds) is the most robust: 85.8% on LIBERO-Plus with all inputs, and the best model trained with every input when any single input is withheld (e.g. 37% vs 19–23% without the wrist camera). With the static camera as the only view it keeps 55–62% on LIBERO-10, against 34–44% for Dirichlet keep 0.5.
   - No-dropout models trained without one input: without the static camera (3 seeds) they lose little on LIBERO-10 (88.8%) and are somewhat more robust on LIBERO-Plus (74.0% vs 72.2%), but `subset` with that camera withheld does as well (90.2%, 80.6%). Without the wrist camera (3 seeds), the dedicated model (86.7%, 48.0%) is far better than `subset` with it withheld (70.8%, 36.9%). Without language (3 seeds) it loses 10 points on LIBERO-10 (81.2%) and is below both dropout models evaluated without language.
-  - Withholding an input from the conventional no dropout + proprio model at evaluation gives 0–47% on LIBERO-10 (3 seeds), against 81–89% for a model trained without it: the standard ablation overstates each input's importance by 42–87 points. The same holds on CALVIN, where it reaches 1.30–1.71 avg_seq_len without one camera, against 3.88–4.27 for `subset` and 4.52–4.54 for a model trained without that camera (seed 42). On MimicGen (seed 42) it gives 0–24%, including 0% without language, which MimicGen hardly needs.
+  - Withholding an input from the conventional no dropout + proprio model at evaluation gives 0–47% on LIBERO-10 (3 seeds), against 81–89% for a model trained without it: the standard ablation overstates each input's importance by 42–87 points. The same holds on CALVIN, where it reaches 1.30–1.71 avg_seq_len without one camera, against 3.88–4.27 for `subset` and 4.52–4.54 for a model trained without that camera (seed 42). On MimicGen (seeds 42 and 100) it gives 0–24%, including 0% without language, which MimicGen hardly needs.
   - No model survives a changed task on LIBERO-PRO (0–12%).
   - Excluded runs and evaluations are listed under [missing or unusable results](#missing-or-unusable-libero-results).
 
@@ -394,17 +394,17 @@ All 26 MimicGen `core` datasets (12 task families, difficulty variants d0–d2),
 
 Success rate (%) per input combination, on 100 episodes per dataset × 26 datasets = 2600 per cell and seed (95% Wilson interval about ±1.9 points for one seed, ±1.4 for two pooled seeds).
 - The dropout runs use proprioception and are evaluated on every combination: Dirichlet keep 0.5 with proprio keep 0.5 and with proprio keep 1.0 (seeds 42 and 5 each, pooled), uniform keep 0.5 with proprio keep 0.5 (seeds 42 and 5, pooled), Dirichlet keep 0.75 with proprio keep 0.5 (seed 42), and whole-modality dropout (`subset`) with proprioception, which keeps a random non-empty subset of the four inputs per sample (seed 100, `mimicgen_dropout/2026-11-06_13-28-35`; seeds 42 and 5 are still being evaluated).
-- The no-dropout runs are evaluated with all inputs: without proprioception (seeds 42, 5 and 100: 53.2%, 48.4% and 52.0%) and with it (seeds 42, 5 and 100: 53.1%, 52.9% and 49.0%). No dropout + proprio seed 42 is also evaluated with each input withheld; seeds 5 and 100 are being evaluated.
+- The no-dropout runs are evaluated with all inputs: without proprioception (seeds 42, 5 and 100: 53.2%, 48.4% and 52.0%) and with it (seeds 42, 5 and 100: 53.1%, 52.9% and 49.0%). No dropout + proprio seeds 42 and 100 are also evaluated with each input withheld (pooled, 5200 episodes per cell); seed 5 is being evaluated.
 
 | inputs | no dropout (3 seeds) | no dropout + proprio (3 seeds) | keep 0.5, proprio keep 0.5 (2 seeds) | keep 0.5, proprio keep 1.0 (2 seeds) | keep 0.75, proprio keep 0.5 | uniform keep 0.5, proprio keep 0.5 (2 seeds) | `subset` + proprio (seed 100) |
 |---|---|---|---|---|---|---|---|
 | static+wrist+lang+proprio | n/a | **51.7** | 45.1 | 47.0 | 46.4 | 48.2 | 48.8 |
-| static+wrist+lang | 51.2 | 23.9 (seed 42) | 44.4 | 15.2 | 45.5 | 47.0 | 41.7 |
-| static+wrist+proprio | n/a | 0.0 (seed 42) | 45.6 | 46.7 | 47.3 | 41.4 | 49.3 |
+| static+wrist+lang | 51.2 | 23.5 (2 seeds) | 44.4 | 15.2 | 45.5 | 47.0 | 41.7 |
+| static+wrist+proprio | n/a | 0.0 (2 seeds) | 45.6 | 46.7 | 47.3 | 41.4 | 49.3 |
 | static+wrist | n/a | n/a | 45.2 | 16.3 | 45.3 | 40.3 | 43.0 |
-| static+lang+proprio | n/a | 1.7 (seed 42) | 17.5 | 16.5 | 3.7 | 0.1 | 29.4 |
+| static+lang+proprio | n/a | 1.0 (2 seeds) | 17.5 | 16.5 | 3.7 | 0.1 | 29.4 |
 | static+lang | n/a | n/a | 17.8 | 5.1 | 4.0 | 0.2 | 27.8 |
-| wrist+lang+proprio | n/a | 2.9 (seed 42) | 9.9 | 18.1 | 2.2 | 4.0 | 22.4 |
+| wrist+lang+proprio | n/a | 3.0 (2 seeds) | 9.9 | 18.1 | 2.2 | 4.0 | 22.4 |
 | wrist+lang | n/a | n/a | 6.4 | 2.1 | 1.7 | 2.8 | 10.8 |
 | static+proprio | n/a | n/a | 17.3 | 16.2 | 2.6 | 0.2 | 28.5 |
 | static | n/a | n/a | 17.7 | 5.2 | 2.6 | 0.2 | 27.1 |
@@ -431,7 +431,7 @@ Findings:
 - **Whole-modality dropout (`subset`) keeps much more without a camera** (seed 100 only, so far). Without the wrist camera it reaches 29.4% and without the static camera 22.4%, against 17.5% and 9.9% for Dirichlet keep 0.5 (2 seeds). With all inputs it scores 48.8%, between the Dirichlet runs (45.1–47.0%) and no dropout + proprio (51.7%).
   - Unlike the other proprio keep 0.5 models it uses proprioception: withholding it costs 7 points with every other input (48.8% → 41.7%) and up to 12 without the static camera (22.4% → 10.8%).
   - Dropping language costs nothing (49.3% without it).
-- **The conventional model cannot be ablated on MimicGen either** (no dropout + proprio, seed 42). Withholding either camera gives 2–3%, proprioception 23.9%, and language 0.0%, although the Dirichlet models show that MimicGen hardly needs language. The model has never seen an input without language tokens and fails on it, so this ablation would wrongly call language essential.
+- **The conventional model cannot be ablated on MimicGen either** (no dropout + proprio, seeds 42 and 100). Withholding either camera gives 1–3%, proprioception 23.5% (23.9% and 23.0%), and language 0.0% on both seeds, although the Dirichlet models show that MimicGen hardly needs language. The model has never seen an input without language tokens and fails on it, so this ablation would wrongly call language essential.
 - **Proprioception alone does not clearly help.** Without dropout, adding it gives 51.7% against 51.2% without (3 seeds each), and the seeds overlap (49.0–53.1% with it, 48.4–53.2% without).
 - **Dropout with all inputs is 4–6 points below no dropout** (45.1–47.0% vs 51.2%). Every dropout seed is at or below the worst no-dropout seed (48.4%). The gap is largest on `threading_d0` (17–43% vs 49–62%) and `coffee_preparation_d1` (11–20% vs 25–35%; see the [appendix](#mimicgen-per-dataset-success-all-inputs)).
   - On `threading_d0` the no-dropout runs with proprioception are low too (37%, 42% and 29%), so that gap comes partly from proprioception, not from dropout.
