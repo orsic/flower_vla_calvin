@@ -902,4 +902,4 @@ case "$CMD" in
         exit 1
     fi
     ;;
-esac
+esac; exit  # parsed with the case: bash never reads on, so a git pull mid-command is harmless
