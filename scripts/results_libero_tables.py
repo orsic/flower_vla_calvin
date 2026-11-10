@@ -57,7 +57,7 @@ MODELS: Dict[str, Dict[int, str]] = {
     },
 }
 # Whole-modality dropout (model.modality_dropout_strategy=subset) with proprioception,
-# evaluated with all inputs or one withheld (PIPELINE_SKIP_MULTI_OFF=1): its own section,
+# LIBERO-Plus only with all inputs or one withheld (PIPELINE_SKIP_MULTI_OFF=1): its own section,
 # since the main tables cover every input combination.
 SUBSET_RUNS: Dict[int, str] = {
     42: "libero_10_dropout_2026-11-04_21-49-24",
@@ -419,13 +419,6 @@ def print_subset(a: Artifacts) -> None:
     combos = sorted(set.intersection(*(set(orig[sd].combo) for sd in seeds)), key=lambda c: (-c.count("+"), c))
     t = {c: {"LIBERO-10": cell([orig[sd][orig[sd].combo == c].success.mean() for sd in seeds])} for c in combos}
     print(md(pd.DataFrame(t).T.rename_axis("inputs")))
-
-    lattice = [sd for sd in seeds if orig[sd].combo.nunique() == 14]
-    if lattice:
-        print(f"\n### LIBERO-10, every input combination (seeds {' / '.join(map(str, lattice))})")
-        combos = sorted(orig[lattice[0]].combo.unique(), key=lambda c: (-c.count("+"), c))
-        t = {c: {"LIBERO-10": cell([orig[sd][orig[sd].combo == c].success.mean() for sd in lattice])} for c in combos}
-        print(md(pd.DataFrame(t).T.rename_axis("inputs")))
 
     print("\n### LIBERO-Plus, all inputs and one withheld")
     t = {"all inputs": cell([plus[sd].success.mean() for sd in seeds])}
