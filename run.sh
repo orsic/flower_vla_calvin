@@ -760,6 +760,13 @@ case "$CMD" in
         python scripts/results_libero_tables.py "$@"
     ;;
 
+  simulate-sampling)
+    # Simulate training-time modality dropout with our token counts (tables + figures).
+    #   ./run.sh simulate-sampling [--dataset libero|calvin|mimicgen|all] [--out /saves/plots/sampling]
+    podman-compose -f "$COMPOSE" run --rm -T shell-calvin \
+        python scripts/simulate_modality_sampling.py "$@"
+    ;;
+
   plot)
     # Paper figures from the same W&B evaluation artifacts analyze reads.
     #   ./run.sh plot presence --filters '{"config.modality_dropout": true}'
@@ -852,6 +859,7 @@ case "$CMD" in
     echo "                     Distributed evaluation: workers claim finished W&B runs from the master's"
     echo "                     queue, one per GPU (see README, Distributed evaluation)."
     echo "  results-libero-collect / results-libero-tables"
+    echo "  simulate-sampling [--dataset ...] [--out DIR]   modality-dropout sampling tables + figures"
     echo "                     Download the LIBERO eval artifacts, then print docs/results.md's LIBERO tables."
     echo "  plot <presence|perturbation|severity|all> ..."
     echo "                     Paper figures (PDF) from the same W&B evaluation artifacts, sharing one"

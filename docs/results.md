@@ -69,6 +69,7 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
   - **uniform:** a uniformly random subset of all tokens, so each modality keeps about the same share and a whole camera is almost never removed.
   - **subset** (`model.modality_dropout_strategy=subset`): no token-level split; each sample keeps a random non-empty subset of whole inputs, proprioception included, weighted 2^size (all inputs 20% of the time). See [LIBERO](#whole-modality-dropout-subset).
 - Proprioception, where used (MimicGen), is kept with probability *proprio keep p*.
+- `./run.sh simulate-sampling` (`scripts/simulate_modality_sampling.py`) simulates each strategy with these token counts and writes the algorithm out as equations. Each image is 17 tokens on LIBERO and 50 on CALVIN and MimicGen; prompts are 28–44 tokens. Its output shows, for each modality, how many tokens are kept and how often it is empty, partly kept or whole.
 - At evaluation, a modality combination withholds whole modalities from the model.
 
 **Evaluation.**

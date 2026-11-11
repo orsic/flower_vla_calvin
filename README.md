@@ -1864,6 +1864,30 @@ perturbation-size section prints each `scripts/severity_sr.py` axis twice: at th
 and with each range doubled (`merge_bins`: adjacent bins paired from the low end, an odd last
 bin joining the previous group).
 
+### Simulating the training-time input sampling
+
+`scripts/simulate_modality_sampling.py` (numpy + matplotlib, no torch or repo imports)
+re-implements the modality-dropout sampling (`flower/models/networks/modality_dropout.py` and
+the proprio gate in `flower.py`) for every trained configuration, with each dataset's real token
+counts. Images are 17 tokens each on LIBERO and 50 on CALVIN and MimicGen. Language lengths are
+the prompt's tokenizer counts, weighted by training samples. The module docstring writes the
+algorithm out as equations, and `tests/test_simulate_modality_sampling.py` checks it against the
+training code.
+
+```bash
+./run.sh simulate-sampling --out /saves/plots/sampling
+```
+
+- **Printed tables and `summary.csv`:** for each experiment and modality, the mean available and
+  kept tokens, the kept fraction, and the share of samples where the modality is empty, partly
+  kept or whole.
+- **`<dataset>_kept_tokens.{pdf,png}`:** histograms of kept tokens per modality.
+- **`<dataset>_presence.{pdf,png}`:** the empty / partly kept / whole shares, proprioception
+  included.
+- **Options:** `--dataset` and `--experiment` (a name substring) narrow the output.
+  `--batch` sets the micro-batch size. It only affects the token budget, through the batch's
+  shortest prompt.
+
 ### Plotting evaluation results
 
 `scripts/plot_eval.py` (`./run.sh plot`) turns the same W&B evaluation artifacts
