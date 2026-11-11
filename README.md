@@ -1798,7 +1798,8 @@ Host names are those of `~/.ssh/config`, which are also the host names W&B recor
   gets the keys; the agent is stopped when the worker exits.
 - Each GPU loops: claim a task (`ssh <master> ./run.sh dist-sched claim`), copy the run's `.hydra`
   and `seed_*/saved_models/last.ckpt` from its training host into the same
-  `train_logs/<group>/<ts>` path under the local `SAVES_DIR` (rsync over ssh), run
+  `train_logs/<group>/<ts>` path under the local `SAVES_DIR` (rsync over ssh; symlinks are
+  followed, so a run whose files were moved elsewhere and symlinked back copies the real files), run
   `./run.sh pipeline` / `pipeline-calvin` / `pipeline-mimicgen` with `CUDA_VISIBLE_DEVICES=<gpu>`,
   `PIPELINE_RESUME=1` and the task's options, report done or failed, and delete the copied
   `last.ckpt`. `.hydra` and `eval_logs` stay as a local copy of the results.

@@ -102,6 +102,9 @@ def test_remote_task_is_fetched_evaluated_reported_and_its_checkpoint_deleted(tm
     assert f"hostB:/remote/saves/train_logs/{RUN_DIR}/./.hydra" in rsync
     assert f"hostB:/remote/saves/train_logs/{RUN_DIR}/./seed_*/saved_models/last.ckpt" in rsync
     assert "eval_logs" not in rsync
+    # a training host may have moved .hydra or the checkpoint elsewhere and left a symlink:
+    # copy what it points to, not a link that only resolves on that host
+    assert "--copy-links" in rsync.split()
 
     assert logs["run"] == [f"CVD=1 RESUME=1 MULTI=1 ARGS=pipeline /saves/train_logs/{RUN_DIR}"]
     assert any("masterhost" in l and "dist-sched" in l and "claim" in l and "hostC:1" in l for l in logs["ssh"])

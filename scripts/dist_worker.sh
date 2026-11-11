@@ -155,8 +155,10 @@ run_task() {
         else
             mkdir -p "$local_dir"
             # Background + wait (here and for the pipeline below): a stop signal runs
-            # on_stop right away instead of after the child finishes.
-            rsync -a --relative \
+            # on_stop right away instead of after the child finishes. --copy-links: a
+            # training host may have moved .hydra or the checkpoint elsewhere and left a
+            # symlink; copy its target, not a link that only resolves on that host.
+            rsync -a --copy-links --relative \
                 "$host:$rs/train_logs/$run_dir/./.hydra" \
                 "$host:$rs/train_logs/$run_dir/./seed_*/saved_models/last.ckpt" \
                 "$local_dir/" >> "$tlog" 2>&1 &
