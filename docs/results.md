@@ -50,11 +50,13 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
 
 ## Setup
 
+The full training and evaluation setup, per benchmark and with what we changed from FLOWER, is in [experimental_setup.md](experimental_setup.md).
+
 **Model and fine-tuning.**
 - FlowerVLA, starting from the pretrained 360k-step weights, with a Florence-2 encoder over static-camera, wrist-camera and language tokens and an 18-block flow-matching action head.
 - It predicts a 10-step action chunk from one observation.
 - Each run: 35 epochs × 1000 optimizer updates, global batch 32, seed 42.
-- Extra seeds use batch 8 × 2 accumulation instead of 4 × 4 (same global batch):
+- Extra seeds use a micro-batch of 8 with 2 accumulation steps (on 2 GPUs) instead of 4 × 4 (same global batch 32; per-run details in [experimental_setup.md](experimental_setup.md#3-training-recipe-shared-by-all-benchmarks)):
   - CALVIN: every model with seeds 5 and 100.
   - MimicGen: no dropout and Dirichlet keep 0.5 with proprio keep 0.5 and 1.0, seeds 5 and 100; Dirichlet keep 0.75 and uniform keep 0.5, seed 5 (and 100 for uniform); no dropout with proprioception, seeds 42, 5 and 100; `subset` and the models trained without one input.
   - MimicGen no dropout, seed 100: batch 8 on each of 4 GPUs, no accumulation (same global batch).
@@ -68,7 +70,7 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
   - **Dirichlet** (default): split by a per-sample draw from Dirichlet(1, 1, 1). Whole modalities are often starved or dropped.
   - **uniform:** a uniformly random subset of all tokens, so each modality keeps about the same share and a whole camera is almost never removed.
   - **subset** (`model.modality_dropout_strategy=subset`): no token-level split; each sample keeps a random non-empty subset of whole inputs, proprioception included, weighted 2^size (all inputs 20% of the time). See [LIBERO](#whole-modality-dropout-subset).
-- Proprioception, where used (MimicGen), is kept with probability *proprio keep p*.
+- Proprioception, where used with Dirichlet or uniform dropout, is kept with probability *proprio keep p*.
 - `./run.sh simulate-sampling` (`scripts/simulate_modality_sampling.py`) simulates each strategy with these token counts and writes the algorithm out as equations. Each image is 17 tokens on LIBERO and 50 on CALVIN and MimicGen; prompts are 28–44 tokens. Its output shows, for each modality, how many tokens are kept and how often it is empty, partly kept or whole.
 - At evaluation, a modality combination withholds whole modalities from the model.
 

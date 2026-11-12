@@ -507,7 +507,7 @@ FLOWER achieves strong performance across all LIBERO benchmarks:
 
 ## CALVIN (ABCD→D)
 
-Results of the runs below, closed and open loop, are in [docs/results.md](docs/results.md).
+Results of the runs below, closed and open loop, are in [docs/results.md](docs/results.md). The training and evaluation setup of every benchmark, with our changes to FLOWER, is in [docs/experimental_setup.md](docs/experimental_setup.md).
 
 Trains and evaluates on CALVIN ABCD→D in the container. The workflow matches MimicGen's: train with `flower/training_libero.py --config-name=config_calvin`, then a post-training pipeline runs the standard 1000-chain long-horizon eval and uploads it to the training run's W&B artifact.
 
@@ -535,7 +535,7 @@ CUDA_VISIBLE_DEVICES=2,3 ./run.sh train-calvin-dropout batch_size=4 accumulate_g
 
 ```bash
 # Post-training pipeline (what train-calvin* auto-runs): one eval for a baseline run, one per
-# modality combo (7) for a dropout run, then upload of result.csv ("calvin.csv") + PID report.
+# modality combo (7, or 14 with proprio) for a dropout run, then upload of result.csv ("calvin.csv") + PID report.
 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d_dropout/<ts>
 PIPELINE_REEVAL=1 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/<ts>   # discard + redo
 # a baseline run with all inputs and each one withheld, keeping what is already evaluated:
@@ -781,7 +781,7 @@ construction -- see `flower/models/flower.py`'s `format_instruction`).
 ~115 GB of rendered training data (26 datasets x 100 demos x 200x200 + 84x84 RGB, no
 `next_obs` -- training never reads it), plus a ~95 GB source download streamed through
 `rerender-mimicgen`. Training is CALVIN's budget (35k optimizer updates, global batch 32). Evaluation is 26
-datasets x 20 episodes, up to 500-1250
+datasets x 100 episodes (`n_eval`, default 100), up to 500-1250
 steps each -- longer than LIBERO-10's 10 x 20; `n_eval` is the knob to shrink it.
 
 
