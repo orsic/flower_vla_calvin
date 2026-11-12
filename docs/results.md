@@ -45,6 +45,7 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
   - Whole-modality dropout (`subset`, 3 seeds) is the most robust: 85.8% on LIBERO-Plus with all inputs, and the best model trained with every input when any single input is withheld (e.g. 37% vs 19–23% without the wrist camera). With the static camera as the only view it keeps 55–62% on LIBERO-10, against 34–44% for Dirichlet keep 0.5.
   - No-dropout models trained without one input: without the static camera (3 seeds) they lose little on LIBERO-10 (88.8%) and are somewhat more robust on LIBERO-Plus (74.0% vs 72.2%), but `subset` with that camera withheld does as well (90.2%, 80.6%). Without the wrist camera (3 seeds), the dedicated model (86.7%, 48.0%) is far better than `subset` with it withheld (70.8%, 36.9%). Without language (3 seeds) it loses 10 points on LIBERO-10 (81.2%) and is below both dropout models evaluated without language.
   - Withholding an input from the conventional no dropout + proprio model at evaluation gives 0–47% on LIBERO-10 (3 seeds), against 81–89% for a model trained without it: the standard ablation overstates each input's importance by 42–87 points. The same holds on CALVIN, where it reaches 1.30–1.71 avg_seq_len without one camera, against 3.88–4.27 for `subset` and 4.49–4.53 for a model trained without that camera. On MimicGen (3 seeds) it gives 0–23%, including 0% without language, which MimicGen does not need. Models trained without the wrist camera, the static camera or language keep 42.2% (2 seeds), 32.4% (3 seeds) and 51.2% (seed 42), against 1.0%, 2.9% and 0.0%. The model trained without language matches the full model (51.7%), so here the ablation overstates the input's importance by the full 51 points.
+  - Masking instead of removing (LIBERO-10, no dropout + proprio, 3 seeds): with the prompt template kept and only the instruction emptied, the model keeps 72.8%, against 1.3% with the language tokens removed. Most of its collapse without language comes from the missing template tokens, not the missing instruction. Replacing a camera's frames by their mean pixel gives the same result as removing the camera (48.0% vs 47.0% static, 0% wrist).
   - No model survives a changed task on LIBERO-PRO (0–12%).
   - Excluded runs and evaluations are listed under [missing or unusable results](#missing-or-unusable-libero-results).
 
@@ -574,6 +575,32 @@ Values below are mean ± sd over the three seeds, in %.
 - **Language matters much less than on CALVIN.** Without it the dropout models still reach 82–85% (static+wrist, with or without proprio). With all inputs they reach 92–96%.
 - **Proprioception must be dropped in training, as on MimicGen.** With proprio keep 1.0, every combination without proprioception collapses: 39.7% with both cameras and language, 3–34% otherwise. With keep 0.75, 0.5 and 0.25 the model is indifferent to it.
 - **No dropout + proprio with one input withheld** (seeds 42, 5 and 100, `2026-09-18_16-47-17`, `16-47-22` and `16-47-49`): 0–1% without language or the wrist camera, about half its all-inputs success without proprioception (52.0%) or the static camera (47.0%; seeds 36.0–57.5%). Every dropout model keeps 81–96% in those two combinations.
+
+### Masking an input instead of removing it (no dropout + proprio)
+
+Withholding an input at evaluation removes its tokens, so the model also sees a token layout it never saw in training. Masking keeps the tokens and removes only their content:
+- **Camera:** every frame is replaced by its own per-channel mean pixel (`eval_modalities.rgb_static_pixels=false` / `rgb_gripper_pixels=false`).
+- **Language:** the instruction is emptied while the prompt template ("Agent Type: 1-arm Franka Panda, Action Space: Delta End-Effector, Task Instruction:") stays (`eval_modalities.instruction=false`).
+
+The setup:
+- the same three runs as above, seeds 42 / 5 / 100;
+- the same 200 LIBERO-10 episodes per seed, with rollout seeds matching episode for episode;
+- proprioception kept;
+- one input masked at a time.
+
+The "only masked / only removed" column counts the paired episodes (600) that one of the two solves and the other does not. Values in %, mean ± sd over seeds; all inputs 91.5 ± 3.0:
+
+| input | removed | masked | masked per seed (42 / 5 / 100) | only masked / only removed | trained without it |
+|---|---|---|---|---|---|
+| static camera | 47.0 ± 10.8 | 48.0 ± 4.4 | 46.5 / 44.5 / 53.0 | 75 / 69 | 88.8 ± 3.8 |
+| wrist camera | 0.0 | 0.0 | 0.0 / 0.0 / 0.0 | 0 / 0 | 86.7 ± 2.0 |
+| language | 1.3 ± 2.3 | **72.8 ± 1.2** | 73.5 / 71.5 / 73.5 | 429 / 0 | 81.2 ± 2.4 |
+
+- **For the cameras, masking and removal give the same result.** Without the wrist camera's content the model fails (0%). Without the static camera's it keeps about half (47–48%), and the paired episodes split evenly (75 vs 69). What hurts is losing the image, not the changed layout.
+- **For language it is the layout.** With the template kept and the instruction empty, the model keeps 72.8% (seeds 71.5–73.5%), instead of 1.3% with the language tokens removed. Every episode that removal solves, masking solves too.
+  - That is 19 points below all inputs, and 8 points below a model trained without language (81.2%).
+  - So on LIBERO-10 the instruction itself is worth about 19 points to this model. The other 71 points of the conventional ablation come from removing template tokens it always saw in training.
+- CALVIN and MimicGen masked evaluations of the same recipe are running.
 
 ### Whole-modality dropout (`subset`)
 
@@ -1384,6 +1411,7 @@ Training runs live under `$SAVES_DIR/train_logs/`, and closed-loop results in `<
 | LIBERO whole-modality dropout (`subset`) + proprio, seeds 42 / 5 / 100 | `libero_10_dropout/2026-11-04_21-49-24` / `2026-11-04_21-51-57` / `2026-11-07_12-40-49` |
 | LIBERO no dropout + proprio, trained without the static camera, seeds 42 / 5 / 100 | `libero_10_wrist+lang+proprio/2026-11-06_15-31-06` / `2026-11-06_15-31-13` / `2026-11-07_12-40-58` |
 | LIBERO no dropout + proprio, trained without the wrist camera, seeds 42 / 5 / 100 | `libero_10_static+lang+proprio/2026-11-06_15-30-31` / `2026-11-06_15-30-36` / `2026-11-07_12-41-07` |
+| LIBERO no dropout + proprio, masked inputs, seeds 42 / 5 / 100 | `libero_10_static+wrist+lang+proprio/2026-09-18_16-47-17` / `16-47-22` / `16-47-49`, queued with `dist-sched add --tag masked --opts "PIPELINE_MASKED=1"`; artifact members `masked_static/`, `masked_wrist/`, `blank_instruction/libero_orig.csv` |
 | LIBERO no dropout + proprio, trained without language, seeds 42 / 5 / 100 | `libero_10_static+wrist+proprio/2026-11-06_15-30-50` / `2026-11-06_15-30-57` / `2026-11-07_12-41-16` |
 | MimicGen no dropout, seeds 42 / 5 / 100 | `mimicgen/2026-10-01_19-26-58` / `2026-10-27_02-50-24` / `2026-11-08_12-35-41` |
 | MimicGen no dropout + proprio, seeds 42 / 5 / 100 | `mimicgen/2026-10-16_16-38-11` / `2026-10-16_16-38-21` / `2026-11-06_16-39-08` |
