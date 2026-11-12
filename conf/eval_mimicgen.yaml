@@ -34,5 +34,6 @@ eval_modalities:  # first run evaluates with every modality on; see the plan thi
   rgb_gripper: true
   language: true
   proprio: true  # requires model.use_proprio=True; not a token, gated separately (see FLOWERVLA.eval_proprio_mask)
+  instruction: true  # false keeps the prompt template and blanks the instruction (needs language: true); see FLOWERVLA.eval_blank_instruction
 csv_dir: null  # null -> <train_folder>/eval_logs/<checkpoint_name>/mimicgen_core/
 reeval: false  # set by scripts/mimicgen_pipeline.py's `plan --reeval` -- rotate result.csv aside before writing, instead of merging into it

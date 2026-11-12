@@ -41,6 +41,8 @@ from tqdm import tqdm
 from flower.datasets import mimicgen_tasks
 from flower.evaluation import obs_translation
 from flower.evaluation.eval_records import (
+    blank_instruction,
+    blank_instruction_subdir,
     checkpoint_name,
     env_seed,
     merge_rank_csvs,
@@ -225,6 +227,7 @@ class EvaluateMimicgen:
             )
         if not all(modality_tuple):
             self.model.eval_modality_mask = modality_tuple
+        self.model.eval_blank_instruction = blank_instruction(self.eval_modalities)
 
         proprio_enabled = bool(self.eval_modalities.get("proprio", True))
         if not proprio_enabled and not self.model.use_proprio:
@@ -481,7 +484,7 @@ def main(cfg):
 
     csv_dir_override = OmegaConf.select(cfg, "csv_dir", default=None)
     csv_dir = Path(csv_dir_override) if csv_dir_override else result_dir(
-        cfg.train_folder, cfg.checkpoint, LIBERO_VARIANT, SUITE
+        cfg.train_folder, cfg.checkpoint, LIBERO_VARIANT, SUITE, blank_instruction_subdir(eval_modalities)
     )
 
     evaluator = EvaluateMimicgen(

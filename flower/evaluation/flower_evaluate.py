@@ -23,6 +23,8 @@ import wandb
 import torch.distributed as dist
 
 from flower.evaluation.eval_records import (
+    blank_instruction,
+    blank_instruction_subdir,
     checkpoint_name,
     merge_rank_csvs,
     merge_result_csv,
@@ -93,6 +95,7 @@ def apply_eval_modalities(model, eval_modalities: Dict[str, bool]) -> bool:
         raise ValueError(f"eval_modalities: at least one modality must be enabled (got all-False: {eval_modalities})")
     if not all(modality_tuple):
         model.eval_modality_mask = modality_tuple
+    model.eval_blank_instruction = blank_instruction(eval_modalities)
 
     proprio_enabled = bool(eval_modalities.get("proprio", True))
     if not proprio_enabled and not model.use_proprio:
@@ -345,7 +348,10 @@ def main(cfg):
     if cfg.log_wandb:
         run = wandb.init(project="mode_calvin_eval", entity=cfg.wandb_entity, config=OmegaConf.to_object(cfg))
 
-    csv_dir = Path(cfg.csv_dir) if cfg.csv_dir else result_dir(cfg.train_folder, cfg.checkpoint, LIBERO_VARIANT, SUITE)
+    eval_modalities = OmegaConf.to_container(cfg.eval_modalities, resolve=True)
+    csv_dir = Path(cfg.csv_dir) if cfg.csv_dir else result_dir(
+        cfg.train_folder, cfg.checkpoint, LIBERO_VARIANT, SUITE, blank_instruction_subdir(eval_modalities)
+    )
     csv_path = csv_dir / "result.csv"
     n_gpus = max(torch.cuda.device_count(), 1)
     splits = partition_sequences(cfg.num_sequences, n_gpus)

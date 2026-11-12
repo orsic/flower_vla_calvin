@@ -82,3 +82,12 @@ def test_apply_eval_modalities_rejects_all_off_and_proprio_off_without_proprio()
         apply_eval_modalities(model, {"rgb_static": False, "rgb_gripper": False, "language": False})
     with pytest.raises(ValueError):
         apply_eval_modalities(model, {"rgb_static": True, "rgb_gripper": True, "language": True, "proprio": False})
+
+
+def test_apply_eval_modalities_blank_instruction_sets_flag_and_keeps_language():
+    model = _FakeModel(use_proprio=False, eval_modality_mask=None, eval_proprio_mask=None, eval_blank_instruction=False)
+    apply_eval_modalities(model, {"instruction": False})
+    assert model.eval_blank_instruction is True
+    assert model.eval_modality_mask is None
+    with pytest.raises(ValueError):
+        apply_eval_modalities(model, {"language": False, "instruction": False})

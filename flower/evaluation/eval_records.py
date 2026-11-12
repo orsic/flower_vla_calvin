@@ -89,16 +89,37 @@ def result_dir(
     checkpoint: Union[str, Path],
     libero_variant: str,
     suite: str,
+    subdir: str = "",
 ) -> Path:
-    """<train_folder>/eval_logs/<checkpoint_name>/<variant>_<suite>/, created if missing."""
-    out_dir = (
-        Path(train_folder)
-        / "eval_logs"
-        / checkpoint_name(checkpoint)
-        / f"{libero_variant}_{suite}"
-    )
+    """<train_folder>/eval_logs/<checkpoint_name>/[<subdir>/]<variant>_<suite>/, created if missing.
+
+    `subdir` keeps an eval variant whose rows would otherwise share KEY_COLUMNS with the
+    regular evals (e.g. "blank_instruction") out of their result.csv.
+    """
+    out_dir = Path(train_folder) / "eval_logs" / checkpoint_name(checkpoint) / subdir / f"{libero_variant}_{suite}"
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
+
+
+def blank_instruction(eval_modalities: Optional[Dict[str, bool]]) -> bool:
+    """Whether eval_modalities.instruction=false asks to blank the language instruction.
+
+    The prompt template stays (see FLOWERVLA.eval_blank_instruction), so this requires
+    eval_modalities.language to stay on.
+    """
+    eval_modalities = eval_modalities or {}
+    blank = not bool(eval_modalities.get("instruction", True))
+    if blank and not bool(eval_modalities.get("language", True)):
+        raise ValueError(
+            "eval_modalities.instruction=False keeps the prompt template and blanks the "
+            "instruction; it requires eval_modalities.language=True"
+        )
+    return blank
+
+
+def blank_instruction_subdir(eval_modalities: Optional[Dict[str, bool]]) -> str:
+    """result_dir() subdir for a blank-instruction eval, "" otherwise."""
+    return "blank_instruction" if blank_instruction(eval_modalities) else ""
 
 
 # Perturbation markers LIBERO-Plus appends to an original task name. Digit-anchored

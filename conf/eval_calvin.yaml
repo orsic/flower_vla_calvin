@@ -44,3 +44,4 @@ eval_modalities:
   rgb_gripper: True
   language: True
   proprio: True
+  instruction: True  # False keeps the prompt template and blanks the instruction (needs language: True); see FLOWERVLA.eval_blank_instruction

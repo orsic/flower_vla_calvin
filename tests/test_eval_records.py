@@ -11,6 +11,7 @@ import pytest
 from flower.evaluation.eval_records import (
     ALL_COLUMNS,
     base_task_name,
+    blank_instruction,
     checkpoint_name,
     env_seed,
     merge_rank_csvs,
@@ -509,3 +510,40 @@ def test_pro_task_name_shares_the_orig_rollout_seed():
     assert base_task_name(name) == name
     assert rollout_seed(0, name, 7) == rollout_seed(0, name, 7)
     assert rollout_seed(0, name, 7) != rollout_seed(0, name, 8)
+
+
+# ---------------------------------------------------------------------------
+# blank instruction (eval_modalities.instruction=false)
+# ---------------------------------------------------------------------------
+
+def test_result_dir_subdir_keeps_blank_instruction_rows_apart(tmp_path):
+    train_folder = tmp_path / "train_run"
+    ckpt = train_folder / "seed_42" / "saved_models" / "last.ckpt"
+    ckpt.parent.mkdir(parents=True)
+    ckpt.write_text("x")
+
+    default = result_dir(train_folder, ckpt, "orig", "libero_10")
+    blank = result_dir(train_folder, ckpt, "orig", "libero_10", subdir="blank_instruction")
+
+    assert default == train_folder / "eval_logs" / "last" / "orig_libero_10"
+    assert blank == train_folder / "eval_logs" / "last" / "blank_instruction" / "orig_libero_10"
+    assert blank.is_dir()
+
+
+@pytest.mark.parametrize(
+    "eval_modalities, expected",
+    [
+        (None, False),
+        ({}, False),
+        ({"language": True, "instruction": True}, False),
+        ({"language": True, "instruction": False}, True),
+        ({"rgb_static": False, "instruction": False}, True),
+    ],
+)
+def test_blank_instruction(eval_modalities, expected):
+    assert blank_instruction(eval_modalities) is expected
+
+
+def test_blank_instruction_needs_the_language_template():
+    with pytest.raises(ValueError):
+        blank_instruction({"language": False, "instruction": False})

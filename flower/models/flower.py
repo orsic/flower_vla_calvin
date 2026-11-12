@@ -192,6 +192,10 @@ class FLOWERVLA(pl.LightningModule):
         # Eval-time proprio mask: None (default) = unchanged. False withholds proprio at eval,
         # mirroring eval_modality_mask above but for the Bernoulli-gated (non-token) modality.
         self.eval_proprio_mask: Optional[bool] = None
+        # Eval-time blank instruction (eval_modalities.instruction=false): keep language
+        # present but replace every instruction with "" in construct_prompts, so the model
+        # still sees the prompt template ("... Task Instruction:") at its usual positions.
+        self.eval_blank_instruction = False
 
         # Eval-time per-episode noise seeding: None (default) = unchanged single batched
         # torch.randn in forward(). Set by the eval harness via set_eval_noise_seeds() to
@@ -1403,6 +1407,8 @@ class FLOWERVLA(pl.LightningModule):
         text_prompts = []
         
         for instruction in language_instruction:
+            if self.eval_blank_instruction and not self.training:
+                instruction = ""
             if self.vlm_prompt_style == "default":
                 # Original instruction only
                 text_prompts.append(self.format_instruction(instruction))

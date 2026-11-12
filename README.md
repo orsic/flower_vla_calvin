@@ -1183,6 +1183,23 @@ Example, dropping language on the dropout checkpoint:
 ./run.sh eval train_folder=$CKPT_DROP checkpoint=$CKPT_DROP/seed_42/saved_models/last.ckpt \
   eval_modalities.language=False
 ```
+
+**Blank instruction.** `eval_modalities.instruction=False` keeps language on but replaces
+every instruction with `""` (`FLOWERVLA.eval_blank_instruction`, applied in `construct_prompts`).
+The model still sees the prompt template (`"Agent Type: 1-arm Franka Panda, Action Space:
+Delta End-Effector, Task Instruction:"`) at its usual positions. This separates losing the
+instruction from losing the whole language span (`language=False`). It works the same way in
+all three evals (LIBERO, CALVIN, MimicGen) and requires `language=True`.
+
+These rows share their `use_*` flags with the all-inputs rows. So that they don't merge into
+those rows' `result.csv`, they are written to `<train_folder>/eval_logs/<ckpt>/blank_instruction/<variant>_<suite>/`
+unless you pass `csv_dir=`. Use `log_wandb=False` so the W&B collectors don't mistake the run
+for an all-inputs eval:
+```bash
+./run.sh eval train_folder=$CKPT checkpoint=$CKPT/seed_42/saved_models/last.ckpt \
+  log_wandb=False eval_modalities.instruction=False
+```
+
 Compare modality combos — either within one checkpoint's own `result.csv` or across
 two different checkpoints' files — with `scripts/compare_eval_csvs.py`, which takes
 `--modalities-a`/`--modalities-b` (each a comma-separated subset of

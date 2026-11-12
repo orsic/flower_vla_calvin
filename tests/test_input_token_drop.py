@@ -438,3 +438,41 @@ class TestSubsetStrategy:
         stub = _ObsStub(modality_dropout=True, modality_dropout_strategy="subset", training=False, vlm=vlm)
         stub._tokens_per_image = vlm.tokens_per_image
         assert stub.encode_observations(_batch())["context_mask"] is None
+
+
+# ---------------------------------------------------------------------------
+# Blank instruction (eval_modalities.instruction=false): the real construct_prompts keeps
+# the prompt template and blanks only the instruction, at eval only. Language stays
+# present, so encode_observations encodes the template tokens as usual.
+# ---------------------------------------------------------------------------
+
+def _prompt_stub(training: bool, blank: bool):
+    import functools
+
+    from flower.models.utils import generate_policy_prompt
+
+    return types.SimpleNamespace(
+        training=training,
+        eval_blank_instruction=blank,
+        vlm_prompt_style="default",
+        format_instruction=functools.partial(
+            generate_policy_prompt,
+            robot_name="Franka Panda",
+            action_space="Delta End-Effector",
+            num_arms="1",
+            prompt_style="minimal",
+        ),
+    )
+
+
+@pytest.mark.parametrize("training, blank, blanked", [(False, True, True), (True, True, False), (False, False, False)])
+def test_construct_prompts_blank_instruction(training, blank, blanked):
+    stub = _prompt_stub(training, blank)
+    prompts = FLOWERVLA.construct_prompts(stub, {"lang_text": ["open the drawer", "push the button"]})
+    template = stub.format_instruction("")
+    assert template.endswith("Task Instruction:")
+    if blanked:
+        assert prompts == [template, template]
+    else:
+        assert prompts == [stub.format_instruction("open the drawer"), stub.format_instruction("push the button")]
+        assert all(p.startswith(template) for p in prompts)

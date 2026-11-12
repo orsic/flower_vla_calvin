@@ -371,3 +371,13 @@ def test_env_fns_do_not_capture_the_model(monkeypatch):
     assert captured
     for fn in captured:
         cloudpickle.dumps(fn)
+
+
+def test_blank_instruction_sets_model_flag():
+    model = _FakeModel()
+    fem.EvaluateMimicgen(**_minimal_ctor_kwargs(model), eval_modalities={"instruction": False})
+    assert model.eval_blank_instruction is True
+    assert model.eval_modality_mask is None
+    model = _FakeModel()
+    fem.EvaluateMimicgen(**_minimal_ctor_kwargs(model))
+    assert model.eval_blank_instruction is False
