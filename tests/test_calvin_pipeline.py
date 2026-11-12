@@ -133,3 +133,69 @@ def test_restore_puts_calvin_csv_back(tmp_path, monkeypatch):
     monkeypatch.setattr(calvin_pipeline, "download_eval_artifact", lambda *a, **k: art)
     calvin_pipeline.restore(str(train_folder), [])
     assert len(read_csv(csv_path(str(train_folder), []))) == 1
+
+
+def _masks(overrides):
+    return [o for o in overrides if o.endswith("_pixels=False") or o == "eval_modalities.instruction=False"]
+
+
+def test_plan_lines_masked_one_line_per_masked_input_with_resume(tmp_path):
+    from flower.evaluation.eval_records import write_csv
+
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, use_proprio=True)
+    plan = plan_lines(str(train_folder), ["num_sequences=2"], reeval=False, masked=True)
+    assert [_masks(o) for _, o in plan] == [
+        ["eval_modalities.rgb_static_pixels=False"],
+        ["eval_modalities.rgb_gripper_pixels=False"],
+        ["eval_modalities.instruction=False"],
+    ]
+    assert all(s == "eval-calvin" and _flags(o) == (True, True, True, True) and "num_sequences=2" in o for s, o in plan)
+
+    row = {"use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1, "use_proprio": 1, "success": 1}
+    masked_csv = csv_path(str(train_folder), []).parent.parent / "masked_static" / "calvin_ABCD_D" / "result.csv"
+    write_csv(masked_csv, [row])
+    plan = plan_lines(str(train_folder), [], reeval=False, resume=True, masked=True)
+    assert [_masks(o) for _, o in plan] == [["eval_modalities.rgb_gripper_pixels=False"], ["eval_modalities.instruction=False"]]
+
+
+def test_upload_and_restore_carry_masked_results(tmp_path, monkeypatch):
+    import calvin_pipeline
+    from flower.evaluation.eval_records import read_csv, write_csv
+
+    train_folder = tmp_path / "group" / "run"
+    _write_train_cfg(train_folder, use_proprio=True)
+    row = {"use_rgb_static": 1, "use_rgb_gripper": 1, "use_language": 1, "use_proprio": 1, "success": 1}
+    main = csv_path(str(train_folder), [])
+    write_csv(main, [row])
+    write_csv(main.parent.parent / "blank_instruction" / "calvin_ABCD_D" / "result.csv", [row])
+    logged = {}
+
+    class _Artifact:
+        def __init__(self, name, type):
+            self.files = []
+
+        def add_file(self, path, name):
+            self.files.append(name)
+
+    class _Run:
+        def log_artifact(self, artifact):
+            logged["names"] = artifact.files
+
+        def finish(self):
+            pass
+
+    monkeypatch.setattr(calvin_pipeline.wandb, "init", lambda **kwargs: _Run())
+    monkeypatch.setattr(calvin_pipeline.wandb, "Artifact", _Artifact)
+    calvin_pipeline.upload(str(train_folder), [])
+    assert logged["names"] == ["calvin.csv", "blank_instruction/calvin.csv"]
+
+    other = tmp_path / "group" / "other"
+    _write_train_cfg(other, use_proprio=True)
+    art = tmp_path / "artifact"
+    write_csv(art / "calvin.csv", [row])
+    write_csv(art / "masked_wrist" / "calvin.csv", [row])
+    monkeypatch.setattr(calvin_pipeline, "download_eval_artifact", lambda *a, **k: art)
+    calvin_pipeline.restore(str(other), [])
+    restored = csv_path(str(other), []).parent.parent / "masked_wrist" / "calvin_ABCD_D" / "result.csv"
+    assert len(read_csv(restored)) == 1

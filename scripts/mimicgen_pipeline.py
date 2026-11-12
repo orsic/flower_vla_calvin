@@ -41,10 +41,14 @@ from eval_pipeline import (  # noqa: E402
     artifact_name,
     combo_in_csv,
     download_eval_artifact,
+    masked_artifact_members,
+    masked_lines,
+    masked_restore_targets,
     modality_overrides,
     parse_overrides,
     planned_combos,
     restore_files,
+    trained_combo,
     wandb_run_id,
 )
 from perturbation_sr import modality_combos_present  # noqa: E402
@@ -93,6 +97,7 @@ def plan_lines(
     all_combos: bool = False,
     skip_multi_off: bool = False,
     resume: bool = False,
+    masked: bool = False,
 ) -> List[Tuple[str, List[str]]]:
     train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
     resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
@@ -102,6 +107,11 @@ def plan_lines(
     overrides += [
         o for o in extra_overrides if o.split("=", 1)[0] not in ("train_folder", "checkpoint")
     ]
+    if masked:
+        full = trained_combo(train_cfg)
+        use_proprio = bool(train_cfg.model.get("use_proprio", False))
+        path = csv_path(train_folder, extra_overrides)
+        return masked_lines("eval-mimicgen", overrides + modality_overrides(full), full, path, use_proprio, resume)
     combos = planned_combos(train_cfg, all_combos, skip_multi_off)
     # A plain run's single all-inputs line names no modalities; a sweep, or a fixed-subset
     # run's trained inputs, are named so result.csv's use_* columns record them.
@@ -171,6 +181,8 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
     )
     artifact = wandb.Artifact(artifact_name(run_id), type="evaluation")
     artifact.add_file(str(path), name="mimicgen.csv")
+    for masked_path, name in masked_artifact_members(path, "mimicgen.csv"):
+        artifact.add_file(str(masked_path), name=name)
     pid_txt = write_pid_report(path)
     if pid_txt is not None:
         artifact.add_file(str(pid_txt), name="pid_modality.txt")
@@ -189,7 +201,9 @@ def restore(train_folder: str, extra_overrides: List[str]) -> None:
         if artifact_dir is None:
             print("restore: the run has no evaluation artifact -- nothing to restore")
             return
-        for path in restore_files(artifact_dir, {"mimicgen.csv": csv_path(train_folder, extra_overrides)}):
+        path = csv_path(train_folder, extra_overrides)
+        targets = {"mimicgen.csv": path, **masked_restore_targets(path, "mimicgen.csv")}
+        for path in restore_files(artifact_dir, targets):
             print(f"restore: {path}")
 
 
@@ -203,6 +217,7 @@ def main() -> None:
     plan_p.add_argument("--resume", action="store_true")
     plan_p.add_argument("--all-combos", action="store_true")
     plan_p.add_argument("--skip-multi-off", action="store_true")
+    plan_p.add_argument("--masked", action="store_true", help="only the masked-input evals (MASKED_VARIANTS)")
     plan_p.add_argument("overrides", nargs="*")
 
     upload_p = subparsers.add_parser("upload")
@@ -219,7 +234,13 @@ def main() -> None:
         restore(args.train_folder, args.overrides)
     elif args.cmd == "plan":
         for service, overrides in plan_lines(
-            args.train_folder, args.overrides, args.reeval, args.all_combos, args.skip_multi_off, args.resume
+            args.train_folder,
+            args.overrides,
+            args.reeval,
+            args.all_combos,
+            args.skip_multi_off,
+            args.resume,
+            args.masked,
         ):
             print("\t".join([service] + overrides))
     elif args.cmd == "upload":

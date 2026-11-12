@@ -148,8 +148,12 @@ run_task() {
     if [[ -z "$sub" ]]; then
         rc=1; opts=""; log "unknown benchmark $bench" >> "$tlog"
     elif [[ "$host" != "$SELF" ]]; then
-        remote=1
-        CUR_REMOTE=1
+        # Delete afterwards only a checkpoint this task brought here: one already present is
+        # the original when SAVES_DIR is the training host's own disk, mounted here.
+        if ! compgen -G "$local_dir/seed_*/saved_models/last.ckpt" > /dev/null; then
+            remote=1
+            CUR_REMOTE=1
+        fi
         if ! rs="$(remote_saves "$host")"; then
             rc=1; log "host $host is not in DIST_HOSTS" | tee -a "$tlog"
         else
@@ -199,7 +203,11 @@ gpu_loop() {
     WORKER="$SELF:$gpu"
     trap on_stop TERM
     while true; do
-        if ! line="$(master claim --worker "$SELF:$gpu")"; then
+        # Declare this checkout's commit on every claim (tasks run the current run.sh and
+        # code, so a `git pull` counts at once); the master gates --min-commit tasks on it.
+        local claim_args=(--worker "$SELF:$gpu") commit
+        commit="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" && claim_args+=(--commit "$commit")
+        if ! line="$(master claim "${claim_args[@]}")"; then
             log "GPU $gpu: could not reach the master's queue"
             line=""
         fi

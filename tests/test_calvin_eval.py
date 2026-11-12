@@ -91,3 +91,12 @@ def test_apply_eval_modalities_blank_instruction_sets_flag_and_keeps_language():
     assert model.eval_modality_mask is None
     with pytest.raises(ValueError):
         apply_eval_modalities(model, {"language": False, "instruction": False})
+
+
+def test_apply_eval_modalities_mean_pixel_sets_flag_and_keeps_the_view():
+    model = _FakeModel(use_proprio=False, eval_modality_mask=None, eval_proprio_mask=None)
+    apply_eval_modalities(model, {"rgb_gripper_pixels": False})
+    assert model.eval_mean_pixel == (False, True)
+    assert model.eval_modality_mask is None
+    with pytest.raises(ValueError):
+        apply_eval_modalities(model, {"rgb_static": False, "rgb_static_pixels": False})

@@ -60,7 +60,7 @@ def _run_pipeline_mimicgen(tmp_path, extra_env=None):
     env["FAKE_PLAN_LOG"] = str(plan_log)
     env["FAKE_UPLOAD_LOG"] = str(upload_log)
     for key in (
-        "PIPELINE_REEVAL", "PIPELINE_RESUME", "PIPELINE_ALL_COMBOS", "PIPELINE_SKIP_MULTI_OFF", "PIPELINE_RESTORE",
+        "PIPELINE_REEVAL", "PIPELINE_RESUME", "PIPELINE_ALL_COMBOS", "PIPELINE_SKIP_MULTI_OFF", "PIPELINE_RESTORE", "PIPELINE_MASKED",
         "FAKE_PLAN_EMPTY",
     ):
         env.pop(key, None)
@@ -335,3 +335,10 @@ def test_pipeline_mimicgen_restores_before_planning(tmp_path):
     assert "pipeline-artifacts-mimicgen" in plan[0]
     assert "mimicgen_pipeline.py plan" in plan[1]
     assert len(evals) == 1
+
+
+def test_pipeline_mimicgen_masked_restores_then_plans_masked(tmp_path):
+    result, evals, plan, _ = _run_pipeline_mimicgen(tmp_path, {"PIPELINE_MASKED": "1"})
+    assert result.returncode == 0, result.stderr
+    assert "mimicgen_pipeline.py restore --train-folder /fake/train_dir" in plan[0]
+    assert "mimicgen_pipeline.py plan" in plan[1] and "--masked" in plan[1]

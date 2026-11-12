@@ -1646,3 +1646,73 @@ def test_restore_without_an_artifact_does_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(eval_pipeline, "download_eval_artifact", lambda *a, **k: None)
     eval_pipeline.restore(str(train_folder), [])
     assert not (train_folder / "eval_logs").exists()
+
+
+# ---------------------------------------------------------------------------
+# Masked inputs (plan --masked): tokens kept, content blanked; own result dirs + members
+# ---------------------------------------------------------------------------
+
+MASK_KEYS = ("rgb_static_pixels", "rgb_gripper_pixels", "instruction")
+
+
+def _masks_of(overrides):
+    return [o for o in overrides if o.split("=", 1)[0] in {f"eval_modalities.{k}" for k in MASK_KEYS}]
+
+
+def test_masked_variant_names_are_the_eval_result_subdirs():
+    from flower.evaluation.eval_records import masked_subdir
+
+    for variant, (_input, key) in eval_pipeline.MASKED_VARIANTS.items():
+        assert masked_subdir({key: False}) == variant
+
+
+def test_plan_masked_orig_suite_only_one_line_per_masked_input(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    lines = plan_lines(str(train_folder), resume=False, extra_overrides=["n_eval=2"], masked=True)
+    assert [svc for svc, _ in lines] == ["eval"] * 3
+    assert [_masks_of(o) for _, o in lines] == [
+        ["eval_modalities.rgb_static_pixels=False"],
+        ["eval_modalities.rgb_gripper_pixels=False"],
+        ["eval_modalities.instruction=False"],
+    ]
+    assert all(_combo_of(o) == (True, True, True, True) for _, o in lines)
+    assert all("n_eval=2" in o and "log_wandb=False" in o and "benchmark_name=libero_10" in o for _, o in lines)
+
+
+def test_plan_masked_skips_inputs_the_model_lacks_and_resumes(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True, modalities={"rgb_static": False})
+    done = train_folder / "eval_logs" / "last" / "blank_instruction" / "orig_libero_10" / "result.csv"
+    write_csv(done, [_row(False, True, True, True)])
+    lines = plan_lines(str(train_folder), resume=True, extra_overrides=[], masked=True)
+    assert [_masks_of(o) for _, o in lines] == [["eval_modalities.rgb_gripper_pixels=False"]]
+
+
+def test_upload_and_restore_carry_masked_results(tmp_path, monkeypatch):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    logs = train_folder / "eval_logs" / "last"
+    write_csv(logs / "orig_libero_10" / "result.csv", [_row(True, True, True, True)])
+    write_csv(logs / "masked_wrist" / "orig_libero_10" / "result.csv", [_row(True, True, True, True)])
+    monkeypatch.setattr(
+        eval_pipeline.subprocess, "run", lambda cmd, **k: eval_pipeline.subprocess.CompletedProcess(cmd, 0, "", "")
+    )
+    fake_run = _FakeWandbRun()
+    monkeypatch.setattr(eval_pipeline.wandb, "init", lambda **kwargs: fake_run)
+    monkeypatch.setattr(eval_pipeline.wandb, "Artifact", _FakeWandbArtifact)
+
+    eval_pipeline.upload(str(train_folder), [])
+
+    members = {name for _path, name in fake_run.logged[0].added}
+    assert {"libero_orig.csv", "masked_wrist/libero_orig.csv"} <= members
+
+    other = tmp_path / "other"
+    _write_train_cfg(other, dropout=False, use_proprio=True)
+    art = _fake_artifact(
+        tmp_path,
+        {"libero_orig.csv": [_row(True, True, True, True)], "masked_static/libero_orig.csv": [_row(True, True, True, True)]},
+    )
+    monkeypatch.setattr(eval_pipeline, "download_eval_artifact", lambda *a, **k: art)
+    eval_pipeline.restore(str(other), [])
+    assert len(read_csv(other / "eval_logs" / "last" / "masked_static" / "orig_libero_10" / "result.csv")) == 1

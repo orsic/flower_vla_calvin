@@ -45,3 +45,5 @@ eval_modalities:
   language: True
   proprio: True
   instruction: True  # False keeps the prompt template and blanks the instruction (needs language: True); see FLOWERVLA.eval_blank_instruction
+  rgb_static_pixels: True  # False keeps the static view's tokens but replaces each frame by its per-channel mean pixel (needs rgb_static: True); see FLOWERVLA.eval_mean_pixel
+  rgb_gripper_pixels: True  # same for the wrist view (needs rgb_gripper: True)

@@ -17,11 +17,19 @@ then marked failed.
     ./run.sh dist-sched refresh | status | claim --worker H:G | heartbeat --run R --worker H:G
     ./run.sh dist-sched done|fail|release --run R --worker H:G [--msg M] | requeue --run R | skip --run R
     ./run.sh dist-sched add --run R [--host H] [--run-dir D] [--opts "VAR=VAL ..."]
+                            [--tag T] [--min-commit REV]
 
 `add` queues any run again, evaluated or not, e.g. to evaluate input combinations it is
 missing (--opts "PIPELINE_RESTORE=1 PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1").
 The host holding its checkpoint is --host, else the one the queue recorded when the run
 was first queued, else W&B's metadata.host (the last machine that ran an upload for it).
+--tag T queues it as a separate task, keyed <run>--T, next to the run's own task (which
+it would otherwise replace); workers report and the commands above take that key as --run.
+
+--min-commit REV (resolved in the master's checkout) gives the task only to a worker whose
+checkout contains that commit: workers send their HEAD with `claim --commit SHA`. A worker
+that sends none (an older dist_worker.sh), or a commit the master does not know, only gets
+tasks without a --min-commit.
 """
 
 import argparse
@@ -31,10 +39,11 @@ import fnmatch
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import yaml
 
@@ -131,6 +140,28 @@ def task_from_run(run, since: str, rules: Rules) -> Optional[Dict]:
     }
 
 
+def task_key(task: Dict) -> str:
+    """The task's key in state["tasks"]: its run id, or <run>--<tag> for a tagged task."""
+    return task.get("key") or task["run_id"]
+
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True)
+
+
+def resolve_commit(rev: str) -> str:
+    """Full sha of rev in the master's checkout."""
+    result = _git("rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
+    if result.returncode != 0:
+        raise ValueError(f"{rev}: not a commit in {REPO_ROOT}")
+    return result.stdout.strip()
+
+
+def git_contains(ancestor: str, commit: str) -> bool:
+    """commit's history contains ancestor; False for a commit this checkout does not know."""
+    return _git("merge-base", "--is-ancestor", ancestor, commit).returncode == 0
+
+
 def run_dir_of(run_id: str) -> Optional[str]:
     """<group>_<YYYY-MM-DD_HH-MM-SS[suffix]> -> <group>/<YYYY-MM-DD_HH-MM-SS[suffix]>."""
     m = re.search(r"_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}.*)$", run_id)
@@ -145,17 +176,22 @@ def add(
     run_dir: Optional[str] = None,
     opts: Optional[str] = None,
     rules: Rules = (),
+    tag: Optional[str] = None,
+    min_commit: Optional[str] = None,
 ) -> Optional[Dict]:
-    """Queue run_id as a forced todo task, which refresh never completes on its own. None
-    if it is running. Host and run dir default to the run's earlier task."""
+    """Queue run_id as a forced todo task, which refresh never completes on its own, keyed
+    <run_id>--<tag> when tagged. None if that task is running. Host and run dir default to
+    the run's earlier tasks. min_commit: a full sha the claiming worker must contain."""
     bench = benchmark_of(run_id)
     if bench is None:
         raise ValueError(f"{run_id}: not a LIBERO, CALVIN or MimicGen run")
-    old = state["tasks"].get(run_id) or {}
+    key = f"{run_id}--{tag}" if tag else run_id
+    old = state["tasks"].get(key) or {}
     if old.get("state") == "running":
         return None
-    host = host or old.get("host")
-    run_dir = run_dir or old.get("run_dir") or run_dir_of(run_id)
+    run_task = state["tasks"].get(run_id) or {}
+    host = host or old.get("host") or run_task.get("host")
+    run_dir = run_dir or old.get("run_dir") or run_task.get("run_dir") or run_dir_of(run_id)
     if not host or not run_dir:
         raise ValueError(f"{run_id}: pass --host (and --run-dir if the name has no timestamp)")
     task = {
@@ -174,7 +210,11 @@ def add(
         "error": None,
         "forced": True,
     }
-    state["tasks"][run_id] = task
+    if tag:
+        task["key"] = key
+    if min_commit:
+        task["min_commit"] = min_commit
+    state["tasks"][key] = task
     return task
 
 
@@ -211,12 +251,26 @@ def expire_leases(state: Dict, now: datetime, lease_min: float) -> None:
             task.update(state="todo", worker=None, error=f"lease expired ({task['worker']})")
 
 
-def claim(state: Dict, worker: str, now: datetime) -> Optional[Dict]:
-    todo = [t for t in state["tasks"].values() if t["state"] == "todo"]
-    if not todo:
+def claim(
+    state: Dict,
+    worker: str,
+    now: datetime,
+    commit: Optional[str] = None,
+    contains: Optional[Callable[[str, str], bool]] = None,
+) -> Optional[Dict]:
+    """The oldest todo task this worker may run: a task with a min_commit only goes to a
+    worker that sent a commit containing it (contains: default git_contains)."""
+    contains = contains or git_contains
+
+    def allowed(task: Dict) -> bool:
+        needed = task.get("min_commit")
+        return needed is None or (commit is not None and contains(needed, commit))
+
+    todo = sorted((t for t in state["tasks"].values() if t["state"] == "todo"), key=lambda t: t["created"])
+    task = next((t for t in todo if allowed(t)), None)
+    if task is None:
         return None
-    task = min(todo, key=lambda t: t["created"])
-    task.update(state="running", worker=worker, claimed=_iso(now), heartbeat=_iso(now))
+    task.update(state="running", worker=worker, claimed=_iso(now), heartbeat=_iso(now), commit=commit)
     task["attempts"] += 1
     return task
 
@@ -268,7 +322,7 @@ def skip(state: Dict, run_id: str) -> None:
 
 def task_line(task: Dict) -> str:
     """What `claim` prints for the worker: tab-separated, no JSON parsing needed in bash."""
-    return "\t".join([task["run_id"], task["benchmark"], task["host"], task["run_dir"], task["opts"]])
+    return "\t".join([task_key(task), task["benchmark"], task["host"], task["run_dir"], task["opts"]])
 
 
 def _age(stamp: Optional[str], now: datetime) -> str:
@@ -289,18 +343,21 @@ def status_table(state: Dict, now: datetime) -> str:
         "  ".join(f"{s} {counts.get(s, 0)}" for s in order),
         "",
     ]
-    header = ("run", "bench", "host", "state", "worker", "tries", "since", "heartbeat", "opts / error")
+    header = ("run", "bench", "host", "state", "worker", "commit", "tries", "since", "heartbeat", "opts / error")
     rows = [header]
     for t in tasks:
         since = t["finished"] if t["state"] in ("done", "failed") else t["claimed"]
         note = t["error"] or t["opts"] or ""
+        if t.get("min_commit"):
+            note += f" [needs {t['min_commit'][:8]}]"
         rows.append(
             (
-                t["run_id"],
+                task_key(t),
                 t["benchmark"],
                 t["host"] or "-",
                 t["state"],
                 t["worker"] or "-",
+                (t.get("commit") or "-")[:8],
                 str(t["attempts"]),
                 _age(since, now),
                 _age(t["heartbeat"], now) if t["state"] == "running" else "-",
@@ -361,11 +418,15 @@ def main() -> None:
             p.add_argument("--worker", required=True)
         if name in ("done", "fail"):
             p.add_argument("--msg", default="")
+        if name == "claim":
+            p.add_argument("--commit", help="the worker checkout's HEAD (sha); gates --min-commit tasks")
     p = sub.add_parser("add")
     p.add_argument("--run", required=True)
     p.add_argument("--host")
     p.add_argument("--run-dir")
     p.add_argument("--opts", dest="task_opts", help="this task's options (default: the --opts rules)")
+    p.add_argument("--tag", help="queue as a separate task keyed <run>--<tag>")
+    p.add_argument("--min-commit", help="only workers whose checkout contains this commit get the task")
     args = ap.parse_args()
     now = datetime.now(timezone.utc)
 
@@ -380,7 +441,7 @@ def main() -> None:
         expire_leases(state, now, args.lease_min)
 
         if args.cmd == "claim":
-            task = claim(state, args.worker, now)
+            task = claim(state, args.worker, now, args.commit)
             if task is not None:
                 print(task_line(task))
         elif args.cmd == "heartbeat":
@@ -395,7 +456,11 @@ def main() -> None:
         elif args.cmd == "add":
             known = (state["tasks"].get(args.run) or {}).get("host")
             host = args.host or known or _wandb_host(args.run)
-            task = add(state, args.run, now, host, args.run_dir, args.task_opts, rules)
+            try:
+                min_commit = resolve_commit(args.min_commit) if args.min_commit else None
+            except ValueError as exc:
+                sys.exit(f"dist_scheduler: {exc}")
+            task = add(state, args.run, now, host, args.run_dir, args.task_opts, rules, args.tag, min_commit)
             if task is None:
                 sys.exit(f"dist_scheduler: {args.run} is running; release or wait for it first")
             print(task_line(task))

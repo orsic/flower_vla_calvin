@@ -42,9 +42,10 @@ from libero.lifelong.utils import create_experiment_dir, get_task_embs, safe_dev
 from flower.evaluation.eval_records import (
     base_task_name,
     blank_instruction,
-    blank_instruction_subdir,
     checkpoint_name,
     env_seed,
+    masked_subdir,
+    mean_pixel_views,
     merge_rank_csvs,
     merge_result_csv,
     read_csv,
@@ -430,6 +431,7 @@ class EvaluateLibero:
         if not all(modality_tuple):
             self.model.eval_modality_mask = modality_tuple
         self.model.eval_blank_instruction = blank_instruction(self.eval_modalities)
+        self.model.eval_mean_pixel = mean_pixel_views(self.eval_modalities)
 
         # Proprioception isn't a token (see FLOWERVLA.eval_proprio_mask); withholding it only
         # makes sense on a model that receives it in the first place.
@@ -1248,7 +1250,7 @@ def main(cfg):
             cfg.checkpoint,
             eval_libero.libero_variant,
             cfg.benchmark_name,
-            blank_instruction_subdir(eval_modalities),
+            masked_subdir(eval_modalities),
         )
 
     # Apply per-category filter (no-op when task_category is None or LIBERO_VARIANT=orig).

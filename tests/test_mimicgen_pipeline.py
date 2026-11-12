@@ -364,3 +364,39 @@ def test_restore_puts_mimicgen_csv_back(tmp_path, monkeypatch):
     monkeypatch.setattr(mimicgen_pipeline, "download_eval_artifact", lambda *a, **k: art)
     mimicgen_pipeline.restore(str(train_folder), [])
     assert len(read_csv(mimicgen_pipeline.csv_path(str(train_folder), []))) == 1
+
+
+def test_plan_lines_masked_one_line_per_masked_input(tmp_path):
+    train_folder = tmp_path / "mimicgen" / "run1"
+    _write_train_cfg(train_folder, use_proprio=True)
+    plan = plan_lines(str(train_folder), ["n_eval=2"], reeval=False, masked=True)
+    masks = [[o for o in ov if o.endswith("_pixels=False") or o == "eval_modalities.instruction=False"] for _, ov in plan]
+    assert masks == [
+        ["eval_modalities.rgb_static_pixels=False"],
+        ["eval_modalities.rgb_gripper_pixels=False"],
+        ["eval_modalities.instruction=False"],
+    ]
+    assert all(s == "eval-mimicgen" and _combo(ov) == ("True",) * 4 and "n_eval=2" in ov for s, ov in plan)
+
+
+def test_upload_and_restore_carry_masked_results(tmp_path, monkeypatch):
+    from flower.evaluation.eval_records import read_csv
+
+    train_folder = tmp_path / "some_group" / "run1"
+    _write_train_cfg(train_folder)
+    main = _write_result_csv(train_folder, [(1, 1, 1)])
+    masked = main.parent.parent / "masked_static" / "mimicgen_core" / "result.csv"
+    write_csv(masked, read_csv(main))
+    logged = _fake_wandb(monkeypatch)
+    mimicgen_pipeline.upload(str(train_folder), [])
+    assert logged["files"] == [(str(main), "mimicgen.csv"), (str(masked), "masked_static/mimicgen.csv")]
+
+    other = tmp_path / "some_group" / "run2"
+    _write_train_cfg(other)
+    art = tmp_path / "artifact"
+    write_csv(art / "mimicgen.csv", [{"use_rgb_static": 1, "success": 1}])
+    write_csv(art / "blank_instruction" / "mimicgen.csv", [{"use_rgb_static": 1, "success": 1}])
+    monkeypatch.setattr(mimicgen_pipeline, "download_eval_artifact", lambda *a, **k: art)
+    mimicgen_pipeline.restore(str(other), [])
+    restored = mimicgen_pipeline.csv_path(str(other), []).parent.parent / "blank_instruction" / "mimicgen_core" / "result.csv"
+    assert len(read_csv(restored)) == 1

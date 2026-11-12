@@ -1,6 +1,7 @@
 """Tests for scripts/dist_scheduler.py: the distributed-evaluation task queue kept on the
 master machine (eligibility from W&B runs, claims, leases, retries, status)."""
 
+import re
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -305,3 +306,97 @@ def test_cli_add_uses_the_wandb_host_only_as_a_fallback(tmp_path, monkeypatch):
     with ds.locked_state(path) as state:
         assert state["tasks"][CAL]["host"] == "wandbhost" and state["tasks"][CAL]["opts"] == "PIPELINE_RESTORE=1"
         assert state["tasks"][MG]["host"] == "given" and state["tasks"][MG]["forced"]
+
+
+# ---------------------------------------------------------------------------
+# Tagged tasks (add --tag) and commit gating (add --min-commit, claim --commit)
+# ---------------------------------------------------------------------------
+
+NEW, OLD = "b" * 40, "a" * 40
+
+
+def _contains(ancestor, commit):
+    """A fake history: OLD <- NEW."""
+    return (ancestor, commit) in {(OLD, OLD), (OLD, NEW), (NEW, NEW)}
+
+
+def test_a_tagged_task_sits_next_to_the_run_task_and_round_trips_by_key():
+    state = _state(FakeRun(LIB, host="trainer"))
+    ds.claim(state, "w:0", T0)
+    ds.finish(state, LIB, "w:0", ok=True, msg="", now=T0)
+    task = ds.add(state, LIB, T0, opts="PIPELINE_MASKED=1", tag="masked")
+    key = f"{LIB}--masked"
+    assert set(state["tasks"]) == {LIB, key}
+    assert state["tasks"][LIB]["state"] == "done"
+    assert task["run_id"] == LIB and task["host"] == "trainer"
+    assert task["run_dir"] == "libero_10_dropout/2026-11-06_08-00-00"
+
+    line = ds.task_line(ds.claim(state, "w:1", T0)).split("\t")
+    assert line == [key, "libero", "trainer", "libero_10_dropout/2026-11-06_08-00-00", "PIPELINE_MASKED=1"]
+    assert ds.heartbeat(state, key, "w:1", T0)
+    assert ds.finish(state, key, "w:1", ok=True, msg="", now=T0)
+    assert state["tasks"][key]["state"] == "done"
+    ds.refresh(state, [FakeRun(LIB, artifacts=("evaluation",))], SINCE, [], T0)
+    assert key in ds.status_table(state, T0)
+
+
+def test_a_gated_task_goes_only_to_a_worker_whose_commit_contains_it():
+    state = _state(FakeRun(LIB, created_at="2026-11-06T08:00:00Z"))
+    ds.add(state, CAL, T0 - timedelta(days=1), host="h", tag="masked", min_commit=NEW)  # older: first in line
+
+    # an old worker (no commit) and one on an older commit skip it and get the plain task
+    assert ds.claim(state, "old:0", T0, contains=_contains)["run_id"] == LIB
+    assert ds.claim(state, "stale:0", T0, commit=OLD, contains=_contains) is None
+    task = ds.claim(state, "new:0", T0, commit=NEW, contains=_contains)
+    assert ds.task_key(task) == f"{CAL}--masked" and task["commit"] == NEW
+    assert state["tasks"][LIB]["commit"] is None
+
+
+def test_an_old_state_file_without_the_new_fields_still_works():
+    state = _state(FakeRun(LIB))
+    for field in ("key", "min_commit", "commit"):
+        state["tasks"][LIB].pop(field, None)
+    task = ds.claim(state, "w:0", T0, commit=NEW, contains=lambda a, c: pytest.fail("no gate to check"))
+    assert ds.task_line(task).split("\t")[0] == LIB
+    assert LIB in ds.status_table(state, T0)
+
+
+def test_status_shows_the_claiming_commit_and_the_gate():
+    state = ds.empty_state()
+    ds.add(state, CAL, T0, host="h", tag="masked", min_commit=NEW)
+    ds.claim(state, "w:0", T0, commit=NEW, contains=_contains)
+    out = ds.status_table(state, T0)
+    assert NEW[:8] in out and f"{CAL}--masked" in out
+
+
+def test_cli_add_resolves_min_commit_and_claim_passes_the_commit(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    monkeypatch.setattr(ds, "resolve_commit", lambda rev: NEW if rev == "HEAD" else pytest.fail(rev))
+    monkeypatch.setattr(ds, "git_contains", _contains)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["dist_scheduler.py", "--state", str(path), "add", "--run", CAL, "--host", "h", "--tag", "masked",
+         "--min-commit", "HEAD", "--opts", "PIPELINE_MASKED=1"],
+    )
+    ds.main()
+    with ds.locked_state(path) as state:
+        assert state["tasks"][f"{CAL}--masked"]["min_commit"] == NEW
+        state["refreshed"] = ds._iso(datetime.now(timezone.utc))
+    for commit, expect in ((OLD, False), (NEW, True)):
+        monkeypatch.setattr(
+            sys, "argv",
+            ["dist_scheduler.py", "--state", str(path), "--since", SINCE, "claim", "--worker", "w:0", "--commit", commit],
+        )
+        ds.main()
+        with ds.locked_state(path) as state:
+            assert (state["tasks"][f"{CAL}--masked"]["state"] == "running") is expect
+
+
+def test_resolve_commit_and_git_contains_use_the_repo():
+    head = ds.resolve_commit("HEAD")
+    assert re.fullmatch(r"[0-9a-f]{40}", head)
+    assert ds.git_contains(ds.resolve_commit("HEAD~1"), head)
+    assert not ds.git_contains(head, ds.resolve_commit("HEAD~1"))
+    assert not ds.git_contains(head, "0" * 40)  # unknown commit: not up to date
+    with pytest.raises(ValueError):
+        ds.resolve_commit("no-such-rev")

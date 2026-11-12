@@ -79,6 +79,15 @@ def inference_noise(
     return torch.cat(rows, dim=0).to(device)
 
 
+def mean_pixel(images: torch.Tensor) -> torch.Tensor:
+    """Every pixel of each frame [..., C, H, W] replaced by that frame's per-channel mean.
+
+    Taken on the normalized model input: normalization is affine per channel, so this is
+    the normalized mean of the frame's raw pixels.
+    """
+    return images.mean(dim=(-2, -1), keepdim=True).expand_as(images)
+
+
 class FLOWERVLA(pl.LightningModule):
     def __init__(
         self,
@@ -196,6 +205,9 @@ class FLOWERVLA(pl.LightningModule):
         # present but replace every instruction with "" in construct_prompts, so the model
         # still sees the prompt template ("... Task Instruction:") at its usual positions.
         self.eval_blank_instruction = False
+        # Eval-time mean-pixel views (eval_modalities.rgb_*_pixels=false): (static, wrist).
+        # A set view is still encoded, but every pixel becomes that frame's per-channel mean.
+        self.eval_mean_pixel: Tuple[bool, bool] = (False, False)
 
         # Eval-time per-episode noise seeding: None (default) = unchanged single batched
         # torch.randn in forward(). Set by the eval harness via set_eval_noise_seeds() to
@@ -1033,6 +1045,8 @@ class FLOWERVLA(pl.LightningModule):
         image2_features = None
 
         if present[0]:
+            if not self.training and self.eval_mean_pixel[0]:
+                image_tensor = mean_pixel(image_tensor)
             image_features = self.vlm._encode_image(
                 image_tensor.view(-1, C, H, W).to(device).to(default_type)
             ).to(default_type)
@@ -1040,6 +1054,8 @@ class FLOWERVLA(pl.LightningModule):
 
         if present[1]:
             image2_tensor = batch["rgb_obs"]['rgb_gripper']
+            if not self.training and self.eval_mean_pixel[1]:
+                image2_tensor = mean_pixel(image2_tensor)
             image2_features = self.vlm._encode_image(
                 image2_tensor.view(-1, C, H, W).to(device).to(default_type)
             ).to(default_type)

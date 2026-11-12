@@ -14,6 +14,8 @@ from flower.evaluation.eval_records import (
     blank_instruction,
     checkpoint_name,
     env_seed,
+    masked_subdir,
+    mean_pixel_views,
     merge_rank_csvs,
     merge_result_csv,
     merge_rows,
@@ -547,3 +549,45 @@ def test_blank_instruction(eval_modalities, expected):
 def test_blank_instruction_needs_the_language_template():
     with pytest.raises(ValueError):
         blank_instruction({"language": False, "instruction": False})
+
+
+# ---------------------------------------------------------------------------
+# mean-pixel images (eval_modalities.rgb_*_pixels=false) and the masked-eval subdir
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "eval_modalities, expected",
+    [
+        (None, (False, False)),
+        ({"rgb_static_pixels": False}, (True, False)),
+        ({"rgb_gripper_pixels": False, "language": False}, (False, True)),
+        ({"rgb_static_pixels": False, "rgb_gripper_pixels": False}, (True, True)),
+    ],
+)
+def test_mean_pixel_views(eval_modalities, expected):
+    assert mean_pixel_views(eval_modalities) == expected
+
+
+@pytest.mark.parametrize("view", ["rgb_static", "rgb_gripper"])
+def test_mean_pixel_needs_the_camera(view):
+    with pytest.raises(ValueError):
+        mean_pixel_views({view: False, f"{view}_pixels": False})
+
+
+@pytest.mark.parametrize(
+    "eval_modalities, expected",
+    [
+        (None, ""),
+        ({"rgb_static": False}, ""),
+        ({"instruction": False}, "blank_instruction"),
+        ({"rgb_static_pixels": False}, "masked_static"),
+        ({"rgb_gripper_pixels": False}, "masked_wrist"),
+        ({"rgb_static_pixels": False, "instruction": False}, "masked_static+instruction"),
+        (
+            {"rgb_static_pixels": False, "rgb_gripper_pixels": False, "instruction": False},
+            "masked_static+wrist+instruction",
+        ),
+    ],
+)
+def test_masked_subdir(eval_modalities, expected):
+    assert masked_subdir(eval_modalities) == expected

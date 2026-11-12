@@ -144,6 +144,17 @@ MODALITY_OFF_VARIANTS = {
     "plus_no_lang": ("language", "no_lang"),
 }
 
+# Masked-input evals (plan --masked, ./run.sh PIPELINE_MASKED=1): the input keeps its
+# tokens but carries no content -- a camera's pixels become each frame's per-channel mean,
+# the instruction becomes "" under the kept prompt template. Variant -> (trained input it
+# needs, eval_modalities key set to False). The variant is the result subdir the eval
+# writes into (eval_records.masked_subdir) and the artifact member prefix.
+MASKED_VARIANTS = {
+    "masked_static": ("rgb_static", "rgb_static_pixels"),
+    "masked_wrist": ("rgb_gripper", "rgb_gripper_pixels"),
+    "blank_instruction": ("language", "instruction"),
+}
+
 # Variant token -> (LIBERO_VARIANT arm, LIBERO-PRO suite tag). Unlike orig/plus, a PRO
 # eval line evaluates a *different benchmark registry key* per perturbation
 # (libero_10_lan, libero_10_object, ...), so the tag has to be part of the variant token
@@ -398,6 +409,44 @@ def combo_in_csv(csv_path: Path, combo: Dict[str, bool], use_proprio: bool) -> b
     return any(_matches(row, effective_combo) and not row.get("task_category_filter") for row in read_csv(csv_path))
 
 
+def masked_csv_path(csv_path: Path, variant: str) -> Path:
+    """eval_logs/<ckpt>/<suite_dir>/result.csv -> eval_logs/<ckpt>/<variant>/<suite_dir>/result.csv"""
+    return csv_path.parent.parent / variant / csv_path.parent.name / csv_path.name
+
+
+def masked_member(variant: str, member: str) -> str:
+    return f"{variant}/{member}"
+
+
+def masked_lines(
+    service: str,
+    overrides: List[str],
+    full: Dict[str, bool],
+    csv_path: Path,
+    use_proprio: bool,
+    resume: bool,
+) -> List[Tuple[str, List[str]]]:
+    """One eval line per masked input the model was trained on (shared with
+    calvin_pipeline.py and mimicgen_pipeline.py). `overrides` already select the trained
+    inputs `full`; the mask is appended last, so it wins. resume skips a variant whose
+    result.csv already holds `full`."""
+    return [
+        (service, overrides + [f"eval_modalities.{key}=False"])
+        for variant, (needed, key) in MASKED_VARIANTS.items()
+        if full[needed] and not (resume and combo_in_csv(masked_csv_path(csv_path, variant), full, use_proprio))
+    ]
+
+
+def masked_artifact_members(csv_path: Path, member: str) -> List[Tuple[Path, str]]:
+    """(file, member name) for every masked-input result.csv next to csv_path."""
+    paths = [(masked_csv_path(csv_path, v), masked_member(v, member)) for v in MASKED_VARIANTS]
+    return [(path, name) for path, name in paths if path.exists()]
+
+
+def masked_restore_targets(csv_path: Path, member: str) -> Dict[str, Path]:
+    return {masked_member(v, member): masked_csv_path(csv_path, v) for v in MASKED_VARIANTS}
+
+
 def _eval_overrides(benchmark_name: str, train_folder: str, checkpoint: str, combo: Dict[str, bool]) -> List[str]:
     overrides = [
         f"benchmark_name={benchmark_name}",
@@ -438,8 +487,11 @@ def plan_lines(
     skip_pro_combos: bool = False,
     skip_multi_off: bool = False,
     all_combos: bool = False,
+    masked: bool = False,
 ) -> List[Tuple[str, List[str]]]:
-    """reeval_variants, when given, restricts the plan to those variants only, and each
+    """masked plans only the masked-input evals (MASKED_VARIANTS) of the original suite.
+
+    reeval_variants, when given, restricts the plan to those variants only, and each
     of them is replanned unconditionally (see should_replan below) -- the caller
     (main()) is expected to have already validated the selection (resolve_reeval_variants),
     not to have touched any result.csv; that now happens lazily, per suite, inside
@@ -451,6 +503,10 @@ def plan_lines(
     full = trained_combo(train_cfg)
     benchmark_name, resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
     parsed = parse_overrides(extra_overrides)
+    if masked:
+        orig_csv = _csv_path(resolved_train_folder, checkpoint, "orig", benchmark_name)
+        base = _eval_overrides(benchmark_name, resolved_train_folder, checkpoint, full) + extra_overrides
+        return masked_lines("eval", base, full, orig_csv, use_proprio, resume)
 
     def already_done(variant: str, combo: Dict[str, bool]) -> bool:
         if not resume:
@@ -744,8 +800,9 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
             pid_txt = None
 
     members = artifact_members(orig_csv, plus_csv, modality_off_csvs, pid_txt, pro_csvs)
+    members += masked_artifact_members(orig_csv, "libero_orig.csv")
 
-    if not any(p.exists() for p in [orig_csv, plus_csv, *modality_off_csvs.values(), *pro_csvs.values()]):
+    if not members:
         print(f"Nothing to upload: no result.csv found under {orig_csv.parent.parent}.")
         return
 
@@ -806,6 +863,7 @@ def restore(train_folder: str, extra_overrides: List[str]) -> None:
         }
         for variant, path in modality_off_csv_paths(resolved_train_folder, checkpoint, benchmark_name, use_proprio).items():
             targets[modality_off_member(variant)] = path
+        targets.update(masked_restore_targets(targets["libero_orig.csv"], "libero_orig.csv"))
         written = restore_files(artifact_dir, targets)
         # libero_pro.csv concatenates the PRO suites (write_pro_csv); split it back by arm
         # and suite into each suite's own result.csv.
@@ -835,6 +893,7 @@ def main() -> None:
     plan_p.add_argument("--skip-pro-combos", action="store_true")
     plan_p.add_argument("--skip-multi-off", action="store_true")
     plan_p.add_argument("--all-combos", action="store_true")
+    plan_p.add_argument("--masked", action="store_true", help="only the masked-input evals (MASKED_VARIANTS)")
     plan_p.add_argument("overrides", nargs="*")
 
     upload_p = subparsers.add_parser("upload")
@@ -883,6 +942,7 @@ def main() -> None:
             args.skip_pro_combos,
             args.skip_multi_off,
             args.all_combos,
+            args.masked,
         ):
             print("\t".join([service] + overrides))
     elif args.cmd == "upload":

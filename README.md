@@ -1200,6 +1200,22 @@ for an all-inputs eval:
   log_wandb=False eval_modalities.instruction=False
 ```
 
+**Masked inputs (mean-pixel cameras).** `eval_modalities.rgb_static_pixels=False` /
+`rgb_gripper_pixels=False` keep that camera's tokens but replace every frame by its own
+per-channel mean pixel (`FLOWERVLA.eval_mean_pixel`, applied in `encode_observations` on the
+normalized input; normalization is per-channel affine, so this is the frame's raw mean pixel).
+The view must stay on. Rollout videos still show the real frames. Rows go to
+`eval_logs/<ckpt>/masked_static/` or `masked_wrist/` (any combination of masks gets its own
+`masked_<inputs>/` directory; the instruction alone keeps `blank_instruction/`).
+
+`PIPELINE_MASKED=1 ./run.sh pipeline|pipeline-calvin|pipeline-mimicgen <run>` runs the three
+single-masked evals of a run on its trained inputs (LIBERO: the original LIBERO-10 suite
+only): static camera masked, wrist camera masked, instruction blank. It restores the run's
+earlier results from W&B first, and every `upload` (masked or not) carries the masked CSVs as
+extra members of the run's `eval-<run>` artifact, e.g. `masked_static/libero_orig.csv`,
+`blank_instruction/calvin.csv`, `masked_wrist/mimicgen.csv`. The existing collectors read only
+their own member names, so these never mix into the all-inputs results.
+
 Compare modality combos — either within one checkpoint's own `result.csv` or across
 two different checkpoints' files — with `scripts/compare_eval_csvs.py`, which takes
 `--modalities-a`/`--modalities-b` (each a comma-separated subset of
@@ -1819,7 +1835,11 @@ Host names are those of `~/.ssh/config`, which are also the host names W&B recor
   followed, so a run whose files were moved elsewhere and symlinked back copies the real files), run
   `./run.sh pipeline` / `pipeline-calvin` / `pipeline-mimicgen` with `CUDA_VISIBLE_DEVICES=<gpu>`,
   `PIPELINE_RESUME=1` and the task's options, report done or failed, and delete the copied
-  `last.ckpt`. `.hydra` and `eval_logs` stay as a local copy of the results.
+  `last.ckpt`. `.hydra` and `eval_logs` stay as a local copy of the results. A checkpoint that
+  was already there before the copy is never deleted: when the worker's `SAVES_DIR` is the
+  training host's disk mounted over the network, that file is the original.
+- Every claim sends the commit the worker's checkout is on (`git rev-parse HEAD`), which gates
+  `--min-commit` tasks (below); `dist-status` shows it in the `commit` column.
 - A run that trained on the worker's own machine is evaluated in place: no ssh, no copy, no
   deletion.
 - With nothing queued it asks again every `DIST_POLL_MIN` minutes. It runs until you stop it.
@@ -1863,8 +1883,40 @@ pipeline options, e.g. to evaluate input combinations it is missing:
   `<group>/<timestamp>`, derived from the run id.
 - An added task is never marked done just because the run already has an evaluation artifact.
   `--opts` defaults to the `DIST_EVAL_OPTS` rules; `add` refuses a task that is running.
-- Workers run the pipelines from their own checkout, so update them before adding tasks that
-  use new options.
+- Workers run the pipelines from their own checkout. For a task that needs newer code, pass
+  `--min-commit <rev>` (resolved in the master's checkout, e.g. `HEAD`): only a worker whose
+  checkout contains that commit gets it. A worker that reports no commit (a `dist_worker.sh`
+  older than this option) or one the master does not know (not pushed or fetched) only gets
+  tasks without `--min-commit`, so it keeps working through the rest of the queue.
+- `--tag <name>` queues the run as a separate task, keyed `<run_id>--<name>`, next to the run's
+  own task instead of replacing it. Use that key with `requeue`/`skip`.
+
+Masked-input evals (`PIPELINE_MASKED=1`, see "Masked inputs" above) of the no-dropout
+models, gated on the commit that added them:
+
+```bash
+./run.sh dist-sched add --run calvin_abcd_d_2026-10-27_22-04-48 --tag masked \
+    --opts "PIPELINE_MASKED=1" --min-commit HEAD
+```
+
+**Adding a worker machine.**
+
+1. Clone this repo and check out the branch the master runs (same remote, so its commits are
+   known to the master), then build the images that machine needs: `./run.sh build`,
+   `build-calvin`, `build-mimicgen`.
+2. Copy `vars.env.example` to `vars.env` and set `SAVES_DIR`, `DATA_DIR` and `CALVIN_DATA_DIR`
+   (the data the LIBERO, MimicGen and CALVIN evals read), `WANDB_API_KEY`,
+   `DIST_MASTER`, `DIST_MASTER_REPO` and `DIST_HOSTS` (every training host holding checkpoints,
+   with its `SAVES_DIR`; add this machine's own entry if it trains too).
+3. Make sure `ssh <host> true` works without a prompt for the master and every `DIST_HOSTS`
+   host (key in `~/.ssh/config`; the worker loads it into its own ssh-agent at start).
+4. In a tmux window: `./run.sh dist-worker <gpus>`, e.g. `./run.sh dist-worker 0,1`.
+
+**Updating workers.** Tasks run `run.sh` and the Python code fresh from the checkout, so a
+`git pull` on a worker reaches its next task, and its next claim reports the new commit.
+`dist_worker.sh` itself is read once at start: after a change to it (e.g. the first update
+that adds commit reporting), restart the worker. Ctrl-C hands its running tasks back to the
+queue; then `git pull` and start it again. Check the `commit` column of `./run.sh dist-status`.
 
 ### Results tables for docs/results.md
 

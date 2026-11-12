@@ -381,3 +381,10 @@ def test_blank_instruction_sets_model_flag():
     model = _FakeModel()
     fem.EvaluateMimicgen(**_minimal_ctor_kwargs(model))
     assert model.eval_blank_instruction is False
+
+
+def test_mean_pixel_sets_model_flag():
+    model = _FakeModel()
+    fem.EvaluateMimicgen(**_minimal_ctor_kwargs(model), eval_modalities={"rgb_static_pixels": False})
+    assert model.eval_mean_pixel == (True, False)
+    assert model.eval_modality_mask is None

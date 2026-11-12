@@ -42,7 +42,7 @@ def _run(tmp_path, args, extra_env=None):
     env["FAKE_LOG"] = str(log)
     for key in (
         "PIPELINE_REEVAL", "SKIP_PIPELINE", "PIPELINE_RESUME", "PIPELINE_ALL_COMBOS", "PIPELINE_SKIP_MULTI_OFF",
-        "PIPELINE_RESTORE",
+        "PIPELINE_RESTORE", "PIPELINE_MASKED",
     ):
         env.pop(key, None)
     env.update(extra_env or {})
@@ -139,3 +139,12 @@ def test_pipeline_calvin_restores_before_planning(tmp_path):
     assert "pipeline-artifacts-calvin" in lines[0]
     assert "calvin_pipeline.py plan" in lines[1]
     assert len([line for line in lines if "flower_evaluate.py" in line]) == 3
+
+
+def test_pipeline_calvin_masked_restores_then_plans_masked(tmp_path):
+    lines = _run(tmp_path, ["pipeline-calvin", "/fake/train_dir"], {"PIPELINE_MASKED": "1"})
+    assert "calvin_pipeline.py restore --train-folder /fake/train_dir" in lines[0]
+    assert "calvin_pipeline.py plan" in lines[1] and "--masked" in lines[1]
+    assert "calvin_pipeline.py upload" in lines[-1]
+    default = _run(tmp_path, ["pipeline-calvin", "/fake/train_dir"])
+    assert "--masked" not in default[0]

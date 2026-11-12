@@ -69,6 +69,8 @@ eval_modalities:  # set any to false to physically drop that modality's tokens p
   language: true
   proprio: true  # requires model.use_proprio=True; not a token, gated separately (see FLOWERVLA.eval_proprio_mask)
   instruction: true  # false keeps the prompt template and blanks the instruction (needs language: true); see FLOWERVLA.eval_blank_instruction
+  rgb_static_pixels: true  # false keeps the static view's tokens but replaces each frame by its per-channel mean pixel (needs rgb_static: true); see FLOWERVLA.eval_mean_pixel
+  rgb_gripper_pixels: true  # same for the wrist view (needs rgb_gripper: true)
 reeval: false  # set by eval_pipeline.py's `plan --reeval` -- rotate result.csv aside before writing, instead of merging into it
 base_task: null  # keep only tasks whose eval_records.base_task_name matches -- on LIBERO-Plus,
                  # every perturbation variant of one original task (e.g. all its camera viewpoints)

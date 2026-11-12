@@ -280,3 +280,25 @@ def test_stopping_an_idle_worker_exits_promptly(tmp_path):
     worker.communicate(timeout=20)
     assert time.time() - start < 10  # does not wait out the 10-minute poll sleep
     assert "release" not in ssh_log.read_text()
+
+
+def test_claim_declares_the_checkout_commit(tmp_path):
+    head = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    result, logs, _ = _run_worker(tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert any("claim" in l and f"--commit {head}" in l for l in logs["ssh"]), logs["ssh"]
+
+
+def test_a_remote_run_already_on_this_disk_keeps_its_checkpoint(tmp_path):
+    """A worker whose SAVES_DIR is the training host's disk (mounted over the network)
+    sees the run as remote, but the checkpoint it would delete is the original."""
+    local = tmp_path / "saves" / "train_logs" / RUN_DIR / "seed_42" / "saved_models"
+    local.mkdir(parents=True)
+    (local / "last.ckpt").write_text("original")
+
+    result, logs, _ = _run_worker(tmp_path, task_host="hostB")
+    assert result.returncode == 0, result.stderr
+    assert len(logs["run"]) == 1
+    assert (local / "last.ckpt").exists()

@@ -122,6 +122,7 @@ class _ObsStub:
         modality_dropout: bool = False,
         modality_dropout_strategy: str = "dirichlet",
         training: bool = False,
+        eval_mean_pixel=(False, False),
         vlm: _FakeVLM = None,
         tokens_per_image: int = 4,
         embed_dim: int = 8,
@@ -133,6 +134,7 @@ class _ObsStub:
         self.use_proprio = False
         self.modality_mask = modality_mask
         self.eval_modality_mask = eval_modality_mask
+        self.eval_mean_pixel = eval_mean_pixel
         self.proprio_mask = None
         self.eval_proprio_mask = None
         self.modality_dropout = modality_dropout
@@ -476,3 +478,46 @@ def test_construct_prompts_blank_instruction(training, blank, blanked):
     else:
         assert prompts == [stub.format_instruction("open the drawer"), stub.format_instruction("push the button")]
         assert all(p.startswith(template) for p in prompts)
+
+
+# ---------------------------------------------------------------------------
+# Mean-pixel images (eval_modalities.rgb_*_pixels=false): a masked view still reaches the
+# image encoder, as its own per-channel mean, so its tokens keep their place.
+# ---------------------------------------------------------------------------
+
+def _recording_vlm():
+    vlm = _FakeVLM(tokens_per_image=4, embed_dim=8)
+    vlm.seen = []
+    encode = vlm._encode_image
+
+    def record(pixel_values):
+        vlm.seen.append(pixel_values.clone())
+        return encode(pixel_values)
+
+    vlm._encode_image = record
+    return vlm
+
+
+@pytest.mark.parametrize("mean_pixel", [(True, False), (False, True), (True, True)])
+def test_mean_pixel_view_reaches_the_encoder_as_its_channel_mean(mean_pixel):
+    batch = _batch()
+    B, T, C, H, W = batch["rgb_obs"]["rgb_static"].shape
+    vlm = _recording_vlm()
+    out = _ObsStub(vlm=vlm, eval_mean_pixel=mean_pixel).encode_observations(batch)
+    full = _ObsStub(vlm=_FakeVLM(tokens_per_image=4, embed_dim=8)).encode_observations(batch)
+
+    for seen, key, masked in zip(vlm.seen, ("rgb_static", "rgb_gripper"), mean_pixel):
+        raw = batch["rgb_obs"][key].view(-1, C, H, W)
+        expected = raw.mean(dim=(-2, -1), keepdim=True).expand_as(raw) if masked else raw
+        torch.testing.assert_close(seen, expected)
+    assert out["features"].shape == full["features"].shape
+    assert torch.equal(out["attention_mask"], full["attention_mask"])
+
+
+def test_mean_pixel_is_ignored_in_training():
+    batch = _batch()
+    vlm = _recording_vlm()
+    _ObsStub(vlm=vlm, training=True, eval_mean_pixel=(True, True)).encode_observations(batch)
+    B, T, C, H, W = batch["rgb_obs"]["rgb_static"].shape
+    assert torch.equal(vlm.seen[0], batch["rgb_obs"]["rgb_static"].view(-1, C, H, W))
+    assert torch.equal(vlm.seen[1], batch["rgb_obs"]["rgb_gripper"].view(-1, C, H, W))

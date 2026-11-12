@@ -83,7 +83,7 @@ def _run_pipeline(tmp_path, extra_env=None):
     env["FAKE_UPLOAD_LOG"] = str(upload_log)
     for key in (
         "PIPELINE_RESUME", "PIPELINE_REEVAL", "PIPELINE_REEVAL_SUITES", "PIPELINE_SKIP_MODALITY_OFF",
-        "PIPELINE_SKIP_PRO_COMBOS", "PIPELINE_SKIP_MULTI_OFF", "PIPELINE_ALL_COMBOS", "PIPELINE_RESTORE",
+        "PIPELINE_SKIP_PRO_COMBOS", "PIPELINE_SKIP_MULTI_OFF", "PIPELINE_ALL_COMBOS", "PIPELINE_RESTORE", "PIPELINE_MASKED",
         "FAKE_PLAN_EXIT", "FAKE_PLAN_EMPTY",
     ):
         env.pop(key, None)
@@ -254,3 +254,10 @@ def test_pipeline_restores_before_planning_when_env_set(tmp_path):
     (tmp_path / "default").mkdir()
     _, _, default, _ = _run_pipeline(tmp_path / "default")
     assert not any("restore" in line for line in default)
+
+
+def test_pipeline_masked_restores_then_plans_masked(tmp_path):
+    result, evals, plan_lines, _ = _run_pipeline(tmp_path, extra_env={"PIPELINE_MASKED": "1"})
+    assert result.returncode == 0, result.stderr
+    assert "eval_pipeline.py restore --train-folder /fake/train_dir" in plan_lines[0]
+    assert "eval_pipeline.py plan" in plan_lines[1] and "--masked" in plan_lines[1]

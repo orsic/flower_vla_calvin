@@ -27,7 +27,7 @@ import re
 import time
 import zlib
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 # Columns that together identify one episode. Used as the merge/dedup key.
 # The four use_* modality flags are part of the key so that evaluating the same
@@ -117,9 +117,38 @@ def blank_instruction(eval_modalities: Optional[Dict[str, bool]]) -> bool:
     return blank
 
 
-def blank_instruction_subdir(eval_modalities: Optional[Dict[str, bool]]) -> str:
-    """result_dir() subdir for a blank-instruction eval, "" otherwise."""
-    return "blank_instruction" if blank_instruction(eval_modalities) else ""
+def mean_pixel_views(eval_modalities: Optional[Dict[str, bool]]) -> Tuple[bool, bool]:
+    """(static, wrist): which cameras eval_modalities.rgb_*_pixels=false replaces by the
+    frame's per-channel mean pixel (see FLOWERVLA.eval_mean_pixel). The view's tokens stay,
+    so this requires the camera itself to stay on."""
+    eval_modalities = eval_modalities or {}
+    views = []
+    for view in ("rgb_static", "rgb_gripper"):
+        masked = not bool(eval_modalities.get(f"{view}_pixels", True))
+        if masked and not bool(eval_modalities.get(view, True)):
+            raise ValueError(
+                f"eval_modalities.{view}_pixels=False keeps the view's tokens and replaces its "
+                f"pixels by their mean; it requires eval_modalities.{view}=True"
+            )
+        views.append(masked)
+    return views[0], views[1]
+
+
+def masked_subdir(eval_modalities: Optional[Dict[str, bool]]) -> str:
+    """result_dir() subdir for an eval with masked inputs, "" when nothing is masked.
+
+    Instruction alone keeps its original name, "blank_instruction"; anything else is
+    "masked_" + the masked inputs, e.g. "masked_static" or "masked_static+wrist+instruction".
+    """
+    static, wrist = mean_pixel_views(eval_modalities)
+    parts = [
+        name
+        for name, masked in (("static", static), ("wrist", wrist), ("instruction", blank_instruction(eval_modalities)))
+        if masked
+    ]
+    if parts == ["instruction"]:
+        return "blank_instruction"
+    return "masked_" + "+".join(parts) if parts else ""
 
 
 # Perturbation markers LIBERO-Plus appends to an original task name. Digit-anchored

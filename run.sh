@@ -391,6 +391,11 @@ case "$CMD" in
     #                      # first put the result CSVs of the run's latest W&B eval
     #                      # artifact back into eval_logs (never over a local file), so
     #                      # only the missing combos run and upload publishes them all
+    #   PIPELINE_MASKED=1 ./run.sh pipeline /saves/train_logs/.../<run>
+    #                      # only the masked-input LIBERO-10 evals (each camera replaced by
+    #                      # its mean pixel, then a blank instruction; tokens kept), into
+    #                      # eval_logs/<ckpt>/<masked_*|blank_instruction>/; implies
+    #                      # PIPELINE_RESTORE so the upload keeps every earlier result
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline <train_run_dir> [hydra_overrides...]" >&2
         exit 1
@@ -413,15 +418,20 @@ case "$CMD" in
     [[ -n "${PIPELINE_SKIP_MULTI_OFF:-}" ]] && skip_multi_off_flag=(--skip-multi-off)
     all_combos_flag=()
     [[ -n "${PIPELINE_ALL_COMBOS:-}" ]] && all_combos_flag=(--all-combos)
+    # PIPELINE_MASKED: only the masked-input evals; restores first, since the upload replaces
+    # the artifact and must carry the earlier results along.
+    masked_flag=()
+    [[ -n "${PIPELINE_MASKED:-}" ]] && masked_flag=(--masked)
 
-    if [[ -n "${PIPELINE_RESTORE:-}" ]]; then
+    if [[ -n "${PIPELINE_RESTORE:-}${PIPELINE_MASKED:-}" ]]; then
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts \
             python scripts/eval_pipeline.py restore --train-folder "$train_dir" -- "$@"
     fi
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell \
         python scripts/eval_pipeline.py plan --train-folder "$train_dir" \
         "${resume_flag[@]}" "${reeval_flag[@]}" "${skip_modality_off_flag[@]}" \
-        "${skip_pro_combos_flag[@]}" "${skip_multi_off_flag[@]}" "${all_combos_flag[@]}" -- "$@")"
+        "${skip_pro_combos_flag[@]}" "${skip_multi_off_flag[@]}" "${all_combos_flag[@]}" \
+        "${masked_flag[@]}" -- "$@")"
 
     # Read every plan line into memory before launching anything -- a long-running eval
     # container previously held the loop's plan text on a shared fd for its entire
@@ -543,6 +553,7 @@ case "$CMD" in
     #   PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1 ./run.sh pipeline-mimicgen ...
     #       # a non-dropout run with all inputs and each one withheld (see ./run.sh pipeline)
     #   PIPELINE_RESTORE=1 ./run.sh pipeline-mimicgen ...  # restore W&B results first
+    #   PIPELINE_MASKED=1 ./run.sh pipeline-mimicgen ...   # masked-input evals only (see ./run.sh pipeline)
     #   PIPELINE_REEVAL=1 ./run.sh pipeline-mimicgen /saves/train_logs/mimicgen/.../<run>
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline-mimicgen <train_run_dir> [hydra_overrides...]" >&2
@@ -554,8 +565,10 @@ case "$CMD" in
     [[ -n "${PIPELINE_RESUME:-}" ]] && flags+=(--resume)
     [[ -n "${PIPELINE_ALL_COMBOS:-}" ]] && flags+=(--all-combos)
     [[ -n "${PIPELINE_SKIP_MULTI_OFF:-}" ]] && flags+=(--skip-multi-off)
+    # PIPELINE_MASKED: only the masked-input evals, after a restore (see ./run.sh pipeline).
+    [[ -n "${PIPELINE_MASKED:-}" ]] && flags+=(--masked)
 
-    if [[ -n "${PIPELINE_RESTORE:-}" ]]; then
+    if [[ -n "${PIPELINE_RESTORE:-}${PIPELINE_MASKED:-}" ]]; then
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-mimicgen \
             python scripts/mimicgen_pipeline.py restore --train-folder "$train_dir" -- "$@"
     fi
@@ -649,6 +662,7 @@ case "$CMD" in
     #   PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1 ./run.sh pipeline-calvin ...
     #       # a non-dropout run with all inputs and each one withheld (see ./run.sh pipeline)
     #   PIPELINE_RESTORE=1 ./run.sh pipeline-calvin ...  # restore W&B results first
+    #   PIPELINE_MASKED=1 ./run.sh pipeline-calvin ...   # masked-input evals only (see ./run.sh pipeline)
     #   PIPELINE_REEVAL=1 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/<run>
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline-calvin <train_run_dir> [hydra_overrides...]" >&2
@@ -660,8 +674,10 @@ case "$CMD" in
     [[ -n "${PIPELINE_RESUME:-}" ]] && flags+=(--resume)
     [[ -n "${PIPELINE_ALL_COMBOS:-}" ]] && flags+=(--all-combos)
     [[ -n "${PIPELINE_SKIP_MULTI_OFF:-}" ]] && flags+=(--skip-multi-off)
+    # PIPELINE_MASKED: only the masked-input evals, after a restore (see ./run.sh pipeline).
+    [[ -n "${PIPELINE_MASKED:-}" ]] && flags+=(--masked)
 
-    if [[ -n "${PIPELINE_RESTORE:-}" ]]; then
+    if [[ -n "${PIPELINE_RESTORE:-}${PIPELINE_MASKED:-}" ]]; then
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \
             python scripts/calvin_pipeline.py restore --train-folder "$train_dir" -- "$@"
     fi
