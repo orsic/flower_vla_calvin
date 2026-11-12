@@ -664,11 +664,28 @@ case "$CMD" in
     #   PIPELINE_RESTORE=1 ./run.sh pipeline-calvin ...  # restore W&B results first
     #   PIPELINE_MASKED=1 ./run.sh pipeline-calvin ...   # masked-input evals only (see ./run.sh pipeline)
     #   PIPELINE_REEVAL=1 ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/<run>
+    #   PIPELINE_OPEN_LOOP=1 ./run.sh pipeline-calvin ...  # open loop instead (see below)
     if [[ $# -lt 1 ]]; then
         echo "Usage: ./run.sh pipeline-calvin <train_run_dir> [hydra_overrides...]" >&2
         exit 1
     fi
     train_dir="$1"; shift
+
+    # PIPELINE_OPEN_LOOP: the open-loop eval (scripts/open_loop_calvin.py) instead of the
+    # closed-loop one, between a restore and an upload of the run's open-loop-<run> W&B
+    # artifact, so a queue worker (which runs pipeline-calvin) can take it.
+    # PIPELINE_OPEN_LOOP_WITHHELD adds --masked-withheld.
+    if [[ -n "${PIPELINE_OPEN_LOOP:-}" ]]; then
+        ol_flags=()
+        [[ -n "${PIPELINE_OPEN_LOOP_WITHHELD:-}" ]] && ol_flags+=(--masked-withheld)
+        podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \
+            python scripts/calvin_pipeline.py restore-open-loop --train-folder "$train_dir" -- "$@"
+        podman-compose -f "$COMPOSE" run --rm -T eval-calvin \
+            python scripts/open_loop_calvin.py --train-folder "$train_dir" "${ol_flags[@]}"
+        podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \
+            python scripts/calvin_pipeline.py upload-open-loop --train-folder "$train_dir" -- "$@"
+        exit 0
+    fi
     flags=()
     [[ -n "${PIPELINE_REEVAL:-}" ]] && flags+=(--reeval)
     [[ -n "${PIPELINE_RESUME:-}" ]] && flags+=(--resume)

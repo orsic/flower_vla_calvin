@@ -150,7 +150,7 @@ The model trained without proprioception is the plain **no dropout** model. Miss
 - **Data:** the held-out environment D validation split, 1,087 annotated windows, 53,923 samples (one frame plus its 10-step action chunk).
 - **Losses:** the predicted-action MSE of the 4-step sampled chunk, and the flow-matching loss at five fixed flow times.
 - **Seeding:** noise is seeded per frame.
-- **Input combinations:** all token-input combinations for dropout models.
+- **Input combinations:** all token-input combinations for dropout models (with proprio withheld too, for models trained with it). Models without dropout get their trained inputs; the no dropout + proprio models also get each input withheld in turn: cameras replaced by their mean pixel, the instruction blanked with the prompt template kept, proprio zeroed.
 
 **Which results count.**
 - LIBERO results use only runs trained with commit `ffba3d2` or later, and only evaluations from commit `ca969a8` on. Before `ca969a8`, environment resets weren't seeded.

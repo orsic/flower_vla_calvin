@@ -14,6 +14,8 @@ Usage:
       [--all-combos] [--skip-multi-off] [-- overrides...]
   python scripts/calvin_pipeline.py upload --train-folder <dir> [-- overrides...]
   python scripts/calvin_pipeline.py restore --train-folder <dir> [-- overrides...]
+  python scripts/calvin_pipeline.py upload-open-loop --train-folder <dir> [-- overrides...]
+  python scripts/calvin_pipeline.py restore-open-loop --train-folder <dir> [-- overrides...]
 
 `plan` prints one line per eval, tab-separated:
     eval-calvin\t<override1>\t<override2>\t...
@@ -21,13 +23,18 @@ where the overrides are Hydra "key=value" tokens for flower/evaluation/flower_ev
 
 `upload` attaches result.csv as calvin.csv and, when it holds more than one modality
 combo, scripts/pid_modality.py's report as pid_modality.txt.
+
+`upload-open-loop` attaches scripts/open_loop_calvin.py's parts
+(<run>/open_loop/<ckpt>/parts/*.csv.gz) to their own artifact, open-loop-<run id>, as
+<ckpt>/parts/<file>; `restore-open-loop` puts the missing ones back.
 """
 
 import argparse
+import re
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import wandb
 from omegaconf import OmegaConf
@@ -48,7 +55,7 @@ from eval_pipeline import (  # noqa: E402
 )
 from mimicgen_pipeline import _eval_overrides, _resolve, write_pid_report  # noqa: E402
 
-from flower.evaluation.eval_records import result_dir  # noqa: E402
+from flower.evaluation.eval_records import checkpoint_name, result_dir  # noqa: E402
 
 LIBERO_VARIANT = "calvin"
 SUITE = "ABCD_D"
@@ -144,6 +151,65 @@ def restore(train_folder: str, extra_overrides: List[str]) -> None:
             print(f"restore: {path}")
 
 
+def open_loop_dir(train_folder: str, extra_overrides: List[str]) -> Path:
+    resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
+    return Path(resolved_train_folder) / "open_loop" / checkpoint_name(checkpoint)
+
+
+def open_loop_artifact_name(run_id: str) -> str:
+    return "open-loop-" + re.sub(r"[^A-Za-z0-9._-]", "-", run_id)
+
+
+def upload_open_loop(train_folder: str, extra_overrides: List[str]) -> None:
+    """Log every open-loop part as open-loop-<run id>. Each upload replaces the artifact's
+    member list, so a worker restores the earlier parts first (./run.sh pipeline-calvin)."""
+    out_dir = open_loop_dir(train_folder, extra_overrides)
+    parts = sorted((out_dir / "parts").glob("*.csv.gz"))
+    if not parts:
+        print(f"Nothing to upload: no open-loop parts in {out_dir / 'parts'}.")
+        return
+    train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
+    run_id = wandb_run_id(_resolve(train_folder, extra_overrides)[0])
+    run = wandb.init(
+        project=str(train_cfg.logger.project),
+        entity=str(train_cfg.logger.entity),
+        id=run_id,
+        resume="allow",
+    )
+    artifact = wandb.Artifact(open_loop_artifact_name(run_id), type="open_loop")
+    for part in parts:
+        artifact.add_file(str(part), name=f"{out_dir.name}/parts/{part.name}")
+    run.log_artifact(artifact)
+    run.finish()
+    print(f"Logged {open_loop_artifact_name(run_id)} ({len(parts)} parts) to {train_cfg.logger.project}/{run_id}")
+
+
+def download_open_loop_artifact(train_cfg, run_id: str, root: Path) -> Optional[Path]:
+    """Download the run's latest open-loop artifact into root; None if it has none."""
+    name = f"{train_cfg.logger.entity}/{train_cfg.logger.project}/{open_loop_artifact_name(run_id)}:latest"
+    try:
+        artifact = wandb.Api(timeout=120).artifact(name, type="open_loop")
+    except wandb.errors.CommError:
+        return None
+    return Path(artifact.download(root=str(root)))
+
+
+def restore_open_loop(train_folder: str, extra_overrides: List[str]) -> None:
+    """Put the open-loop parts of the run's W&B artifact that are missing locally back."""
+    train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
+    out_dir = open_loop_dir(train_folder, extra_overrides)
+    run_id = wandb_run_id(_resolve(train_folder, extra_overrides)[0])
+    with tempfile.TemporaryDirectory() as tmp:
+        artifact_dir = download_open_loop_artifact(train_cfg, run_id, Path(tmp))
+        if artifact_dir is None:
+            print("restore-open-loop: the run has no open-loop artifact -- nothing to restore")
+            return
+        members = (artifact_dir / out_dir.name / "parts").glob("*.csv.gz")
+        targets = {f"{out_dir.name}/parts/{m.name}": out_dir / "parts" / m.name for m in members}
+        for path in restore_files(artifact_dir, targets):
+            print(f"restore-open-loop: {path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     subparsers = parser.add_subparsers(dest="cmd", required=True)
@@ -165,6 +231,11 @@ def main() -> None:
     restore_p.add_argument("--train-folder", required=True)
     restore_p.add_argument("overrides", nargs="*")
 
+    for name in ("upload-open-loop", "restore-open-loop"):
+        open_loop_p = subparsers.add_parser(name)
+        open_loop_p.add_argument("--train-folder", required=True)
+        open_loop_p.add_argument("overrides", nargs="*")
+
     args = parser.parse_args()
 
     if args.cmd == "restore":
@@ -182,6 +253,10 @@ def main() -> None:
             print("\t".join([service] + overrides))
     elif args.cmd == "upload":
         upload(args.train_folder, args.overrides)
+    elif args.cmd == "upload-open-loop":
+        upload_open_loop(args.train_folder, args.overrides)
+    elif args.cmd == "restore-open-loop":
+        restore_open_loop(args.train_folder, args.overrides)
 
 
 if __name__ == "__main__":

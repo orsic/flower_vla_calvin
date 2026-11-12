@@ -42,7 +42,7 @@ def _run(tmp_path, args, extra_env=None):
     env["FAKE_LOG"] = str(log)
     for key in (
         "PIPELINE_REEVAL", "SKIP_PIPELINE", "PIPELINE_RESUME", "PIPELINE_ALL_COMBOS", "PIPELINE_SKIP_MULTI_OFF",
-        "PIPELINE_RESTORE", "PIPELINE_MASKED",
+        "PIPELINE_RESTORE", "PIPELINE_MASKED", "PIPELINE_OPEN_LOOP", "PIPELINE_OPEN_LOOP_WITHHELD",
     ):
         env.pop(key, None)
     env.update(extra_env or {})
@@ -148,3 +148,23 @@ def test_pipeline_calvin_masked_restores_then_plans_masked(tmp_path):
     assert "calvin_pipeline.py upload" in lines[-1]
     default = _run(tmp_path, ["pipeline-calvin", "/fake/train_dir"])
     assert "--masked" not in default[0]
+
+
+def test_pipeline_calvin_open_loop_restores_scores_and_uploads_only(tmp_path):
+    lines = _run(tmp_path, ["pipeline-calvin", "/fake/train_dir"], {"PIPELINE_OPEN_LOOP": "1", "PIPELINE_RESUME": "1"})
+
+    assert len(lines) == 3
+    assert " run --rm -T pipeline-artifacts-calvin python scripts/calvin_pipeline.py restore-open-loop " in lines[0]
+    assert "--train-folder /fake/train_dir" in lines[0]
+    assert " run --rm -T eval-calvin python scripts/open_loop_calvin.py --train-folder /fake/train_dir" in lines[1]
+    assert "--masked-withheld" not in lines[1]
+    assert " run --rm -T pipeline-artifacts-calvin python scripts/calvin_pipeline.py upload-open-loop " in lines[2]
+    assert not any("calvin_pipeline.py plan" in line or "flower_evaluate.py" in line for line in lines)
+
+
+def test_pipeline_calvin_open_loop_withheld_adds_the_masked_cells(tmp_path):
+    lines = _run(
+        tmp_path, ["pipeline-calvin", "/fake/train_dir"], {"PIPELINE_OPEN_LOOP": "1", "PIPELINE_OPEN_LOOP_WITHHELD": "1"}
+    )
+
+    assert "open_loop_calvin.py --train-folder /fake/train_dir --masked-withheld" in lines[1]

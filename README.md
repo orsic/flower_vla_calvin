@@ -580,7 +580,20 @@ The closed-loop eval gives one success rate per modality combo. The open-loop ch
   - `retreat`: open, after a close;
   - `no_grasp`: the whole window when the gripper never closes, as in pushes, sliders and buttons.
 
-**Which combos are scored.** A dropout run is scored on all 7 combos, a baseline run on all inputs only. Each combo is saved to `<run>/open_loop/last/parts/<combo>.csv.gz`; a rerun skips combos already present, and `--combos` splits one model across processes. When every combo is present, the parts are merged into `<run>/open_loop/last/calvin_val.csv.gz`.
+**Which combos are scored.**
+- A dropout run is scored on all 7 combos, or all 14 with proprio (each token combo with proprio on and zeroed).
+- A run without dropout is scored on the inputs it was trained on: all of them, or its fixed subset (`model.modalities`).
+- `--masked-withheld` adds the trained inputs with each one withheld in turn. A camera is withheld by replacing its frames with their mean pixel, language by blanking the instruction (the prompt template stays, as with `eval_modalities.instruction=false`), and proprio by zeroing it. This gives the dependence side of the paper's comparison: all inputs vs one withheld. The contribution side comes from the runs trained without that input.
+- **Labels:** the `combo` column names the inputs the model gets. `proprio` appears only for models trained with it, e.g. `static+wrist+lang+proprio`; a masked cell reads `wrist+lang+proprio (static masked)`. The `use_static`/`use_wrist`/`use_lang`/`use_proprio` and `masked` columns say the same.
+- **Files:** each cell is saved to `<run>/open_loop/last/parts/<combo>.csv.gz` (`<combo>.masked_<input>.csv.gz` for a masked cell). A rerun skips cells already present, and `--combos` (cell indices) splits one model across processes. When every cell is present, the parts are merged into `<run>/open_loop/last/calvin_val.csv.gz`.
+- `analyze-open-loop` draws only the 7 combos of models without proprio, so results of proprio models stay out of its figures.
+
+**Through the distributed queue, with results on W&B.** `PIPELINE_OPEN_LOOP=1 ./run.sh pipeline-calvin <run>` runs the open-loop eval instead of the closed-loop one. It first restores the parts already in the run's `open-loop-<run id>` W&B artifact (type `open_loop`, members `last/parts/<file>`, separate from the `eval-<run id>` artifact), then scores the missing cells and uploads all parts. `PIPELINE_OPEN_LOOP_WITHHELD=1` adds `--masked-withheld`. Workers run `pipeline-calvin` for CALVIN tasks, so a tagged task queues it (see [Distributed evaluation](#distributed-evaluation)):
+
+```bash
+./run.sh dist-sched add --run calvin_abcd_d_2026-10-27_22-04-48 --tag openloop --min-commit HEAD \
+    --opts "PIPELINE_OPEN_LOOP=1 PIPELINE_OPEN_LOOP_WITHHELD=1"
+```
 
 ```bash
 # One model per container. All 7 combos of a dropout run take a few hours on one GPU;

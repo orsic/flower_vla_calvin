@@ -13,14 +13,18 @@ frame so every model and combo sees identical draws:
   mse_k<k> squared error of the Euler-sampled chunk (the rollout path) at chunk step k;
            mse_mean is their mean
 
-A dropout run is scored on every token combo (eval_pipeline.modality_combos), a plain run
-on all inputs only. Each combo is written atomically to
-<train_folder>/open_loop/<ckpt>/parts/<combo>.csv.gz (an interrupted run resumes at the
-next missing combo, and --combos can split one model across processes); once every combo
+A dropout run is scored on every combo (eval_pipeline.modality_combos, proprio withheld
+too when the model receives it), a plain run on the inputs it was trained on.
+--masked-withheld adds each trained input withheld one at a time: a camera by replacing its
+frames with their mean pixel, language by a blank instruction (prompt template kept),
+proprio by zeroing it. Each cell is written atomically to
+<train_folder>/open_loop/<ckpt>/parts/<cell>.csv.gz (an interrupted run resumes at the
+next missing cell, and --combos can split one model across processes); once every cell
 is present they are merged into <train_folder>/open_loop/<ckpt>/calvin_val.csv.gz.
 
 Usage:
-  python scripts/open_loop_calvin.py --train-folder <dir> [--combos 0,3] [--max-windows N]
+  python scripts/open_loop_calvin.py --train-folder <dir> [--combos 0,3] [--masked-withheld]
+      [--max-windows N]
 """
 
 import argparse
@@ -28,7 +32,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -37,7 +41,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Subset
 
 sys.path.insert(0, str(Path(__file__).parent))
-from eval_pipeline import modality_combos  # noqa: E402
+from eval_pipeline import modality_combos, trained_combo  # noqa: E402
 from mimicgen_pipeline import _resolve  # noqa: E402
 from open_loop_analysis import combo_label  # noqa: E402
 
@@ -60,15 +64,62 @@ EVAL_CFG_OVERWRITE = {
 }
 
 
+# (combo key, the name set_combo's `masked` and the labels use)
+INPUTS = (("rgb_static", "static"), ("rgb_gripper", "wrist"), ("language", "lang"), ("proprio", "proprio"))
+
+Cell = Tuple[Dict[str, bool], Optional[str]]
+
+
 def model_label(train_cfg) -> str:
     model = train_cfg.model
+    use_proprio = bool(model.get("use_proprio", False))
+    if model.get("modality_dropout", False):
+        label = f"{model.get('modality_dropout_strategy', 'dirichlet')} keep{model.modality_dropout_keep_fraction:g}"
+    else:
+        label = "no dropout"
+    if use_proprio:
+        label += " + proprio"
     if not model.get("modality_dropout", False):
-        return "no dropout"
-    return f"{model.get('modality_dropout_strategy', 'dirichlet')} keep{model.modality_dropout_keep_fraction:g}"
+        trained = trained_combo(train_cfg)
+        missing = [name for key, name in INPUTS if not trained[key]]
+        if missing:
+            label += f" (trained without {'+'.join(missing)})"
+    return label
 
 
-def combo_flags(combo: Dict[str, bool]) -> Dict[str, bool]:
-    return {"use_static": combo["rgb_static"], "use_wrist": combo["rgb_gripper"], "use_lang": combo["language"]}
+def cells(train_cfg, masked_withheld: bool) -> List[Cell]:
+    """(combo, masked) pairs to score: every combo of a dropout run, the trained inputs of a
+    plain run; masked_withheld adds the trained inputs with each one withheld (cameras and
+    language masked, proprio zeroed)."""
+    use_proprio = bool(train_cfg.model.get("use_proprio", False))
+    if train_cfg.model.get("modality_dropout", False):
+        out: List[Cell] = [(c, None) for c in modality_combos(use_proprio)]
+    else:
+        out = [(trained_combo(train_cfg), None)]
+    if masked_withheld:
+        trained = trained_combo(train_cfg)
+        extra: List[Cell] = [(trained, name) for key, name in INPUTS[:3] if trained[key]]
+        if use_proprio and trained["proprio"]:
+            extra.append(({**trained, "proprio": False}, None))
+        out += [cell for cell in extra if cell not in out]
+    return out
+
+
+def combo_flags(combo: Dict[str, bool], masked: Optional[str], use_proprio: bool) -> Dict[str, bool]:
+    """use_* flags of the inputs the model is given; a masked input counts as withheld."""
+    flags = {f"use_{name}": bool(combo[key]) and masked != name for key, name in INPUTS}
+    flags["use_proprio"] = flags["use_proprio"] and use_proprio
+    return flags
+
+
+def cell_label(combo: Dict[str, bool], masked: Optional[str], use_proprio: bool) -> str:
+    label = combo_label(combo_flags(combo, masked, use_proprio))
+    return f"{label} ({masked} masked)" if masked else label
+
+
+def part_name(combo: Dict[str, bool], masked: Optional[str], use_proprio: bool) -> str:
+    label = combo_label(combo_flags(combo, masked, use_proprio))
+    return f"{label}.masked_{masked}.csv.gz" if masked else f"{label}.csv.gz"
 
 
 def to_device(batch, device):
@@ -96,8 +147,8 @@ def sample_index(dataset) -> pd.DataFrame:
 
 
 @torch.inference_mode()
-def score_combo(model, loader, index, combo, t_grid, seed, device) -> pd.DataFrame:
-    set_combo(model, combo)
+def score_combo(model, loader, index, combo, masked, t_grid, seed, device) -> pd.DataFrame:
+    set_combo(model, combo, masked)
     K = len(t_grid)
     out = []
     for batch in loader:
@@ -132,7 +183,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--train-folder", required=True)
     parser.add_argument("--checkpoint", default=None, help="default: <run>/seed_<seed>/saved_models/last.ckpt")
-    parser.add_argument("--combos", default=None, help="comma-separated combo indices (default: all)")
+    parser.add_argument("--combos", default=None, help="comma-separated cell indices (default: all)")
+    parser.add_argument(
+        "--masked-withheld",
+        action="store_true",
+        help="also each trained input withheld: cameras by their mean pixel, language as a blank instruction, proprio zeroed",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--max-windows", type=int, default=None, help="only the first N annotated windows (smoke)")
@@ -151,13 +207,12 @@ def main() -> None:
     out_dir = Path(args.out_dir or Path(train_folder) / "open_loop" / f"{checkpoint_name(checkpoint)}{suffix}")
     t_grid = [float(t) for t in args.t_grid.split(",")]
 
-    if train_cfg.model.get("modality_dropout", False):
-        combos = modality_combos(bool(train_cfg.model.use_proprio))
-    else:
-        combos = modality_combos(False)[:1]
-    selected = [int(i) for i in args.combos.split(",")] if args.combos else range(len(combos))
-    todo = [i for i in selected if not (out_dir / "parts" / f"{combo_label(combo_flags(combos[i]))}.csv.gz").exists()]
-    print(f"{train_folder}: {len(combos)} combos, {len(todo)} to score -> {out_dir}")
+    use_proprio = bool(train_cfg.model.get("use_proprio", False))
+    run_cells = cells(train_cfg, args.masked_withheld)
+    parts = [out_dir / "parts" / part_name(c, m, use_proprio) for c, m in run_cells]
+    selected = [int(i) for i in args.combos.split(",")] if args.combos else range(len(run_cells))
+    todo = [i for i in selected if not parts[i].exists()]
+    print(f"{train_folder}: {len(run_cells)} cells, {len(todo)} to score -> {out_dir}")
 
     if todo:
         model, _, data_module, _ = get_default_mode_and_env(
@@ -193,19 +248,19 @@ def main() -> None:
             "checkpoint": checkpoint_name(checkpoint),
         }
         for i in todo:
-            combo = combos[i]
-            flags = combo_flags(combo)
-            label = combo_label(flags)
+            combo, masked = run_cells[i]
+            flags = combo_flags(combo, masked, use_proprio)
+            label = cell_label(combo, masked, use_proprio)
             start = time.time()
-            df = score_combo(model, loader, index, combo, t_grid, args.seed, device)
-            df = pd.concat([pd.DataFrame({**meta, "combo": label, **flags}, index=df.index), df], axis=1)
-            write_atomic(df, out_dir / "parts" / f"{label}.csv.gz")
+            df = score_combo(model, loader, index, combo, masked, t_grid, args.seed, device)
+            cols = {**meta, "combo": label, **flags, "masked": masked or ""}
+            df = pd.concat([pd.DataFrame(cols, index=df.index), df], axis=1)
+            write_atomic(df, parts[i])
             print(f"  {label}: {len(df)} samples in {time.time() - start:.0f}s, mse_mean {df['mse_mean'].mean():.4f}")
 
-    parts = [out_dir / "parts" / f"{combo_label(combo_flags(c))}.csv.gz" for c in combos]
     if all(p.exists() for p in parts):
         write_atomic(pd.concat([pd.read_csv(p) for p in parts], ignore_index=True), out_dir / "calvin_val.csv.gz")
-        print(f"Merged {len(parts)} combos into {out_dir / 'calvin_val.csv.gz'}")
+        print(f"Merged {len(parts)} cells into {out_dir / 'calvin_val.csv.gz'}")
 
 
 if __name__ == "__main__":

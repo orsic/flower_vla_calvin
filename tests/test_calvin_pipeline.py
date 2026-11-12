@@ -199,3 +199,65 @@ def test_upload_and_restore_carry_masked_results(tmp_path, monkeypatch):
     calvin_pipeline.restore(str(other), [])
     restored = csv_path(str(other), []).parent.parent / "masked_wrist" / "calvin_ABCD_D" / "result.csv"
     assert len(read_csv(restored)) == 1
+
+
+def test_upload_and_restore_open_loop_parts(tmp_path, monkeypatch):
+    """Open-loop parts go to their own open-loop-<run> artifact (never into eval-<run>), and
+    a restore fills in missing parts without overwriting local ones."""
+    import calvin_pipeline
+
+    train_folder = tmp_path / "calvin_abcd_d_static+lang+proprio" / "run"
+    _write_train_cfg(train_folder, use_proprio=True)
+    parts = train_folder / "open_loop" / "last" / "parts"
+    parts.mkdir(parents=True)
+    (parts / "static+wrist+lang+proprio.csv.gz").write_text("a")
+    (parts / "wrist+lang+proprio.masked_static.csv.gz").write_text("b")
+    (parts / "x.csv.gz.tmp").write_text("partial")
+    logged = {}
+
+    class _Artifact:
+        def __init__(self, name, type):
+            logged["artifact"] = (name, type)
+            self.files = []
+
+        def add_file(self, path, name):
+            self.files.append(name)
+
+    class _Run:
+        def log_artifact(self, artifact):
+            logged["names"] = artifact.files
+
+        def finish(self):
+            pass
+
+    monkeypatch.setattr(calvin_pipeline.wandb, "init", lambda **kwargs: _Run())
+    monkeypatch.setattr(calvin_pipeline.wandb, "Artifact", _Artifact)
+    calvin_pipeline.upload_open_loop(str(train_folder), [])
+    assert logged["artifact"] == ("open-loop-calvin_abcd_d_static-lang-proprio_run", "open_loop")
+    assert logged["names"] == [
+        "last/parts/static+wrist+lang+proprio.csv.gz",
+        "last/parts/wrist+lang+proprio.masked_static.csv.gz",
+    ]
+
+    other = tmp_path / "g" / "other"
+    _write_train_cfg(other, use_proprio=True)
+    local = other / "open_loop" / "last" / "parts"
+    local.mkdir(parents=True)
+    (local / "static+wrist+lang+proprio.csv.gz").write_text("local")
+    art = tmp_path / "artifact" / "last" / "parts"
+    art.mkdir(parents=True)
+    (art / "static+wrist+lang+proprio.csv.gz").write_text("remote")
+    (art / "wrist+lang+proprio.masked_static.csv.gz").write_text("remote")
+    monkeypatch.setattr(calvin_pipeline, "download_open_loop_artifact", lambda *a, **k: tmp_path / "artifact")
+    calvin_pipeline.restore_open_loop(str(other), [])
+    assert (local / "static+wrist+lang+proprio.csv.gz").read_text() == "local"
+    assert (local / "wrist+lang+proprio.masked_static.csv.gz").read_text() == "remote"
+
+
+def test_upload_open_loop_without_parts_logs_nothing(tmp_path, monkeypatch):
+    import calvin_pipeline
+
+    train_folder = tmp_path / "g" / "run"
+    _write_train_cfg(train_folder)
+    monkeypatch.setattr(calvin_pipeline.wandb, "init", lambda **kwargs: (_ for _ in ()).throw(AssertionError))
+    calvin_pipeline.upload_open_loop(str(train_folder), [])

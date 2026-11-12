@@ -56,8 +56,11 @@ DEFAULT_GLOB = "/saves/train_logs/calvin_abcd_d*/*/open_loop/*/calvin_val.csv.gz
 
 
 def combo_label(flags: Mapping[str, bool]) -> str:
-    """"static+wrist+lang"-style name of a combo from its use_* flags."""
+    """"static+wrist+lang"-style name of a combo from its use_* flags; "+proprio" only when
+    a use_proprio flag is given and on (a model that receives proprio)."""
     parts = [name for name in ("static", "wrist", "lang") if bool(flags[f"use_{name}"])]
+    if flags.get("use_proprio", False):
+        parts.append("proprio")
     return "+".join(parts)
 
 
@@ -175,7 +178,9 @@ def load(paths: List[str]) -> pd.DataFrame:
 
 def analyze(df: pd.DataFrame, out_dir: Path, bin_width: int = 5) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    df = df.copy()
+    # The figures compare models without proprio across the 7 token combos; results of
+    # proprio models (labels with "+proprio", masked cells) are left out.
+    df = df[df["combo"].isin(COMBO_ORDER)].copy()
     df["tbin"] = timestep_bin(df["offset"], bin_width)
     # Least dropout first, the no-dropout baseline last.
     df["model_order"] = np.where(df["modality_dropout"], -df["keep_fraction"].fillna(1.0), 1.0)

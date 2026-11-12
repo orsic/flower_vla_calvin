@@ -118,6 +118,43 @@ def test_set_combo_rejects_empty_combo():
         set_combo(model, {"rgb_static": False, "rgb_gripper": False, "language": False, "proprio": True})
 
 
+ALL_ON = {"rgb_static": True, "rgb_gripper": True, "language": True, "proprio": True}
+
+
+def _mask_model():
+    return types.SimpleNamespace(
+        eval_modality_mask=None, eval_proprio_mask=None, eval_mean_pixel=(False, False), eval_blank_instruction=False
+    )
+
+
+def test_set_combo_withholds_proprio():
+    model = _mask_model()
+    set_combo(model, {**ALL_ON, "proprio": False})
+    assert model.eval_modality_mask is None and model.eval_proprio_mask is False
+    set_combo(model, ALL_ON)
+    assert model.eval_proprio_mask is None
+
+
+def test_set_combo_masks_one_input_and_resets_on_the_next_call():
+    model = _mask_model()
+    set_combo(model, ALL_ON, masked="static")
+    assert model.eval_mean_pixel == (True, False) and not model.eval_blank_instruction
+    set_combo(model, ALL_ON, masked="wrist")
+    assert model.eval_mean_pixel == (False, True)
+    set_combo(model, ALL_ON, masked="lang")
+    assert model.eval_mean_pixel == (False, False) and model.eval_blank_instruction
+    assert model.eval_modality_mask is None
+    set_combo(model, ALL_ON)
+    assert model.eval_mean_pixel == (False, False) and not model.eval_blank_instruction
+
+
+def test_set_combo_rejects_masking_an_input_the_combo_withholds():
+    with pytest.raises(ValueError):
+        set_combo(_mask_model(), {**ALL_ON, "rgb_gripper": False}, masked="wrist")
+    with pytest.raises(ValueError):
+        set_combo(_mask_model(), ALL_ON, masked="proprio")
+
+
 def test_gripper_phases_never_closes():
     assert gripper_phases(np.ones(8)) == ["no_grasp"] * 8
 
@@ -182,6 +219,13 @@ def test_assert_single_instruction_rejects_mixed_batch():
 def test_combo_label():
     assert combo_label({"use_static": True, "use_wrist": True, "use_lang": True}) == "static+wrist+lang"
     assert combo_label({"use_static": False, "use_wrist": True, "use_lang": False}) == "wrist"
+    # proprio is named only when the flag is given and on (models that receive it).
+    assert combo_label({"use_static": True, "use_wrist": False, "use_lang": True, "use_proprio": True}) == (
+        "static+lang+proprio"
+    )
+    assert combo_label({"use_static": True, "use_wrist": True, "use_lang": True, "use_proprio": False}) == (
+        "static+wrist+lang"
+    )
 
 
 def test_timestep_bin_edges():
@@ -240,3 +284,27 @@ def test_analyze_renders_figures_and_summaries(tmp_path):
     assert set(summary.loc[summary.model == "m_b", "combo"]) == {"static+wrist+lang"}
     assert summary.loc[summary.model == "m_b", "mse_mean_delta_mean"].isna().all()
     assert "static+wrist+lang" in set(summary.loc[summary.model == "m_a", "combo"])
+
+
+def test_analyze_ignores_combos_outside_the_dropout_comparison(tmp_path):
+    """Proprio-model results (labels with +proprio, masked cells) stay out of the figures."""
+    from open_loop_analysis import analyze
+
+    rows = []
+    for run, model, combo in (
+        ("a", "m_a", "static+wrist+lang"),
+        ("a", "m_a", "static"),
+        ("p", "m_p", "static+wrist+lang+proprio"),
+        ("p", "m_p", "wrist+lang+proprio (static masked)"),
+    ):
+        for idx in range(250):
+            rows.append(
+                {
+                    "run": run, "model": model, "modality_dropout": run == "a", "keep_fraction": 0.5,
+                    "combo": combo, "idx": idx, "offset": idx % 10, "phase": "hold", "task": "open_drawer",
+                    "mse_mean": 1.0, "fm_mean": 1.0,
+                }
+            )
+    analyze(pd.DataFrame(rows), tmp_path, bin_width=50)
+    summary = pd.read_csv(tmp_path / "summary_by_phase.csv")
+    assert set(summary["model"]) == {"m_a"}

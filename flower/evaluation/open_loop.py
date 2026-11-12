@@ -6,13 +6,15 @@ is computed with the eval-time modality mask of one combo, at fixed flow times a
 noise keyed on the frame id, so every model and combo is scored on identical draws.
 """
 
-from typing import Callable, Dict, List, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 
 TOKEN_KEYS = ("rgb_static", "rgb_gripper", "language")
+# set_combo's `masked` names, in TOKEN_KEYS order.
+MASKABLE = ("static", "wrist", "lang")
 
 
 def fm_loss_per_sample(
@@ -51,15 +53,21 @@ def sample_noise(frame_ids: Sequence[int], n: int, shape: Tuple[int, ...], seed:
     return torch.stack(rows)
 
 
-def set_combo(model, combo: Dict[str, bool]) -> None:
-    """Point the model's eval-time masks at one token combo. Unlike
-    flower_evaluate.apply_eval_modalities, the all-on combo resets the mask to None, so
-    combos can be swept on one loaded model."""
+def set_combo(model, combo: Dict[str, bool], masked: Optional[str] = None) -> None:
+    """Point the model's eval-time masks at one combo, with proprio withheld (zeroed) when
+    combo["proprio"] is False. Unlike flower_evaluate.apply_eval_modalities, the all-on
+    combo resets the mask to None, so combos can be swept on one loaded model. `masked`
+    ("static", "wrist" or "lang") keeps that input's tokens but masks its content: the
+    camera's frames become their mean pixel, the instruction is left blank."""
     keep = tuple(bool(combo[k]) for k in TOKEN_KEYS)
     if not any(keep):
         raise ValueError(f"combo must keep at least one token modality, got {combo}")
+    if masked is not None and (masked not in MASKABLE or not keep[MASKABLE.index(masked)]):
+        raise ValueError(f"cannot mask {masked!r}: not a token input this combo keeps ({combo})")
     model.eval_modality_mask = None if all(keep) else keep
-    model.eval_proprio_mask = None
+    model.eval_proprio_mask = None if combo["proprio"] else False
+    model.eval_mean_pixel = (masked == "static", masked == "wrist")
+    model.eval_blank_instruction = masked == "lang"
 
 
 def gripper_phases(gripper_cmd: np.ndarray, margin: int = 2) -> List[str]:
