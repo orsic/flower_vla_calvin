@@ -26,6 +26,9 @@ was first queued, else W&B's metadata.host (the last machine that ran an upload 
 --tag T queues it as a separate task, keyed <run>--T, next to the run's own task (which
 it would otherwise replace); workers report and the commands above take that key as --run.
 
+`add` refuses a run whose training is not complete (still running on W&B, or its last epoch
+short of max_epochs - 1): a worker would evaluate whatever checkpoint it had saved so far.
+
 --min-commit REV (resolved in the master's checkout) gives the task only to a worker whose
 checkout contains that commit: workers send their HEAD with `claim --commit SHA`. A worker
 that sends none (an older dist_worker.sh), or a commit the master does not know, only gets
@@ -160,6 +163,19 @@ def resolve_commit(rev: str) -> str:
 def git_contains(ancestor: str, commit: str) -> bool:
     """commit's history contains ancestor; False for a commit this checkout does not know."""
     return _git("merge-base", "--is-ancestor", ancestor, commit).returncode == 0
+
+
+def unfinished(run) -> Optional[str]:
+    """Why a W&B run's training is not complete yet, None if it is: still running, or its
+    last epoch short of max_epochs - 1 (as for queueing). Not W&B's "finished" state: a run
+    that completed training and then crashed or was killed is complete."""
+    if run.state == "running":
+        return "still training on W&B"
+    epoch = run.summary.get("epoch")
+    last = max_epochs(benchmark_of(run.id), (run.metadata or {}).get("args") or []) - 1
+    if epoch is None or epoch < last:
+        return f"trained only to epoch {epoch} of {last}"
+    return None
 
 
 def run_dir_of(run_id: str) -> Optional[str]:
@@ -393,12 +409,11 @@ def _wandb_runs(since: str) -> List:
     return list(api.runs(f"{logger['entity']}/{logger['project']}", filters={"created_at": {"$gte": day_before}}))
 
 
-def _wandb_host(run_id: str) -> Optional[str]:
+def _wandb_run(run_id: str):
     import wandb
 
     logger = yaml.safe_load((REPO_ROOT / CONFIGS["libero"]).read_text())["logger"]
-    run = wandb.Api(timeout=120).run(f"{logger['entity']}/{logger['project']}/{run_id}")
-    return (run.metadata or {}).get("host")
+    return wandb.Api(timeout=120).run(f"{logger['entity']}/{logger['project']}/{run_id}")
 
 
 def main() -> None:
@@ -427,6 +442,7 @@ def main() -> None:
     p.add_argument("--opts", dest="task_opts", help="this task's options (default: the --opts rules)")
     p.add_argument("--tag", help="queue as a separate task keyed <run>--<tag>")
     p.add_argument("--min-commit", help="only workers whose checkout contains this commit get the task")
+    p.add_argument("--allow-unfinished", action="store_true", help="queue a run whose training is not complete")
     args = ap.parse_args()
     now = datetime.now(timezone.utc)
 
@@ -455,7 +471,11 @@ def main() -> None:
                 sys.exit(3)
         elif args.cmd == "add":
             known = (state["tasks"].get(args.run) or {}).get("host")
-            host = args.host or known or _wandb_host(args.run)
+            run = _wandb_run(args.run)
+            reason = unfinished(run)
+            if reason and not args.allow_unfinished:
+                sys.exit(f"dist_scheduler: {args.run}: {reason}; add it once training is complete (or --allow-unfinished)")
+            host = args.host or known or (run.metadata or {}).get("host")
             try:
                 min_commit = resolve_commit(args.min_commit) if args.min_commit else None
             except ValueError as exc:

@@ -294,9 +294,18 @@ def test_add_refuses_a_running_task_and_needs_a_host():
         ds.add(ds.empty_state(), "other_2026-11-06_08-00-00", T0, host="h")
 
 
+def _wandb_run_of(**kwargs):
+    def lookup(run_id):
+        run = FakeRun(LIB, **kwargs)
+        run.id = run_id
+        return run
+
+    return lookup
+
+
 def test_cli_add_uses_the_wandb_host_only_as_a_fallback(tmp_path, monkeypatch):
     path = tmp_path / "state.json"
-    monkeypatch.setattr(ds, "_wandb_host", lambda run_id: "wandbhost")
+    monkeypatch.setattr(ds, "_wandb_run", _wandb_run_of(host="wandbhost"))
     for argv in (
         ["add", "--run", CAL, "--opts", "PIPELINE_RESTORE=1"],
         ["add", "--run", MG, "--host", "given"],
@@ -372,6 +381,7 @@ def test_status_shows_the_claiming_commit_and_the_gate():
 def test_cli_add_resolves_min_commit_and_claim_passes_the_commit(tmp_path, monkeypatch):
     path = tmp_path / "state.json"
     monkeypatch.setattr(ds, "resolve_commit", lambda rev: NEW if rev == "HEAD" else pytest.fail(rev))
+    monkeypatch.setattr(ds, "_wandb_run", _wandb_run_of())
     monkeypatch.setattr(ds, "git_contains", _contains)
     monkeypatch.setattr(
         sys, "argv",
@@ -400,3 +410,39 @@ def test_resolve_commit_and_git_contains_use_the_repo():
     assert not ds.git_contains(head, "0" * 40)  # unknown commit: not up to date
     with pytest.raises(ValueError):
         ds.resolve_commit("no-such-rev")
+
+
+# ---------------------------------------------------------------------------
+# add refuses a run whose training has not finished
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "state, epoch, reason",
+    [
+        ("finished", None, None),
+        ("crashed", None, None),  # completed training, but W&B shows crashed: still addable
+        ("running", 27, "still training"),
+        ("crashed", 20, "epoch 20"),
+    ],
+)
+def test_unfinished(state, epoch, reason):
+    run = FakeRun(CAL, state=state, epoch=epoch)
+    got = ds.unfinished(run)
+    assert (got is None) if reason is None else (reason in got)
+
+
+def test_cli_add_refuses_an_unfinished_run_unless_allowed(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    monkeypatch.setattr(ds, "_wandb_run", _wandb_run_of(state="running", epoch=27))
+    monkeypatch.setattr(sys, "argv", ["dist_scheduler.py", "--state", str(path), "add", "--run", CAL, "--host", "h"])
+    with pytest.raises(SystemExit) as exc:
+        ds.main()
+    assert "still training" in str(exc.value)
+    with ds.locked_state(path) as state:
+        assert CAL not in state["tasks"]
+
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--allow-unfinished"])
+    ds.main()
+    with ds.locked_state(path) as state:
+        assert state["tasks"][CAL]["state"] == "todo"

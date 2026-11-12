@@ -1883,6 +1883,10 @@ pipeline options, e.g. to evaluate input combinations it is missing:
   `<group>/<timestamp>`, derived from the run id.
 - An added task is never marked done just because the run already has an evaluation artifact.
   `--opts` defaults to the `DIST_EVAL_OPTS` rules; `add` refuses a task that is running.
+- `add` also refuses a run whose training is not complete (still running on W&B, or its last
+  epoch short of `max_epochs - 1`): a worker would copy and evaluate whatever checkpoint had
+  been saved so far. `--allow-unfinished` overrides it. A run that completed training but shows
+  `crashed` on W&B is accepted. `requeue` does not check this.
 - Workers run the pipelines from their own checkout. For a task that needs newer code, pass
   `--min-commit <rev>` (resolved in the master's checkout, e.g. `HEAD`): only a worker whose
   checkout contains that commit gets it. A worker that reports no commit (a `dist_worker.sh`
