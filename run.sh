@@ -42,6 +42,7 @@
 #   ./run.sh proprio-mean <train_run_dir>  Mean proprio conditioning vector (masked-proprio eval)
 #   ./run.sh open-loop-calvin <train_run_dir> [...]  Open-loop per-timestep loss on the validation split, per combo
 #   ./run.sh analyze-open-loop [...]      Figures + summaries from every open-loop-calvin result
+#   ./run.sh open-loop-tables [...]       CSV tables of every open-loop-calvin result
 #
 # Valid benchmarks: libero_10, libero_90, libero_spatial, libero_object, libero_goal
 #
@@ -768,6 +769,14 @@ case "$CMD" in
         python scripts/open_loop_calvin.py --train-folder "$train_dir" "$@"
     ;;
 
+  open-loop-tables)
+    # CSV tables of every open-loop-calvin result, per run and cell (overall, per timestep
+    # bin, phase and task) and per model (scripts/open_loop_tables.py), written to
+    # /saves/plots/open_loop_tables.
+    podman-compose -f "$COMPOSE" run --rm -T shell-calvin \
+        python scripts/open_loop_tables.py "$@"
+    ;;
+
   analyze-open-loop)
     # Figures + summary CSVs from every open-loop-calvin result (scripts/open_loop_analysis.py),
     # written to /saves/plots/open_loop.
@@ -969,6 +978,8 @@ case "$CMD" in
     echo "                     Mean proprio conditioning vector of a run, for the masked-proprio eval"
     echo "  open-loop-calvin <train_run_dir> [--combos 0,3] [--max-windows N] [...]"
     echo "                     Open-loop per-timestep loss on the CALVIN validation split, per modality combo"
+    echo "  open-loop-tables [--csv ...] [--out-dir DIR]"
+    echo "                     CSV tables of every open-loop-calvin result, per run and per model"
     echo "  analyze-open-loop [--csv ...] [--out-dir DIR]"
     echo "                     Figures + summary CSVs from every open-loop-calvin result"
     if [[ "$CMD" != "help" ]]; then

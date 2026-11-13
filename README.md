@@ -604,6 +604,9 @@ CUDA_VISIBLE_DEVICES=1 ./run.sh open-loop-calvin /saves/train_logs/calvin_abcd_d
 
 # Figures + summary CSVs from every merged result, written to /saves/plots/open_loop
 ./run.sh analyze-open-loop
+# CSV tables of every merged result, every model and cell (masked and proprio included), per run
+# and per model, overall and per timestep bin / phase / task; written to /saves/plots/open_loop_tables
+./run.sh open-loop-tables
 ```
 
 `scripts/open_loop_analysis.py` plots the losses along the demonstrations. Its x-axis is the timestep within the annotated subtask: frames since the start of the language-annotated window, in 5-frame bins (`--bin-width`). About 77% of the windows are 65 frames long and the rest 34–49, so the last bins come from the long windows only; bins with fewer than 200 samples are not drawn. The figures show both metrics: "predicted-action MSE" (`mse_mean`) and "training (flow-matching) loss" (`fm_mean`). Every line plot has one legend, under its panels.

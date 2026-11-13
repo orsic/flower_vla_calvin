@@ -179,3 +179,8 @@ def test_proprio_mean_picks_the_benchmark_container(tmp_path):
     ):
         lines = _run(tmp_path, ["proprio-mean", run_dir])
         assert f" run --rm -T {service} python scripts/proprio_mean.py --train-folder {run_dir}" in lines[0]
+
+
+def test_open_loop_tables_runs_the_table_script(tmp_path):
+    lines = _run(tmp_path, ["open-loop-tables", "--out-dir", "/saves/x"])
+    assert " run --rm -T shell-calvin python scripts/open_loop_tables.py --out-dir /saves/x" in lines[0]

@@ -415,7 +415,7 @@ The two "increase" columns:
 - **dependence:** each withheld sample's loss minus the same model's all-inputs loss on that sample, averaged;
 - **contribution:** the model trained without g, minus the full model with all inputs. These are different models on the same samples and noise.
 
-Mean predicted-action MSE, mean ± sd over runs; the full model with all inputs is 0.0593 (0.0592 / 0.0593):
+Mean predicted-action MSE, mean ± sd over runs; the full model with all inputs is 0.0593 (0.0592 / 0.0593). Per run, timestep bin, phase and task in the [open-loop CSV tables](#calvin-open-loop-values-behind-the-figures-seed-42) (`open_loop_by_model.csv` for these values):
 
 | input g | full model, g withheld (masked) | per seed (42 / 100) | increase (dependence) | trained and evaluated without g | per run | increase (contribution) |
 |---|---|---|---|---|---|---|
@@ -1597,6 +1597,19 @@ Success rate (%) of each attempted subtask in the 1000 closed-loop chains, avera
 ### CALVIN open loop: values behind the figures (seed 42)
 
 These tables give the values plotted in the four open-loop figures. Machine-readable versions are in [`results/open_loop_summary_by_timestep.csv`](results/open_loop_summary_by_timestep.csv) and [`results/open_loop_summary_by_phase.csv`](results/open_loop_summary_by_phase.csv).
+
+**Every open-loop evaluation, machine-readable.** `./run.sh open-loop-tables` (`scripts/open_loop_tables.py`) writes these tables from every merged open-loop result: all seeds of all models, including the no dropout + proprio model with masked inputs and the models trained without one input.
+- **Files:**
+  - [`open_loop_by_run.csv`](results/open_loop_by_run.csv): one row per run and cell.
+  - [`open_loop_by_run_timestep.csv`](results/open_loop_by_run_timestep.csv): the same per 5-frame bin; bins with fewer than 200 samples are dropped.
+  - [`open_loop_by_run_phase.csv`](results/open_loop_by_run_phase.csv): per gripper phase.
+  - [`open_loop_by_run_task.csv`](results/open_loop_by_run_task.csv): per task.
+  - [`open_loop_by_model.csv`](results/open_loop_by_model.csv): mean and sd over each model's runs.
+- **Columns:**
+  - Every row has `run`, `model`, `seed`, `combo`, `masked` (the masked input, empty if none) and the `use_static` / `use_wrist` / `use_lang` / `use_proprio` flags of the inputs the model is given.
+  - The per-run tables give `n` and the mean, sd and 95% CI of `mse_mean` (predicted-action MSE) and `fm_mean` (flow-matching loss).
+  - `mse_delta` / `fm_delta` are the paired per-sample increase over the run's reference cell. The reference cell is its unmasked combination with the most inputs: all inputs, or for a model trained without one input, its trained subset. A run scored on one cell has no delta.
+- **The model trained without language** has three runs from two seeds (42 twice and 5), so its `seeds` column reads `5 42`.
 - **Source:** the summary files written by `scripts/open_loop_analysis.py` together with the figures. All values come from the seed-42 runs.
 - **Columns in the CSV files:** `mse_mean_*` is predicted-action MSE and `fm_mean_*` the flow-matching loss. Each comes as mean, std, count and 95% CI half-width, plus the same four for the increase over all inputs (`*_delta_*`).
 - **Bins:** frames since the start of the annotated window, in 5-frame bins. Each (model, inputs, bin) cell has at least 4,160 samples.
