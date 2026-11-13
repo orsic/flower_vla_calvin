@@ -24,12 +24,12 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
 - **Whole-modality dropout (`subset`) with proprioception is the best CALVIN model so far** (3 seeds). With all inputs it matches no dropout (4.45 ± 0.05 vs 4.44–4.46), and without one camera it keeps most of it: 4.27 with static camera and language, 3.88 with wrist camera and language (Dirichlet keep 0.5 + proprio: 3.94 and 2.70). The conventional no dropout + proprio model, evaluated with the same camera withheld, reaches only 1.30 and 1.71, while the same recipe trained without one camera loses nothing (4.49 and 4.53, 3 seeds each). A model trained without language fails too (0.14), so on CALVIN the ablation is right about language.
 - **Language is indispensable on CALVIN and nearly irrelevant on MimicGen.**
   - CALVIN puts several tasks in one scene, so the instruction picks the task. Without language, no CALVIN model completes more than about 0.2 subtasks per chain on average.
-  - Each MimicGen scene has one task, so dropping language changes success by at most a few points, and a model trained without language scores 50.8% (seeds 42 and 100), the same as with it (51.7%). The one exception is uniform dropout (47.4% → 40.6%, 3 seeds), where the seeds disagree (1–12 points).
+  - Each MimicGen scene has one task, so dropping language changes success by at most a few points, and a model trained without language scores 50.8% (3 seeds), the same as with it (51.7%). The one exception is uniform dropout (47.4% → 40.6%, 3 seeds), where the seeds disagree (1–12 points).
 - **Throughout a CALVIN subtask (open loop), language matters most at the start and vision matters most at the end.**
   - Removing language costs most in the first ~20 frames, when the target is chosen.
   - With language only, the prediction error grows steadily towards the end of the subtask, when positioning and release need visual feedback.
   - Release is the hardest phase for every model with all inputs.
-- **Open loop shows the same gap between withholding an input and training without it** (CALVIN, no dropout + proprio). Withholding a camera or proprioception from the conventional model raises its per-step action error by 0.023–0.028 (0.059 → 0.082–0.088), while a model trained without that input is only 0.003–0.004 above it. Language: +0.067 withheld (blank instruction) against +0.024 trained without it.
+- **Open loop shows the same gap between withholding an input and training without it** (CALVIN, no dropout + proprio, 3 seeds). Withholding a camera or proprioception from the conventional model raises its per-step action error by 0.022–0.027 (0.060 → 0.082–0.087), while a model trained without that input is only 0.002–0.003 above it. Language: +0.064 withheld (blank instruction) against +0.023 trained without it. Whole-modality dropout (`subset`, 3 seeds) with an input removed loses about what that input contributes (+0.002 to +0.005, language +0.025) and stays within 0.005 of each model trained without it.
 - **Open-loop error does not predict closed-loop success with all inputs.** All five CALVIN models reach the same per-step action error on held-out demonstrations (0.061–0.067 over all three seeds), although their chain lengths range from 1.7 to 4.4.
 - **On MimicGen, dropout with proprioception costs 2.5–6 points with all inputs** (45.2% and 48.3% for proprio keep 0.5 and 1.0, 48.7% for keep 0.75, vs 51.2% without dropout; 2–3 seeds each). Seeds of the same model differ by up to about 6 points, so smaller MimicGen differences between single runs are noise. Proprioception without dropout does not clearly help (51.7% vs 51.2%; 3 seeds each).
   - Removing less (Dirichlet keep 0.75) narrows but does not close the gap (48.7%, 2 seeds), and it gives up almost all robustness: 2–4% without either camera.
@@ -45,8 +45,8 @@ Every number below comes from the evaluation files of the runs listed in [Reprod
   - Without dropout, withholding language or the wrist camera gives 0%. The dropout models keep 62–73% on LIBERO-Plus without language or the static camera.
   - Whole-modality dropout (`subset`, 3 seeds) is the most robust: 85.8% on LIBERO-Plus with all inputs, and the best model trained with every input when any single input is withheld (e.g. 37% vs 19–23% without the wrist camera). With the static camera as the only view it keeps 55–62% on LIBERO-10, against 34–44% for Dirichlet keep 0.5.
   - No-dropout models trained without one input: without the static camera (3 seeds) they lose little on LIBERO-10 (88.8%) and are somewhat more robust on LIBERO-Plus (74.0% vs 72.2%), but `subset` with that camera withheld does as well (90.2%, 80.6%). Without the wrist camera (3 seeds), the dedicated model (86.7%, 48.0%) is far better than `subset` with it withheld (70.8%, 36.9%). Without language (3 seeds) it loses 10 points on LIBERO-10 (81.2%) and is below both dropout models evaluated without language.
-  - Withholding an input from the conventional no dropout + proprio model at evaluation gives 0–47% on LIBERO-10 (3 seeds), against 81–89% for a model trained without it: the standard ablation overstates each input's importance by 42–87 points. The same holds on CALVIN, where it reaches 1.30–1.71 avg_seq_len without one camera, against 3.88–4.27 for `subset` and 4.49–4.53 for a model trained without that camera. On MimicGen (3 seeds) it gives 0–23%, including 0% without language, which MimicGen does not need. Models trained without the wrist camera, the static camera or language keep 42.2% (2 seeds), 32.4% (3 seeds) and 50.8% (2 seeds), against 1.0%, 2.9% and 0.0%. The model trained without language matches the full model (51.7%), so here the ablation overstates the input's importance by the full 51 points.
-  - Masking instead of removing (LIBERO-10, no dropout + proprio, 3 seeds): with the prompt template kept and only the instruction emptied, the model keeps 72.8%, against 1.3% with the language tokens removed. Most of its collapse without language comes from the missing template tokens, not the missing instruction. Replacing a camera's frames by their mean pixel gives the same result as removing the camera (48.0% vs 47.0% static, 0% wrist). On MimicGen (2 seeds) the blank instruction restores the full result (51.1% vs 51.0% with all inputs, 0.0% removed); on CALVIN (3 seeds) it does not help (0.08 vs 0.04 avg_seq_len), since the instruction is what picks the task, and a mean-pixel wrist camera is worse than none (0.84 vs 1.30).
+  - Withholding an input from the conventional no dropout + proprio model at evaluation gives 0–47% on LIBERO-10 (3 seeds), against 81–89% for a model trained without it: the standard ablation overstates each input's importance by 42–87 points. The same holds on CALVIN, where it reaches 1.30–1.71 avg_seq_len without one camera, against 3.88–4.27 for `subset` and 4.49–4.53 for a model trained without that camera. On MimicGen (3 seeds) it gives 0–23%, including 0% without language, which MimicGen does not need. Models trained without the wrist camera, the static camera or language keep 42.3%, 32.4% and 50.8% (3 seeds each), against 1.0%, 2.9% and 0.0%. The model trained without language matches the full model (51.7%), so here the ablation overstates the input's importance by the full 51 points.
+  - Masking instead of removing (LIBERO-10, no dropout + proprio, 3 seeds): with the prompt template kept and only the instruction emptied, the model keeps 72.8%, against 1.3% with the language tokens removed. Most of its collapse without language comes from the missing template tokens, not the missing instruction. Replacing a camera's frames by their mean pixel gives the same result as removing the camera (48.0% vs 47.0% static, 0% wrist). On MimicGen (2 seeds) the blank instruction restores the full result (51.1% vs 51.0% with all inputs, 0.0% removed); on CALVIN (3 seeds) it does not help (0.08 vs 0.04 avg_seq_len), since the instruction is what picks the task, and a mean-pixel wrist camera is worse than none (0.84 vs 1.30). Giving CALVIN's model the training mean of its proprio input instead of zeros recovers about 40% of what withholding proprioception costs (4.05 vs 3.73, all inputs 4.46).
   - No model survives a changed task on LIBERO-PRO (0–12%).
   - Excluded runs and evaluations are listed under [missing or unusable results](#missing-or-unusable-libero-results).
 
@@ -398,52 +398,59 @@ Values: [appendix](#calvin-open-loop-values-behind-the-figures-seed-42).
 
 ### Open loop: withheld vs trained without (no dropout + proprio)
 
-The open-loop counterpart of the [closed-loop comparison](#calvin-abcdd) of the no dropout + proprio recipe. For each input g it compares two things:
+The open-loop counterpart of the [closed-loop comparison](#calvin-abcdd) of the no dropout + proprio recipe. For each input g it compares:
 - **dependence**, Δ(g): how much worse the conventional model gets when g is withheld at evaluation;
-- **contribution**, C(g): how much worse a model trained without g is, evaluated without g as well.
+- **contribution**, C(g): how much worse a model trained without g is, evaluated without g as well;
+- **`subset`**: whole-modality dropout with proprioception, with g removed at evaluation, as it was in training.
 
 Every model is scored on the same 53,923 validation samples with the same per-frame noise as above. The models, and what each is given at evaluation:
 
 | model | trained on | evaluated on | the missing input at evaluation | runs |
 |---|---|---|---|---|
-| full model | static + wrist + lang + proprio | all four | none | seeds 42 / 100: `calvin_abcd_d/2026-10-14_13-37-34` / `2026-10-27_22-04-48` (seed 5 queued) |
-| full model, g withheld | static + wrist + lang + proprio | all four except g | **masked**: a camera's frames replaced by their per-channel mean pixel (tokens kept); language as the prompt template with a blank instruction; proprioception as a zero vector | the same two runs (`open_loop_calvin.py --masked-withheld`) |
+| full model | static + wrist + lang + proprio | all four | none | seeds 42 / 5 / 100: `calvin_abcd_d/2026-10-14_13-37-34` / `2026-10-14_13-37-42` / `2026-10-27_22-04-48` |
+| full model, g withheld | static + wrist + lang + proprio | all four except g | **masked**: a camera's frames replaced by their per-channel mean pixel (tokens kept); language as the prompt template with a blank instruction; proprioception as a zero vector | the same three runs (`open_loop_calvin.py --masked-withheld`) |
 | trained without a camera or language | all four except g (`model.modalities.<g>=False`) | the same inputs it was trained on | **absent**: no tokens in training or evaluation, nothing masked | without static: `calvin_abcd_d_wrist+lang+proprio/2026-11-09_12-06-50` / `2026-11-09_21-28-34` / `2026-11-11_11-14-57` (seeds 42 / 5 / 100); without wrist: `calvin_abcd_d_static+lang+proprio/2026-11-09_12-06-57` / `2026-11-10_09-55-43` / `2026-11-11_11-15-03` (42 / 5 / 100); without language: `calvin_abcd_d_static+wrist+proprio/2026-11-09_16-32-13` / `2026-11-09_21-28-35` / `2026-11-10_09-55-44` (42 / 42 / 5) |
 | trained without proprioception | static + wrist + lang (`model.use_proprio=False`) | the same three | **absent**: the model has no proprio input at all, not a zero vector | `calvin_abcd_d/2026-10-07_17-51-44` / `2026-10-12_22-31-31` / `2026-10-12_22-32-26` (seeds 42 / 5 / 100), the "no dropout" model of the first open-loop table |
+| `subset` + proprio | static + wrist + lang + proprio, whole modalities dropped | all 14 combinations; here all four and all four except g | **removed**: no tokens (proprio: zeroed), as in training | `calvin_abcd_d_dropout/2026-11-06_00-00-24` / `2026-11-06_00-00-18` / `2026-11-06_13-27-58` (seeds 42 / 5 / 100) |
 
-The two "increase" columns:
+The "increase" columns:
 - **dependence:** each withheld sample's loss minus the same model's all-inputs loss on that sample, averaged;
-- **contribution:** the model trained without g, minus the full model with all inputs. These are different models on the same samples and noise.
+- **contribution:** the model trained without g, minus the full model with all inputs. These are different models on the same samples and noise;
+- **`subset`:** paired per sample, like dependence, against `subset`'s own all-inputs loss.
 
-Mean predicted-action MSE, mean ± sd over runs; the full model with all inputs is 0.0593 (0.0592 / 0.0593). Per run, timestep bin, phase and task in the [open-loop CSV tables](#calvin-open-loop-values-behind-the-figures-seed-42) (`open_loop_by_model.csv` for these values):
+Mean predicted-action MSE, mean ± sd over runs. With all inputs the full model is 0.0595 ± 0.0005 (0.0592 / 0.0601 / 0.0593) and `subset` 0.0630 ± 0.0010 (0.0627 / 0.0622 / 0.0641). Per run, timestep bin, phase, task and all 14 `subset` combinations in the [open-loop CSV tables](#calvin-open-loop-values-behind-the-figures-seed-42) (`open_loop_by_model.csv` for these values):
 
-| input g | full model, g withheld (masked) | per seed (42 / 100) | increase (dependence) | trained and evaluated without g | per run | increase (contribution) |
-|---|---|---|---|---|---|---|
-| static camera | 0.082 ± 0.004 | 0.080 / 0.085 | +0.023 | 0.063 ± 0.001 | 0.063 / 0.064 / 0.062 | +0.004 |
-| wrist camera | 0.088 ± 0.002 | 0.089 / 0.086 | +0.028 | 0.062 ± 0.001 | 0.062 / 0.062 / 0.063 | +0.003 |
-| language | 0.126 ± 0.007 | 0.131 / 0.122 | +0.067 | 0.083 ± 0.002 | 0.083 / 0.085 / 0.081 | +0.024 |
-| proprioception | 0.087 ± 0.005 | 0.084 / 0.091 | +0.028 | 0.062 ± 0.001 | 0.062 / 0.061 / 0.063 | +0.003 |
+| input g | full model, g withheld (masked) | per seed (42 / 5 / 100) | increase (dependence) | trained and evaluated without g | per run | increase (contribution) | `subset`, g removed | increase over its own all inputs |
+|---|---|---|---|---|---|---|---|---|
+| static camera | 0.082 ± 0.003 | 0.080 / 0.080 / 0.085 | +0.022 | 0.063 ± 0.001 | 0.063 / 0.064 / 0.062 | +0.003 | 0.068 ± 0.002 | +0.005 |
+| wrist camera | 0.087 ± 0.002 | 0.089 / 0.085 / 0.086 | +0.027 | 0.062 ± 0.001 | 0.062 / 0.062 / 0.063 | +0.003 | 0.067 ± 0.001 | +0.004 |
+| language | 0.124 ± 0.007 | 0.131 / 0.119 / 0.122 | +0.064 | 0.083 ± 0.002 | 0.083 / 0.085 / 0.081 | +0.023 | 0.088 ± 0.001 | +0.025 |
+| proprioception | 0.087 ± 0.004 | 0.084 / 0.086 / 0.091 | +0.027 | 0.062 ± 0.001 | 0.062 / 0.061 / 0.063 | +0.002 | 0.065 ± 0.001 | +0.002 |
 
-The training (flow-matching) loss gives the same picture: all inputs 0.129; withheld 0.154 / 0.160 / 0.204 / 0.218 (static, wrist, language, proprioception); trained without 0.131 / 0.129 / 0.148 / 0.130.
+The training (flow-matching) loss gives the same picture. All inputs: full model 0.129, `subset` 0.130. Static, wrist, language and proprioception in turn:
+- withheld from the full model: 0.154 / 0.159 / 0.204 / 0.218;
+- trained without: 0.131 / 0.129 / 0.148 / 0.130;
+- `subset` with the input removed: 0.134 / 0.133 / 0.149 / 0.131.
 
 Caveats:
 - **Masked, not removed.** Here the withheld input is masked, while the closed-loop "withheld" rows of the CALVIN table remove its tokens. In closed loop the two agree for the static camera (1.68 vs 1.71) and language (0.08 vs 0.04), but a masked wrist camera is worse than a removed one (0.84 vs 1.30; [masked vs removed](#masking-an-input-instead-of-removing-it-no-dropout--proprio)), so the wrist row does not correspond exactly to the closed-loop number.
-- **Zeroed proprioception is not a neutral input.** The mean proprio conditioning vector of this model is far from zero (seed 100: norm 24.4 against 32 per sample, 58% of the energy), so zeroing it also removes a large constant offset. Part of the proprio dependence may come from that offset rather than from the missing robot state.
+- **Zeroed proprioception is not a neutral input.** The mean proprio conditioning vector of this model is far from zero (seed 100: norm 24.4 against 32 per sample, 58% of the energy), so zeroing it also removes a large constant offset. In closed loop, putting the training mean in its place instead of zeros recovers about 40% of the drop ([masked vs removed](#masking-an-input-instead-of-removing-it-no-dropout--proprio)), so part of the proprio dependence comes from that offset rather than from the missing robot state.
 
-- **For the cameras and proprioception, withholding overstates the input's contribution 6–9 times.** Withholding costs 0.023–0.028, training without the input 0.003–0.004, about three times the seed spread. The closed loop shows the same (1.30–1.71 avg_seq_len withheld, 4.49–4.53 trained without a camera), so the open-loop measurement separates dependence from contribution as well.
-- **Language contributes in open loop too.** The model trained without it is 0.024 above the full model in every bin of the subtask (0.084–0.088 vs 0.060–0.063 in the first 40 frames), the only input whose specialist is clearly worse. Withholding it costs about three times more (+0.067), the largest increase in the frames 10–39 (up to 0.146 vs 0.060). In closed loop the specialist fails completely (0.14 avg_seq_len): averaged over frames, a wrong choice of task shows only as a moderate per-step error.
-- **Proprioception matters more to the training loss than to the sampled actions** when withheld (flow-matching loss +0.090, the largest increase, against +0.028 MSE).
+- **For the cameras and proprioception, withholding overstates the input's contribution 6–11 times.** Withholding costs 0.022–0.027, training without the input 0.002–0.003, about three times the seed spread. The closed loop shows the same (1.30–1.71 avg_seq_len withheld, 4.49–4.53 trained without a camera), so the open-loop measurement separates dependence from contribution as well.
+- **For `subset`, removing an input costs about what it contributes.** Its increase over its own all-inputs loss (+0.002 to +0.005 for the cameras and proprioception, +0.025 for language) is close to the contribution measured with the models trained without each input (+0.002 to +0.003, +0.023). Trained with whole modalities dropped, one model stays within 0.003–0.005 of each specialist, while the conventional model's error rises 4–13 times more than `subset`'s for the cameras and proprioception (2.6 times for language).
+- **Language contributes in open loop too.** The model trained without it is 0.023 above the full model in every bin of the subtask (0.084–0.088 vs 0.060–0.063 in the first 40 frames), the only input whose specialist is clearly worse. Withholding it costs about three times more (+0.064), the largest increase in the frames 10–39 (up to 0.143 vs 0.060). In closed loop the specialist fails completely (0.14 avg_seq_len): averaged over frames, a wrong choice of task shows only as a moderate per-step error.
+- **Proprioception matters more to the training loss than to the sampled actions** when withheld from the full model (flow-matching loss +0.089, the largest increase, against +0.027 MSE).
 
 Values by 10-frame bin (predicted-action MSE, mean over runs):
 
 | frames | all inputs | static withheld | trained without static | wrist withheld | trained without wrist | language withheld | trained without language | proprio withheld | trained without proprio |
 |---|---|---|---|---|---|---|---|---|---|
-| 0–9 | 0.063 | 0.086 | 0.067 | 0.083 | 0.067 | 0.109 | 0.084 | 0.090 | 0.065 |
-| 10–19 | 0.060 | 0.080 | 0.063 | 0.080 | 0.062 | 0.132 | 0.087 | 0.086 | 0.063 |
-| 20–29 | 0.060 | 0.082 | 0.065 | 0.092 | 0.063 | 0.146 | 0.088 | 0.089 | 0.065 |
-| 30–39 | 0.062 | 0.081 | 0.066 | 0.095 | 0.064 | 0.134 | 0.086 | 0.090 | 0.066 |
-| 40–49 | 0.050 | 0.073 | 0.051 | 0.086 | 0.052 | 0.118 | 0.068 | 0.080 | 0.050 |
-| 50–59 | 0.058 | 0.100 | 0.064 | 0.095 | 0.063 | 0.110 | 0.079 | 0.089 | 0.060 |
+| 0–9 | 0.063 | 0.086 | 0.067 | 0.084 | 0.067 | 0.111 | 0.084 | 0.090 | 0.065 |
+| 10–19 | 0.061 | 0.079 | 0.063 | 0.081 | 0.062 | 0.129 | 0.087 | 0.086 | 0.063 |
+| 20–29 | 0.060 | 0.081 | 0.065 | 0.092 | 0.063 | 0.143 | 0.088 | 0.089 | 0.065 |
+| 30–39 | 0.063 | 0.080 | 0.066 | 0.093 | 0.064 | 0.130 | 0.086 | 0.089 | 0.066 |
+| 40–49 | 0.050 | 0.072 | 0.051 | 0.082 | 0.052 | 0.111 | 0.068 | 0.079 | 0.050 |
+| 50–59 | 0.059 | 0.100 | 0.064 | 0.090 | 0.063 | 0.105 | 0.079 | 0.088 | 0.060 |
 
 ## MimicGen
 
@@ -491,9 +498,9 @@ Findings:
   - Unlike the other proprio keep 0.5 models it uses proprioception: withholding it costs 4 points with every other input (46.3% → 42.6%) and 10 without the static camera (21.1% → 11.1%). All three seeds agree.
   - Dropping language costs nothing (46.4% without it).
 - **The conventional model cannot be ablated on MimicGen either** (no dropout + proprio, 3 seeds). Withholding either camera gives 1–3%, proprioception 22.6% (23.9%, 21.0% and 23.0%), and language 0.0% on every seed, although the Dirichlet models show that MimicGen hardly needs language. The model has never seen an input without language tokens and fails on it, so this ablation would wrongly call language essential. A model trained without language confirms this: it scores 51.2% (below).
-- **A model trained without the wrist camera** (no dropout + proprio recipe with `model.modalities.rgb_gripper=False`, seeds 42 and 100, `mimicgen_static+lang+proprio/2026-11-09_12-52-49` and `2026-11-10_22-58-23`) scores 42.2% (40.4% and 44.0%). With the wrist camera withheld, the conventional model gets 1.0%, `subset` 29.1% and Dirichlet keep 0.5 18.0%. On MimicGen the wrist camera is worth about 10 points to a model built without it (51.7% → 42.2%), not the 51 points the conventional ablation suggests. It still relies on proprioception (17.9% without it: 19.8% and 16.1%) and fails without language (0.0%), like the conventional model.
+- **A model trained without the wrist camera** (no dropout + proprio recipe with `model.modalities.rgb_gripper=False`, seeds 42, 5 and 100, `mimicgen_static+lang+proprio/2026-11-09_12-52-49`, `2026-11-12_12-20-15` and `2026-11-10_22-58-23`) scores 42.3% (40.4%, 42.4% and 44.0%). With the wrist camera withheld, the conventional model gets 1.0%, `subset` 29.1% and Dirichlet keep 0.5 18.0%. On MimicGen the wrist camera is worth about 10 points to a model built without it (51.7% → 42.3%), not the 51 points the conventional ablation suggests. It still relies on proprioception (17.8% without it: 19.8%, 17.5% and 16.1%) and fails without language (0.0%), like the conventional model.
 - **A model trained without the static camera** (`model.modalities.rgb_static=False`, seeds 42, 5 and 100, `mimicgen_wrist+lang+proprio/2026-11-09_12-52-49`, `2026-11-09_21-23-54` and `2026-11-10_23-00-03`) scores 32.4% (31.2%, 32.2% and 33.7%). That compares with 2.9% for the conventional model with the static camera withheld, 21.1% for `subset` and 9.7% for Dirichlet keep 0.5. The static camera is worth about 19 points (51.7% → 32.4%), twice as much as the wrist camera, but far from the 49 points the ablation suggests. Without proprioception it falls to 2.5% (3.1%, 2.0% and 2.3%), and without language to 0.0%.
-- **A model trained without language loses nothing** (`model.modalities.language=False`, seeds 42 and 100, `mimicgen_static+wrist+proprio/2026-11-09_21-23-22` and `2026-11-10_22-58-23`): 50.8% (51.2% and 50.3%), against 51.7% for the full model (seeds 49.0–53.1%). The conventional model with language withheld gets 0.0%, so on MimicGen the standard ablation is wrong by the full 51 points. Without proprioception it gets 24.6% (24.3% and 24.8%), close to the conventional model's 22.6%, and it fails without either camera (0.0% and 1.7% without the wrist camera, 4.1% and 5.8% without the static camera).
+- **A model trained without language loses nothing** (`model.modalities.language=False`, seeds 42, 5 and 100, `mimicgen_static+wrist+proprio/2026-11-09_21-23-22`, `2026-11-12_12-20-14` and `2026-11-10_22-58-23`): 50.8% (51.2%, 50.8% and 50.3%), against 51.7% for the full model (seeds 49.0–53.1%). The conventional model with language withheld gets 0.0%, so on MimicGen the standard ablation is wrong by the full 51 points. Without proprioception it gets 23.8% (24.3%, 22.2% and 24.8%), close to the conventional model's 22.6%, and it fails without either camera (0.0–1.7% without the wrist camera, 3.2–5.8% without the static camera).
 - **Proprioception alone does not clearly help.** Without dropout, adding it gives 51.7% against 51.2% without (3 seeds each), and the seeds overlap (49.0–53.1% with it, 48.4–53.2% without).
 - **Dropout with all inputs is 2.5–6 points below no dropout** (45.2–48.7% vs 51.2%). Most dropout seeds are at or below the worst no-dropout seed (48.4%); the exceptions are keep 0.75 seed 5 (51.0%), proprio keep 1.0 seed 100 (50.7%), uniform seed 5 (49.5%) and `subset` seed 100 (48.8%). The gap is largest on `threading_d0` (17–43% vs 49–62%) and `coffee_preparation_d1` (11–20% vs 25–35%; see the [appendix](#mimicgen-per-dataset-success-all-inputs)).
   - On `threading_d0` the no-dropout runs with proprioception are low too (37%, 42% and 29%), so that gap comes partly from proprioception, not from dropout.
@@ -632,6 +639,7 @@ Values below are mean ± sd over the three seeds, in %.
 Withholding an input at evaluation removes its tokens, so the model also sees a token layout it never saw in training. Masking keeps the tokens and removes only their content:
 - **Camera:** every frame is replaced by its own per-channel mean pixel (`eval_modalities.rgb_static_pixels=false` / `rgb_gripper_pixels=false`).
 - **Language:** the instruction is emptied while the prompt template ("Agent Type: 1-arm Franka Panda, Action Space: Delta End-Effector, Task Instruction:") stays (`eval_modalities.instruction=false`).
+- **Proprioception:** instead of the zero vector, the model gets the average of its proprio conditioning vector over 4096 training frames (`eval_modalities.proprio_state=false`, `./run.sh proprio-mean`). So far evaluated on CALVIN; LIBERO and MimicGen are running.
 
 **LIBERO-10.** The setup:
 - the same three runs as above, seeds 42 / 5 / 100;
@@ -659,9 +667,11 @@ The "only masked / only removed" column counts the paired episodes (600) that on
 | static camera | 1.711 ± 0.261 (6.3) | 1.680 ± 0.244 (5.5) | 1.942 / 1.458 / 1.640 | 458 / 527 | 4.491 ± 0.077 |
 | wrist camera | 1.303 ± 0.161 (6.2) | **0.839 ± 0.213** (2.1) | 0.741 / 0.692 / 1.083 | 350 / 928 | 4.526 ± 0.034 |
 | language | 0.044 ± 0.043 (0.0) | 0.075 ± 0.036 (0.0) | 0.038 / 0.109 / 0.078 | 129 / 38 | 0.136 |
+| proprioception | 3.733 ± 0.146 (56.6) | **4.048 ± 0.329** (66.6) | 4.416 / 3.784 / 3.943 | 839 / 520 | 4.44 ± 0.05 (no dropout without proprio) |
 
 - **Static camera: masking equals removal**, as on LIBERO (1.68 vs 1.71, paired chains split 458 / 527).
 - **Wrist camera: a mean-pixel image is worse than no image** (0.84 vs 1.30, on every seed; 928 chains get further with the camera removed, 350 with it masked). A featureless wrist view still tells the model something, and it is wrong: in the terms of the method section, a uniform wrist image is *misleading* for this model.
+- **Proprioception: the training mean recovers about 40% of the drop** (4.05 vs 3.73 zeroed, against 4.46 with all inputs; 839 chains get further with the mean, 520 with zeros). Here "removed" is the zero vector the model gets when proprio is withheld, and "masked" puts the training-mean conditioning vector in its place (`eval_modalities.proprio_state=false`; it carries 58% of a sample vector's energy on CALVIN). The seeds differ widely: seed 42 is back to 4.42, seed 5 gains almost nothing (3.81 → 3.78). So on CALVIN part of the conventional model's reliance on proprioception is the constant offset the zero vector removes; the rest is the robot state itself.
 - **Language: keeping the template does not rescue CALVIN** (0.08 vs 0.04). Unlike on LIBERO, where the template tokens carried most of the ablation, CALVIN needs the instruction itself to pick one of several tasks in the scene, as the model trained without language (0.14) also shows.
 
 **MimicGen** (the no dropout + proprio runs, 100 episodes per dataset, rollout seeds matching). Seeds 5 and 100 so far; seed 42's masked evaluation is running. Success %, mean of the two seeds (5 / 100); all inputs 51.0 (52.9 / 49.0):
@@ -669,8 +679,8 @@ The "only masked / only removed" column counts the paired episodes (600) that on
 | input | removed | masked | only masked / only removed (5200 paired episodes) | trained without it |
 |---|---|---|---|---|
 | static camera | 2.9 (2.7 / 3.0) | 2.6 (2.3 / 2.8) | 52 / 69 | 32.4 (3 seeds) |
-| wrist camera | 0.6 (0.9 / 0.3) | 0.2 (0.2 / 0.2) | 5 / 27 | 42.2 (2 seeds) |
-| language | 0.0 (0.0 / 0.0) | **51.1** (52.3 / 49.8) | 2654 / 0 | 50.8 (2 seeds) |
+| wrist camera | 0.6 (0.9 / 0.3) | 0.2 (0.2 / 0.2) | 5 / 27 | 42.3 (3 seeds) |
+| language | 0.0 (0.0 / 0.0) | **51.1** (52.3 / 49.8) | 2654 / 0 | 50.8 (3 seeds) |
 
 - **With the template kept and the instruction blank, the model loses nothing** (51.1% vs 51.0% with all inputs). The conventional ablation's 0% without language comes entirely from removing the template tokens; the instruction itself is worth nothing on MimicGen, in line with the model trained without language (50.8%).
 - **Masking a camera fails like removing it** (0–3%). The masked wrist camera is again slightly worse than the removed one (0.2% vs 0.6%).
@@ -1481,7 +1491,7 @@ Training runs live under `$SAVES_DIR/train_logs/`, and closed-loop results in `<
 | CALVIN no dropout + proprio, trained without language, seeds 42 (twice) / 5 | `calvin_abcd_d_static+wrist+proprio/2026-11-09_16-32-13` / `2026-11-09_21-28-35` / `2026-11-10_09-55-44` |
 | CALVIN no dropout + proprio, one input withheld, seeds 42 / 5 / 100 | the same three runs, re-evaluated through the queue (`dist-sched add` with `PIPELINE_RESTORE=1 PIPELINE_ALL_COMBOS=1 PIPELINE_SKIP_MULTI_OFF=1`) |
 | CALVIN no dropout + proprio, masked inputs, seeds 42 / 5 / 100 | the same three runs, queued with `dist-sched add --tag masked --opts "PIPELINE_MASKED=1"`; artifact members `masked_static/`, `masked_wrist/`, `blank_instruction/calvin.csv` |
-| CALVIN open loop, no dropout + proprio (inputs withheld) and the runs trained without one input | queued with `dist-sched add --tag openloop --opts "PIPELINE_OPEN_LOOP=1 [PIPELINE_OPEN_LOOP_WITHHELD=1]"`; W&B artifacts `open-loop-<run id>` |
+| CALVIN open loop, no dropout + proprio (inputs withheld, seeds 42 / 5 / 100), `subset` + proprio (all 14 combinations) and the runs trained without one input | queued with `dist-sched add --tag openloop --opts "PIPELINE_OPEN_LOOP=1 [PIPELINE_OPEN_LOOP_WITHHELD=1]"`; W&B artifacts `open-loop-<run id>` |
 | CALVIN whole-modality dropout (`subset`) + proprio, seeds 42 / 5 / 100 | `calvin_abcd_d_dropout/2026-11-06_00-00-24` / `2026-11-06_00-00-18` / `2026-11-06_13-27-58` |
 | LIBERO whole-modality dropout (`subset`) + proprio, seeds 42 / 5 / 100 | `libero_10_dropout/2026-11-04_21-49-24` / `2026-11-04_21-51-57` / `2026-11-07_12-40-49` |
 | LIBERO no dropout + proprio, trained without the static camera, seeds 42 / 5 / 100 | `libero_10_wrist+lang+proprio/2026-11-06_15-31-06` / `2026-11-06_15-31-13` / `2026-11-07_12-40-58` |
@@ -1494,9 +1504,9 @@ Training runs live under `$SAVES_DIR/train_logs/`, and closed-loop results in `<
 | MimicGen dropout, proprio keep 0.5 / 1.0, seed 5 | `mimicgen_dropout/2026-10-19_11-46-58` / `2026-10-25_11-13-31` |
 | MimicGen dropout, proprio keep 0.5 / 1.0, seed 100 | `mimicgen_dropout/2026-11-07_12-51-01` / `2026-11-07_12-50-01` |
 | MimicGen uniform keep 0.5, proprio keep 0.5, seeds 42 / 5 / 100 | `mimicgen_dropout/2026-10-25_11-13-39` / `2026-11-04_20-35-43` / `2026-11-07_12-50-14` |
-| MimicGen no dropout + proprio, trained without the wrist camera, seeds 42 / 100 | `mimicgen_static+lang+proprio/2026-11-09_12-52-49` / `2026-11-10_22-58-23` |
+| MimicGen no dropout + proprio, trained without the wrist camera, seeds 42 / 5 / 100 | `mimicgen_static+lang+proprio/2026-11-09_12-52-49` / `2026-11-12_12-20-15` / `2026-11-10_22-58-23` |
 | MimicGen no dropout + proprio, trained without the static camera, seeds 42 / 5 / 100 | `mimicgen_wrist+lang+proprio/2026-11-09_12-52-49` / `2026-11-09_21-23-54` / `2026-11-10_23-00-03` |
-| MimicGen no dropout + proprio, trained without language, seeds 42 / 100 | `mimicgen_static+wrist+proprio/2026-11-09_21-23-22` / `2026-11-10_22-58-23` |
+| MimicGen no dropout + proprio, trained without language, seeds 42 / 5 / 100 | `mimicgen_static+wrist+proprio/2026-11-09_21-23-22` / `2026-11-12_12-20-14` / `2026-11-10_22-58-23` |
 | MimicGen no dropout + proprio, masked inputs, seeds 5 / 100 | `mimicgen/2026-10-16_16-38-21` / `2026-11-06_16-39-08`, queued with `dist-sched add --tag masked --opts "PIPELINE_MASKED=1"`; artifact members `masked_static/`, `masked_wrist/`, `blank_instruction/mimicgen.csv` |
 | MimicGen Dirichlet keep 0.75, proprio keep 0.5, seeds 42 / 5 | `mimicgen_dropout/2026-10-19_11-47-04` / `2026-11-06_15-54-34` |
 | MimicGen whole-modality dropout (`subset`) + proprio, seeds 42 / 5 / 100 | `mimicgen_dropout/2026-11-06_00-00-29` / `2026-11-06_00-51-16` / `2026-11-06_13-28-35` |
@@ -1598,7 +1608,7 @@ Success rate (%) of each attempted subtask in the 1000 closed-loop chains, avera
 
 These tables give the values plotted in the four open-loop figures. Machine-readable versions are in [`results/open_loop_summary_by_timestep.csv`](results/open_loop_summary_by_timestep.csv) and [`results/open_loop_summary_by_phase.csv`](results/open_loop_summary_by_phase.csv).
 
-**Every open-loop evaluation, machine-readable.** `./run.sh open-loop-tables` (`scripts/open_loop_tables.py`) writes these tables from every merged open-loop result: all seeds of all models, including the no dropout + proprio model with masked inputs and the models trained without one input.
+**Every open-loop evaluation, machine-readable.** `./run.sh open-loop-tables` (`scripts/open_loop_tables.py`) writes these tables from every merged open-loop result: all seeds of all models, including the no dropout + proprio model with masked inputs, the models trained without one input and `subset` + proprio on all 14 combinations.
 - **Files:**
   - [`open_loop_by_run.csv`](results/open_loop_by_run.csv): one row per run and cell.
   - [`open_loop_by_run_timestep.csv`](results/open_loop_by_run_timestep.csv): the same per 5-frame bin; bins with fewer than 200 samples are dropped.

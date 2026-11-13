@@ -109,7 +109,7 @@ How each run formed its global batch of 32 (GPUs × micro-batch × accumulation)
 | uniform keep 0.5 | | ✓ | ✓ (proprio keep 0.5) |
 | Dirichlet keep 0.5 + proprio, proprio keep 1.0 / 0.75 / 0.5 / 0.25 | all four | 1.0 (seeds 42, 5, 101) and 0.5 | 1.0 and 0.5 |
 | `subset` + proprio | ✓ | ✓ | ✓ |
-| no dropout + proprio, trained without one input (static camera, wrist camera, language) | ✓ | ✓ (without language: seeds 42, 5) | without the static camera ✓; without the wrist camera seeds 42, 100; without language seeds 42, 100 |
+| no dropout + proprio, trained without one input (static camera, wrist camera, language) | ✓ | ✓ (without language: seeds 42, 5) | ✓ |
 
 The model trained without proprioception is the plain **no dropout** model. Missing seeds were being trained or evaluated as of 2026-11-12; results.md lists what each result is based on.
 

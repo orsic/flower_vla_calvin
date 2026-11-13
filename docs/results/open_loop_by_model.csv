@@ -1,10 +1,10 @@
 model,combo,masked,use_static,use_wrist,use_lang,use_proprio,runs,seeds,mse_mean,mse_mean_sd,fm_mean,fm_mean_sd,mse_delta,mse_delta_sd,fm_delta,fm_delta_sd
 no dropout,static+wrist+lang,,True,True,True,False,3,5 42 100,0.061921,0.00108085,0.129731,0.00043224,,,,
-no dropout + proprio,static+wrist+lang+proprio,,True,True,True,True,2,42 100,0.0592644,4.3882e-05,0.128795,0.000662602,0,0,0,0
-no dropout + proprio,wrist+lang+proprio (static masked),static,False,True,True,True,2,42 100,0.082171,0.00350661,0.153793,0.00623994,0.0229065,0.00346273,0.0249975,0.00557734
-no dropout + proprio,static+lang+proprio (wrist masked),wrist,True,False,True,True,2,42 100,0.0876124,0.00235358,0.160073,0.000322391,0.0283479,0.00239747,0.0312783,0.000984993
-no dropout + proprio,static+wrist+proprio (lang masked),lang,True,True,False,True,2,42 100,0.126371,0.0066373,0.204429,0.00212978,0.0671069,0.00668118,0.0756341,0.00279238
-no dropout + proprio,static+wrist+lang,,True,True,True,False,2,42 100,0.087449,0.00525512,0.218309,0.012526,0.0281846,0.00521124,0.0895133,0.0118634
+no dropout + proprio,static+wrist+lang+proprio,,True,True,True,True,3,5 42 100,0.0595446,0.000486174,0.128811,0.000469286,0,0,0,0
+no dropout + proprio,wrist+lang+proprio (static masked),static,False,True,True,True,3,5 42 100,0.0815753,0.00268565,0.153962,0.00442206,0.0220307,0.00288035,0.0251517,0.0039528
+no dropout + proprio,static+lang+proprio (wrist masked),wrist,True,False,True,True,3,5 42 100,0.0866659,0.00233602,0.158889,0.0020643,0.0271214,0.00271797,0.0300784,0.0021919
+no dropout + proprio,static+wrist+proprio (lang masked),lang,True,True,False,True,3,5 42 100,0.123739,0.00654272,0.204305,0.00152134,0.0641949,0.00691073,0.0754942,0.00198932
+no dropout + proprio,static+wrist+lang,,True,True,True,False,3,5 42 100,0.0869733,0.00380619,0.217843,0.00889389,0.0274287,0.00391055,0.0890321,0.00842999
 dirichlet keep0.5,static+wrist+lang,,True,True,True,False,3,5 42 100,0.064514,0.000668529,0.129574,0.000153645,0,0,0,0
 dirichlet keep0.5,static+wrist,,True,True,False,False,3,5 42 100,0.091422,0.00080265,0.15041,0.000660167,0.026908,0.000497619,0.0208363,0.000634495
 dirichlet keep0.5,static+lang,,True,False,True,False,3,5 42 100,0.0718501,0.00230937,0.136154,0.00180486,0.00733616,0.00258115,0.00657984,0.00190774
@@ -33,6 +33,20 @@ uniform keep0.5,wrist+lang,,False,True,True,False,3,5 42 100,0.0828958,0.0042020
 uniform keep0.5,static,,True,False,False,False,3,5 42 100,0.223249,0.0341122,0.232988,0.0103636,0.159887,0.034376,0.103666,0.0102115
 uniform keep0.5,wrist,,False,True,False,False,3,5 42 100,0.125875,0.00246867,0.180776,0.0027064,0.062513,0.00249817,0.0514539,0.00278909
 uniform keep0.5,lang,,False,False,True,False,3,5 42 100,0.308628,0.0351717,0.310082,0.0163111,0.245266,0.0354336,0.18076,0.0161851
+subset keep0.5 + proprio,static+wrist+lang+proprio,,True,True,True,True,3,5 42 100,0.0629754,0.00100473,0.129455,0.000784929,0,0,0,0
+subset keep0.5 + proprio,static+wrist+lang,,True,True,True,False,3,5 42 100,0.0651075,0.0013732,0.131006,0.000585699,0.00213215,0.000448894,0.00155106,0.000237517
+subset keep0.5 + proprio,static+wrist+proprio,,True,True,False,True,3,5 42 100,0.0877659,0.000625955,0.14941,0.00104105,0.0247905,0.000620722,0.0199551,0.000496671
+subset keep0.5 + proprio,static+wrist,,True,True,False,False,3,5 42 100,0.0912002,0.000994858,0.151077,0.00120301,0.0282248,0.00100972,0.0216219,0.000942817
+subset keep0.5 + proprio,static+lang+proprio,,True,False,True,True,3,5 42 100,0.0664814,0.000554453,0.132535,0.00113089,0.00350598,0.000452175,0.00308028,0.000400587
+subset keep0.5 + proprio,static+lang,,True,False,True,False,3,5 42 100,0.0701368,0.000992121,0.1351,0.00113513,0.00716138,0.000275834,0.0056449,0.000477465
+subset keep0.5 + proprio,wrist+lang+proprio,,False,True,True,True,3,5 42 100,0.0679648,0.00154907,0.133964,0.000187387,0.00498936,0.000660489,0.00450868,0.000611945
+subset keep0.5 + proprio,wrist+lang,,False,True,True,False,3,5 42 100,0.0704385,0.00218916,0.136058,0.000390178,0.00746308,0.00120848,0.00660257,0.000843335
+subset keep0.5 + proprio,static+proprio,,True,False,False,True,3,5 42 100,0.097427,0.00111229,0.155994,0.0011508,0.0344516,0.000971886,0.0265385,0.000884665
+subset keep0.5 + proprio,static,,True,False,False,False,3,5 42 100,0.103004,0.00106483,0.158912,0.00168148,0.0400286,0.00125479,0.0294567,0.0014154
+subset keep0.5 + proprio,wrist+proprio,,False,True,False,True,3,5 42 100,0.093215,0.0028851,0.155087,0.0016621,0.0302396,0.00191519,0.0256317,0.00126975
+subset keep0.5 + proprio,wrist,,False,True,False,False,3,5 42 100,0.0972622,0.00414989,0.157411,0.00219373,0.0342868,0.00315371,0.0279557,0.0019342
+subset keep0.5 + proprio,lang+proprio,,False,False,True,True,3,5 42 100,0.121943,0.00240738,0.17713,0.00030857,0.0589676,0.00332938,0.0476745,0.000710412
+subset keep0.5 + proprio,lang,,False,False,True,False,3,5 42 100,0.267694,0.0009316,0.220927,0.000791822,0.204718,0.000637759,0.0914715,0.000240855
 no dropout + proprio (trained without wrist),static+lang+proprio,,True,False,True,True,3,5 42 100,0.0621529,0.000623081,0.129053,0.000533546,,,,
 no dropout + proprio (trained without lang),static+wrist+proprio,,True,True,False,True,3,5 42,0.082868,0.0020867,0.147625,0.00081026,,,,
 no dropout + proprio (trained without static),wrist+lang+proprio,,False,True,True,True,3,5 42 100,0.0629021,0.000732355,0.131029,0.000703719,,,,
