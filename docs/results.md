@@ -212,6 +212,7 @@ Chain success by position, mean over the three seeds (%):
   - Unlike `subset`, this model loses more from the wrist camera than from the static camera.
 - **A model trained without one camera loses nothing:** 4.49 without the static camera (seeds 42, 5 and 100: 4.52, 4.41 and 4.55) and 4.53 without the wrist camera (4.54, 4.55 and 4.49), all within the all-inputs seed range (4.35–4.55). On CALVIN either camera with language and proprioception is enough, so the conventional ablation's drop to 1.30–1.71 measures only the model's failure to extrapolate (2.8–3.2 avg_seq_len), and even `subset` stays 0.3–0.6 below the specialists.
   - The specialists rely on proprioception like the full model: withholding it gives 3.25 (no static camera; 3.46, 3.20 and 3.09 for seeds 42, 5 and 100) and 3.38 (no wrist camera; 3.55, 3.28 and 3.33). Without language they fail (0.00–0.09).
+- The same comparison in open loop, with every model's setup spelled out, is under [Open loop: withheld vs trained without](#open-loop-withheld-vs-trained-without-no-dropout--proprio).
 - **Without language it fails, like every CALVIN model** (0.04). Here the conventional ablation is right: a model trained without language also fails (0.11–0.16, three runs), slightly below `subset` with language withheld (0.16). CALVIN scenes hold several tasks, so only the instruction says which one to do.
 
 #### Dirichlet dropout with proprioception
@@ -397,13 +398,26 @@ Values: [appendix](#calvin-open-loop-values-behind-the-figures-seed-42).
 
 ### Open loop: withheld vs trained without (no dropout + proprio)
 
-The open-loop counterpart of the closed-loop comparison above: the conventional no dropout + proprio model with each input withheld (dependence), against the same recipe trained without that input, scored on the inputs it was trained on (contribution). Same 53,923 samples and per-frame noise as above.
-- **Withheld:** a camera's frames replaced by their mean pixel, the instruction blanked with the prompt template kept, proprioception zeroed (`open_loop_calvin.py --masked-withheld`). Seeds 42 and 100 (`calvin_abcd_d/2026-10-14_13-37-34`, `2026-10-27_22-04-48`); seed 5 is queued.
-- **Trained without:** the three runs per input of the closed-loop table (language: seeds 42, 42 and 5). For proprioception, the no-dropout runs without it (`calvin_abcd_d`, seeds 42 / 5 / 100), already scored above.
+The open-loop counterpart of the [closed-loop comparison](#calvin-abcdd) of the no dropout + proprio recipe. For each input g it compares two things:
+- **dependence**, Δ(g): how much worse the conventional model gets when g is withheld at evaluation;
+- **contribution**, C(g): how much worse a model trained without g is, evaluated without g as well.
+
+Every model is scored on the same 53,923 validation samples with the same per-frame noise as above. The models, and what each is given at evaluation:
+
+| model | trained on | evaluated on | the missing input at evaluation | runs |
+|---|---|---|---|---|
+| full model | static + wrist + lang + proprio | all four | none | seeds 42 / 100: `calvin_abcd_d/2026-10-14_13-37-34` / `2026-10-27_22-04-48` (seed 5 queued) |
+| full model, g withheld | static + wrist + lang + proprio | all four except g | **masked**: a camera's frames replaced by their per-channel mean pixel (tokens kept); language as the prompt template with a blank instruction; proprioception as a zero vector | the same two runs (`open_loop_calvin.py --masked-withheld`) |
+| trained without a camera or language | all four except g (`model.modalities.<g>=False`) | the same inputs it was trained on | **absent**: no tokens in training or evaluation, nothing masked | without static: `calvin_abcd_d_wrist+lang+proprio/2026-11-09_12-06-50` / `2026-11-09_21-28-34` / `2026-11-11_11-14-57` (seeds 42 / 5 / 100); without wrist: `calvin_abcd_d_static+lang+proprio/2026-11-09_12-06-57` / `2026-11-10_09-55-43` / `2026-11-11_11-15-03` (42 / 5 / 100); without language: `calvin_abcd_d_static+wrist+proprio/2026-11-09_16-32-13` / `2026-11-09_21-28-35` / `2026-11-10_09-55-44` (42 / 42 / 5) |
+| trained without proprioception | static + wrist + lang (`model.use_proprio=False`) | the same three | **absent**: the model has no proprio input at all, not a zero vector | `calvin_abcd_d/2026-10-07_17-51-44` / `2026-10-12_22-31-31` / `2026-10-12_22-32-26` (seeds 42 / 5 / 100), the "no dropout" model of the first open-loop table |
+
+The two "increase" columns:
+- **dependence:** each withheld sample's loss minus the same model's all-inputs loss on that sample, averaged;
+- **contribution:** the model trained without g, minus the full model with all inputs. These are different models on the same samples and noise.
 
 Mean predicted-action MSE, mean ± sd over runs; the full model with all inputs is 0.0593 (0.0592 / 0.0593):
 
-| input | withheld | per seed (42 / 100) | increase | trained without it | per run | increase |
+| input g | full model, g withheld (masked) | per seed (42 / 100) | increase (dependence) | trained and evaluated without g | per run | increase (contribution) |
 |---|---|---|---|---|---|---|
 | static camera | 0.082 ± 0.004 | 0.080 / 0.085 | +0.023 | 0.063 ± 0.001 | 0.063 / 0.064 / 0.062 | +0.004 |
 | wrist camera | 0.088 ± 0.002 | 0.089 / 0.086 | +0.028 | 0.062 ± 0.001 | 0.062 / 0.062 / 0.063 | +0.003 |
@@ -411,6 +425,10 @@ Mean predicted-action MSE, mean ± sd over runs; the full model with all inputs 
 | proprioception | 0.087 ± 0.005 | 0.084 / 0.091 | +0.028 | 0.062 ± 0.001 | 0.062 / 0.061 / 0.063 | +0.003 |
 
 The training (flow-matching) loss gives the same picture: all inputs 0.129; withheld 0.154 / 0.160 / 0.204 / 0.218 (static, wrist, language, proprioception); trained without 0.131 / 0.129 / 0.148 / 0.130.
+
+Caveats:
+- **Masked, not removed.** Here the withheld input is masked, while the closed-loop "withheld" rows of the CALVIN table remove its tokens. In closed loop the two agree for the static camera (1.68 vs 1.71) and language (0.08 vs 0.04), but a masked wrist camera is worse than a removed one (0.84 vs 1.30; [masked vs removed](#masking-an-input-instead-of-removing-it-no-dropout--proprio)), so the wrist row does not correspond exactly to the closed-loop number.
+- **Zeroed proprioception is not a neutral input.** The mean proprio conditioning vector of this model is far from zero (seed 100: norm 24.4 against 32 per sample, 58% of the energy), so zeroing it also removes a large constant offset. Part of the proprio dependence may come from that offset rather than from the missing robot state.
 
 - **For the cameras and proprioception, withholding overstates the input's contribution 6–9 times.** Withholding costs 0.023–0.028, training without the input 0.003–0.004, about three times the seed spread. The closed loop shows the same (1.30–1.71 avg_seq_len withheld, 4.49–4.53 trained without a camera), so the open-loop measurement separates dependence from contribution as well.
 - **Language contributes in open loop too.** The model trained without it is 0.024 above the full model in every bin of the subtask (0.084–0.088 vs 0.060–0.063 in the first 40 frames), the only input whose specialist is clearly worse. Withholding it costs about three times more (+0.067), the largest increase in the frames 10–39 (up to 0.146 vs 0.060). In closed loop the specialist fails completely (0.14 avg_seq_len): averaged over frames, a wrong choice of task shows only as a moderate per-step error.
