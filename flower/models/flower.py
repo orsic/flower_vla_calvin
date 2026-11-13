@@ -208,6 +208,10 @@ class FLOWERVLA(pl.LightningModule):
         # Eval-time mean-pixel views (eval_modalities.rgb_*_pixels=false): (static, wrist).
         # A set view is still encoded, but every pixel becomes that frame's per-channel mean.
         self.eval_mean_pixel: Tuple[bool, bool] = (False, False)
+        # Eval-time mean proprio (eval_modalities.proprio_state=false): a [dit_dim] vector put
+        # in place of a withheld sample's normalized proprio term in dit_forward -- the
+        # training mean of stateless_norm(encode_proprio(robot_obs)), scripts/proprio_mean.py.
+        self.eval_proprio_fill: Optional[torch.Tensor] = None
 
         # Eval-time per-episode noise seeding: None (default) = unchanged single batched
         # torch.randn in forward(). Set by the eval harness via set_eval_noise_seeds() to
@@ -896,6 +900,10 @@ class FLOWERVLA(pl.LightningModule):
         t_emb = stateless_norm(self.t_embedder(t)) + \
                 stateless_norm(frequency_embeds).squeeze(1) + \
                 stateless_norm(proprio_embeds).squeeze(1)
+        if not self.training and self.eval_proprio_fill is not None and cond_dict.get('proprio_keep') is not None:
+            # A withheld sample's proprio term is 0 above; put the training mean there instead.
+            withheld = (~cond_dict['proprio_keep']).to(t_emb.device, t_emb.dtype).unsqueeze(-1)
+            t_emb = t_emb + withheld * self.eval_proprio_fill.to(t_emb.device, t_emb.dtype)
         
         cond = self.cond_linear(self.cond_norm(cond))
         

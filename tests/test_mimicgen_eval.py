@@ -388,3 +388,20 @@ def test_mean_pixel_sets_model_flag():
     fem.EvaluateMimicgen(**_minimal_ctor_kwargs(model), eval_modalities={"rgb_static_pixels": False})
     assert model.eval_mean_pixel == (True, False)
     assert model.eval_modality_mask is None
+
+
+def test_mean_proprio_loads_the_fill_for_the_checkpoint(tmp_path):
+    import torch
+
+    from flower.evaluation.eval_records import proprio_mean_path
+
+    ckpt = tmp_path / "run" / "seed_42" / "saved_models" / "last.ckpt"
+    model = _FakeModel(use_proprio=True)
+    with pytest.raises(FileNotFoundError):
+        fem.EvaluateMimicgen(**_minimal_ctor_kwargs(model), checkpoint=ckpt, eval_modalities={"proprio_state": False})
+    proprio_mean_path(ckpt).parent.mkdir(parents=True)
+    torch.save({"mean": torch.ones(3)}, proprio_mean_path(ckpt))
+    model = _FakeModel(use_proprio=True)
+    evaluator = fem.EvaluateMimicgen(**_minimal_ctor_kwargs(model), checkpoint=ckpt, eval_modalities={"proprio_state": False})
+    assert model.eval_proprio_mask is False and torch.equal(model.eval_proprio_fill, torch.ones(3))
+    assert evaluator.uses_proprio is True

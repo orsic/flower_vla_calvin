@@ -44,6 +44,8 @@ from eval_pipeline import (  # noqa: E402
     masked_artifact_members,
     masked_lines,
     masked_restore_targets,
+    proprio_mean_members,
+    PROPRIO_MEAN_MEMBER,
     modality_overrides,
     parse_overrides,
     planned_combos,
@@ -54,7 +56,7 @@ from eval_pipeline import (  # noqa: E402
 from perturbation_sr import modality_combos_present  # noqa: E402
 from pid_modality import load_rows  # noqa: E402
 
-from flower.evaluation.eval_records import result_dir  # noqa: E402
+from flower.evaluation.eval_records import proprio_mean_path, result_dir  # noqa: E402
 
 LIBERO_VARIANT = "mimicgen"
 SUITE = "core"
@@ -162,7 +164,7 @@ def write_pid_report(csv_path: Path) -> Optional[Path]:
 
 def upload(train_folder: str, extra_overrides: List[str]) -> None:
     train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
-    resolved_train_folder, _ = _resolve(train_folder, extra_overrides)
+    resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
     path = csv_path(train_folder, extra_overrides)
 
     if not path.exists():
@@ -181,8 +183,8 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
     )
     artifact = wandb.Artifact(artifact_name(run_id), type="evaluation")
     artifact.add_file(str(path), name="mimicgen.csv")
-    for masked_path, name in masked_artifact_members(path, "mimicgen.csv"):
-        artifact.add_file(str(masked_path), name=name)
+    for member_path, name in masked_artifact_members(path, "mimicgen.csv") + proprio_mean_members(checkpoint):
+        artifact.add_file(str(member_path), name=name)
     pid_txt = write_pid_report(path)
     if pid_txt is not None:
         artifact.add_file(str(pid_txt), name="pid_modality.txt")
@@ -203,6 +205,7 @@ def restore(train_folder: str, extra_overrides: List[str]) -> None:
             return
         path = csv_path(train_folder, extra_overrides)
         targets = {"mimicgen.csv": path, **masked_restore_targets(path, "mimicgen.csv")}
+        targets[PROPRIO_MEAN_MEMBER] = proprio_mean_path(_resolve(train_folder, extra_overrides)[1])
         for path in restore_files(artifact_dir, targets):
             print(f"restore: {path}")
 

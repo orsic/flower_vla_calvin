@@ -119,7 +119,13 @@ import wandb
 from omegaconf import OmegaConf
 
 sys.path.insert(0, Path(__file__).absolute().parents[1].as_posix())
-from flower.evaluation.eval_records import checkpoint_name, merge_rows, read_csv, write_csv  # noqa: E402
+from flower.evaluation.eval_records import (  # noqa: E402
+    checkpoint_name,
+    merge_rows,
+    proprio_mean_path,
+    read_csv,
+    write_csv,
+)
 
 import pro_sr  # noqa: E402 -- same-directory import, python puts scripts/ on sys.path[0]
 import severity_sr  # noqa: E402
@@ -153,6 +159,7 @@ MASKED_VARIANTS = {
     "masked_static": ("rgb_static", "rgb_static_pixels"),
     "masked_wrist": ("rgb_gripper", "rgb_gripper_pixels"),
     "blank_instruction": ("language", "instruction"),
+    "masked_proprio": ("proprio", "proprio_state"),
 }
 
 # Variant token -> (LIBERO_VARIANT arm, LIBERO-PRO suite tag). Unlike orig/plus, a PRO
@@ -429,11 +436,14 @@ def masked_lines(
     """One eval line per masked input the model was trained on (shared with
     calvin_pipeline.py and mimicgen_pipeline.py). `overrides` already select the trained
     inputs `full`; the mask is appended last, so it wins. resume skips a variant whose
-    result.csv already holds `full`."""
+    result.csv already holds `full`. Proprio is masked only on a use_proprio model
+    (trained_combo marks it on for every run)."""
     return [
         (service, overrides + [f"eval_modalities.{key}=False"])
         for variant, (needed, key) in MASKED_VARIANTS.items()
-        if full[needed] and not (resume and combo_in_csv(masked_csv_path(csv_path, variant), full, use_proprio))
+        if full[needed]
+        and (needed != "proprio" or use_proprio)
+        and not (resume and combo_in_csv(masked_csv_path(csv_path, variant), full, use_proprio))
     ]
 
 
@@ -445,6 +455,16 @@ def masked_artifact_members(csv_path: Path, member: str) -> List[Tuple[Path, str
 
 def masked_restore_targets(csv_path: Path, member: str) -> Dict[str, Path]:
     return {masked_member(v, member): masked_csv_path(csv_path, v) for v in MASKED_VARIANTS}
+
+
+PROPRIO_MEAN_MEMBER = "proprio_mean.pt"
+
+
+def proprio_mean_members(checkpoint: str) -> List[Tuple[Path, str]]:
+    """The checkpoint's mean proprio vector (scripts/proprio_mean.py) as an artifact member,
+    when it has been computed, so a worker restores it instead of recomputing it."""
+    path = proprio_mean_path(checkpoint)
+    return [(path, PROPRIO_MEAN_MEMBER)] if path.exists() else []
 
 
 def _eval_overrides(benchmark_name: str, train_folder: str, checkpoint: str, combo: Dict[str, bool]) -> List[str]:
@@ -489,7 +509,8 @@ def plan_lines(
     all_combos: bool = False,
     masked: bool = False,
 ) -> List[Tuple[str, List[str]]]:
-    """masked plans only the masked-input evals (MASKED_VARIANTS) of the original suite.
+    """masked plans only the masked-input evals (MASKED_VARIANTS), on the original suite
+    and on LIBERO-Plus.
 
     reeval_variants, when given, restricts the plan to those variants only, and each
     of them is replanned unconditionally (see should_replan below) -- the caller
@@ -505,8 +526,11 @@ def plan_lines(
     parsed = parse_overrides(extra_overrides)
     if masked:
         orig_csv = _csv_path(resolved_train_folder, checkpoint, "orig", benchmark_name)
+        plus_csv = _csv_path(resolved_train_folder, checkpoint, "plus", benchmark_name)
         base = _eval_overrides(benchmark_name, resolved_train_folder, checkpoint, full) + extra_overrides
-        return masked_lines("eval", base, full, orig_csv, use_proprio, resume)
+        return masked_lines("eval", base, full, orig_csv, use_proprio, resume) + masked_lines(
+            "eval-plus", base, full, plus_csv, use_proprio, resume
+        )
 
     def already_done(variant: str, combo: Dict[str, bool]) -> bool:
         if not resume:
@@ -801,6 +825,8 @@ def upload(train_folder: str, extra_overrides: List[str]) -> None:
 
     members = artifact_members(orig_csv, plus_csv, modality_off_csvs, pid_txt, pro_csvs)
     members += masked_artifact_members(orig_csv, "libero_orig.csv")
+    members += masked_artifact_members(plus_csv, "libero_plus.csv")
+    members += proprio_mean_members(checkpoint)
 
     if not members:
         print(f"Nothing to upload: no result.csv found under {orig_csv.parent.parent}.")
@@ -875,6 +901,8 @@ def restore(train_folder: str, extra_overrides: List[str]) -> None:
         for variant, path in modality_off_csv_paths(resolved_train_folder, checkpoint, benchmark_name, use_proprio).items():
             targets[modality_off_member(variant)] = path
         targets.update(masked_restore_targets(targets["libero_orig.csv"], "libero_orig.csv"))
+        targets.update(masked_restore_targets(targets["libero_plus.csv"], "libero_plus.csv"))
+        targets[PROPRIO_MEAN_MEMBER] = proprio_mean_path(checkpoint)
         written = restore_files(artifact_dir, targets)
         # libero_pro.csv concatenates the PRO suites (write_pro_csv); split it back by arm
         # and suite into each suite's own result.csv.

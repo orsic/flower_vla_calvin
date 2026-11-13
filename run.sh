@@ -39,6 +39,7 @@
 #   ./run.sh train-calvin-dropout [...]   Same, with modality-token dropout; the pipeline evaluates every modality combo
 #   ./run.sh eval-calvin [...]            Run the CALVIN long-horizon evaluation (needs train_folder=, checkpoint=)
 #   ./run.sh pipeline-calvin <train_run_dir> [...]  Post-training CALVIN eval + W&B upload
+#   ./run.sh proprio-mean <train_run_dir>  Mean proprio conditioning vector (masked-proprio eval)
 #   ./run.sh open-loop-calvin <train_run_dir> [...]  Open-loop per-timestep loss on the validation split, per combo
 #   ./run.sh analyze-open-loop [...]      Figures + summaries from every open-loop-calvin result
 #
@@ -101,6 +102,14 @@ modality_label() {
     [[ $lang == 0 ]] || parts+=(lang)
     [[ $proprio == 0 ]] || parts+=(proprio)
     (IFS=+; echo "${parts[*]}")
+}
+
+# Mean proprio conditioning vector of a run (scripts/proprio_mean.py), in the given
+# benchmark container; a no-op without proprio or when it exists. Used by PIPELINE_MASKED.
+run_proprio_mean() {
+    local svc="$1" train_dir="$2"
+    podman-compose -f "$COMPOSE" run --rm -T "$svc" \
+        python scripts/proprio_mean.py --train-folder "$train_dir"
 }
 
 # Helper for train.
@@ -427,6 +436,8 @@ case "$CMD" in
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts \
             python scripts/eval_pipeline.py restore --train-folder "$train_dir" -- "$@"
     fi
+    # The masked proprio cell needs the run's mean proprio vector (restored above if known).
+    [[ -n "${PIPELINE_MASKED:-}" ]] && run_proprio_mean shell "$train_dir"
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell \
         python scripts/eval_pipeline.py plan --train-folder "$train_dir" \
         "${resume_flag[@]}" "${reeval_flag[@]}" "${skip_modality_off_flag[@]}" \
@@ -572,6 +583,7 @@ case "$CMD" in
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-mimicgen \
             python scripts/mimicgen_pipeline.py restore --train-folder "$train_dir" -- "$@"
     fi
+    [[ -n "${PIPELINE_MASKED:-}" ]] && run_proprio_mean shell-mimicgen "$train_dir"
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell-mimicgen \
         python scripts/mimicgen_pipeline.py plan --train-folder "$train_dir" \
         "${flags[@]}" -- "$@")"
@@ -698,6 +710,7 @@ case "$CMD" in
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \
             python scripts/calvin_pipeline.py restore --train-folder "$train_dir" -- "$@"
     fi
+    [[ -n "${PIPELINE_MASKED:-}" ]] && run_proprio_mean shell-calvin "$train_dir"
     plan="$(podman-compose -f "$COMPOSE" run --rm -T shell-calvin \
         python scripts/calvin_pipeline.py plan --train-folder "$train_dir" \
         "${flags[@]}" -- "$@")"
@@ -721,6 +734,23 @@ case "$CMD" in
 
     podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \
         python scripts/calvin_pipeline.py upload --train-folder "$train_dir" -- "$@"
+    ;;
+
+  proprio-mean)
+    # Mean proprio conditioning vector of one run over its training data
+    # (scripts/proprio_mean.py), for the eval_modalities.proprio_state=false masked eval;
+    # written to <run>/eval_logs/<ckpt>/proprio_mean.pt. Runs in the run's benchmark container.
+    #   CUDA_VISIBLE_DEVICES=0 ./run.sh proprio-mean /saves/train_logs/calvin_abcd_d/<run>
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: ./run.sh proprio-mean <train_run_dir>" >&2
+        exit 1
+    fi
+    case "$1" in
+        *calvin*) svc=shell-calvin ;;
+        *mimicgen*) svc=shell-mimicgen ;;
+        *) svc=shell ;;
+    esac
+    run_proprio_mean "$svc" "$1"
     ;;
 
   open-loop-calvin)
@@ -935,6 +965,8 @@ case "$CMD" in
     echo "  pipeline-calvin <train_run_dir> [hydra_overrides...]"
     echo "                     Post-training CALVIN eval (per modality combo for dropout runs) + W&B upload."
     echo "                     Example: ./run.sh pipeline-calvin /saves/train_logs/calvin_abcd_d/2026-.../"
+    echo "  proprio-mean <train_run_dir>"
+    echo "                     Mean proprio conditioning vector of a run, for the masked-proprio eval"
     echo "  open-loop-calvin <train_run_dir> [--combos 0,3] [--max-windows N] [...]"
     echo "                     Open-loop per-timestep loss on the CALVIN validation split, per modality combo"
     echo "  analyze-open-loop [--csv ...] [--out-dir DIR]"

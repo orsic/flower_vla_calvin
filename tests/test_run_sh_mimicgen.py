@@ -29,7 +29,7 @@ case "$joined" in
   *"mimicgen_pipeline.py upload"*)
     [[ -n "${FAKE_UPLOAD_LOG:-}" ]] && echo "$joined" >> "$FAKE_UPLOAD_LOG"
     ;;
-  *"mimicgen_pipeline.py restore"*)
+  *"mimicgen_pipeline.py restore"*|*"proprio_mean.py"*)
     [[ -n "${FAKE_PLAN_LOG:-}" ]] && echo "$joined" >> "$FAKE_PLAN_LOG"
     ;;
   *)
@@ -341,4 +341,5 @@ def test_pipeline_mimicgen_masked_restores_then_plans_masked(tmp_path):
     result, evals, plan, _ = _run_pipeline_mimicgen(tmp_path, {"PIPELINE_MASKED": "1"})
     assert result.returncode == 0, result.stderr
     assert "mimicgen_pipeline.py restore --train-folder /fake/train_dir" in plan[0]
-    assert "mimicgen_pipeline.py plan" in plan[1] and "--masked" in plan[1]
+    assert " run --rm -T shell-mimicgen python scripts/proprio_mean.py --train-folder /fake/train_dir" in plan[1]
+    assert "mimicgen_pipeline.py plan" in plan[2] and "--masked" in plan[2]

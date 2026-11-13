@@ -23,10 +23,12 @@ import wandb
 import torch.distributed as dist
 
 from flower.evaluation.eval_records import (
+    apply_mean_proprio,
     blank_instruction,
     checkpoint_name,
     masked_subdir,
     mean_pixel_views,
+    mean_proprio,
     merge_rank_csvs,
     merge_result_csv,
     read_csv,
@@ -82,8 +84,9 @@ def partition_sequences(n_sequences: int, n_gpus: int) -> List[List[int]]:
     return [list(range(rank, n_sequences, n_gpus)) for rank in range(n_gpus)]
 
 
-def apply_eval_modalities(model, eval_modalities: Dict[str, bool]) -> bool:
+def apply_eval_modalities(model, eval_modalities: Dict[str, bool], checkpoint: Optional[str] = None) -> bool:
     """Mask the modalities withheld from the model; returns whether it receives proprio.
+    `checkpoint` locates the mean proprio vector for eval_modalities.proprio_state=false.
 
     Same validation/masking as EvaluateMimicgen.__init__ (flower_eval_mimicgen.py).
     """
@@ -107,6 +110,10 @@ def apply_eval_modalities(model, eval_modalities: Dict[str, bool]) -> bool:
         )
     if not proprio_enabled:
         model.eval_proprio_mask = False
+    if mean_proprio(eval_modalities) and checkpoint is None:
+        raise ValueError("eval_modalities.proprio_state=False needs the checkpoint path")
+    if checkpoint is not None:
+        apply_mean_proprio(model, eval_modalities, checkpoint)
     return proprio_enabled and model.use_proprio
 
 
@@ -312,7 +319,7 @@ def _evaluate(cfg, device_id, sequence_indices, log_dir, num_videos):
     print(model.num_sampling_steps, model.multistep)
 
     eval_modalities = OmegaConf.to_container(cfg.eval_modalities, resolve=True)
-    uses_proprio = apply_eval_modalities(model, eval_modalities)
+    uses_proprio = apply_eval_modalities(model, eval_modalities, cfg.checkpoint)
     model.eval()
 
     common = {

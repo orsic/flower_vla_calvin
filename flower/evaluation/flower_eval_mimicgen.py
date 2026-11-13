@@ -41,6 +41,7 @@ from tqdm import tqdm
 from flower.datasets import mimicgen_tasks
 from flower.evaluation import obs_translation
 from flower.evaluation.eval_records import (
+    apply_mean_proprio,
     blank_instruction,
     checkpoint_name,
     env_seed,
@@ -239,6 +240,7 @@ class EvaluateMimicgen:
             )
         if not proprio_enabled:
             self.model.eval_proprio_mask = False
+        apply_mean_proprio(self.model, self.eval_modalities, self.checkpoint)
         self.uses_proprio = proprio_enabled and self.model.use_proprio
 
     def evaluate_policy(self, model, store_video=0) -> List[Dict[str, Any]]:

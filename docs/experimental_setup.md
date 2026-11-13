@@ -140,6 +140,7 @@ The model trained without proprioception is the plain **no dropout** model. Miss
 - **Difficulty levels 1–5:** 357 / 450 / 484 / 523 / 705 tasks.
 - **Passes:** run once with all inputs, then once with each input withheld (static camera, wrist camera, language, proprioception), giving up to 5 × 2519 episodes per model **(ours)**.
 - **Instruction:** taken from the original task, except in the Language Instructions category, which uses its rewritten instruction **(ours)**.
+- **Masked inputs (ours):** the no-dropout models are also run with one input masked instead of removed, on LIBERO-10 and LIBERO-Plus (and on CALVIN and MimicGen): a camera's frames replaced by their per-channel mean pixel, the instruction blanked with the prompt template kept, or proprioception replaced by its training-mean conditioning vector.
 
 **LIBERO-PRO** (`conf/eval_libero_pro.yaml`):
 - **Suites:** `lan` (reworded instruction), `task` (new goal), `swap` (swapped positions), `object` (new object meshes); 10 tasks × 20 episodes each.

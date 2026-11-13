@@ -40,6 +40,7 @@ from libero.lifelong.utils import create_experiment_dir, get_task_embs, safe_dev
 
 # Local project imports
 from flower.evaluation.eval_records import (
+    apply_mean_proprio,
     base_task_name,
     blank_instruction,
     checkpoint_name,
@@ -443,6 +444,7 @@ class EvaluateLibero:
             )
         if not proprio_enabled:
             self.model.eval_proprio_mask = False
+        apply_mean_proprio(self.model, self.eval_modalities, self.checkpoint)
 
         # What actually reached the model, for the result.csv use_proprio column -- a
         # checkpoint trained with use_proprio=False never received proprioception

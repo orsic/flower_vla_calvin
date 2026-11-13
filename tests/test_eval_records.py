@@ -10,15 +10,18 @@ import pytest
 
 from flower.evaluation.eval_records import (
     ALL_COLUMNS,
+    apply_mean_proprio,
     base_task_name,
     blank_instruction,
     checkpoint_name,
     env_seed,
     masked_subdir,
     mean_pixel_views,
+    mean_proprio,
     merge_rank_csvs,
     merge_result_csv,
     merge_rows,
+    proprio_mean_path,
     read_csv,
     result_dir,
     rollout_seed,
@@ -587,7 +590,61 @@ def test_mean_pixel_needs_the_camera(view):
             {"rgb_static_pixels": False, "rgb_gripper_pixels": False, "instruction": False},
             "masked_static+wrist+instruction",
         ),
+        ({"proprio_state": False}, "masked_proprio"),
+        ({"proprio_state": False, "instruction": False}, "masked_instruction+proprio"),
     ],
 )
 def test_masked_subdir(eval_modalities, expected):
     assert masked_subdir(eval_modalities) == expected
+
+
+# ---------------------------------------------------------------------------
+# mean proprioception (eval_modalities.proprio_state=false)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "eval_modalities, expected",
+    [(None, False), ({"proprio_state": True}, False), ({"proprio_state": False}, True)],
+)
+def test_mean_proprio(eval_modalities, expected):
+    assert mean_proprio(eval_modalities) is expected
+
+
+def test_mean_proprio_needs_proprio_on():
+    with pytest.raises(ValueError):
+        mean_proprio({"proprio": False, "proprio_state": False})
+
+
+def test_proprio_mean_path(tmp_path):
+    ckpt = tmp_path / "run" / "seed_42" / "saved_models" / "last.ckpt"
+    assert proprio_mean_path(ckpt) == tmp_path / "run" / "eval_logs" / "last" / "proprio_mean.pt"
+
+
+class _ProprioModel:
+    def __init__(self, use_proprio=True):
+        self.use_proprio = use_proprio
+        self.eval_proprio_mask = None
+        self.eval_proprio_fill = None
+
+
+def test_apply_mean_proprio_loads_the_fill_and_withholds_proprio(tmp_path):
+    import torch
+
+    ckpt = tmp_path / "run" / "seed_42" / "saved_models" / "last.ckpt"
+    proprio_mean_path(ckpt).parent.mkdir(parents=True)
+    torch.save({"mean": torch.arange(4.0)}, proprio_mean_path(ckpt))
+    model = _ProprioModel()
+    apply_mean_proprio(model, {"proprio_state": False}, ckpt)
+    assert model.eval_proprio_mask is False
+    assert torch.equal(model.eval_proprio_fill, torch.arange(4.0))
+    untouched = _ProprioModel()
+    apply_mean_proprio(untouched, {}, ckpt)
+    assert untouched.eval_proprio_mask is None and untouched.eval_proprio_fill is None
+
+
+def test_apply_mean_proprio_errors(tmp_path):
+    ckpt = tmp_path / "run" / "seed_42" / "saved_models" / "last.ckpt"
+    with pytest.raises(FileNotFoundError, match="proprio-mean"):
+        apply_mean_proprio(_ProprioModel(), {"proprio_state": False}, ckpt)
+    with pytest.raises(ValueError):
+        apply_mean_proprio(_ProprioModel(use_proprio=False), {"proprio_state": False}, ckpt)

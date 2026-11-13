@@ -100,3 +100,18 @@ def test_apply_eval_modalities_mean_pixel_sets_flag_and_keeps_the_view():
     assert model.eval_modality_mask is None
     with pytest.raises(ValueError):
         apply_eval_modalities(model, {"rgb_static": False, "rgb_static_pixels": False})
+
+
+def test_apply_eval_modalities_mean_proprio_needs_the_checkpoint_and_its_mean(tmp_path):
+    import torch
+
+    from flower.evaluation.eval_records import proprio_mean_path
+
+    ckpt = tmp_path / "run" / "seed_42" / "saved_models" / "last.ckpt"
+    model = _FakeModel(use_proprio=True, eval_modality_mask=None, eval_proprio_mask=None)
+    with pytest.raises(ValueError):
+        apply_eval_modalities(model, {"proprio_state": False})
+    proprio_mean_path(ckpt).parent.mkdir(parents=True)
+    torch.save({"mean": torch.ones(3)}, proprio_mean_path(ckpt))
+    assert apply_eval_modalities(model, {"proprio_state": False}, str(ckpt)) is True
+    assert model.eval_proprio_mask is False and torch.equal(model.eval_proprio_fill, torch.ones(3))

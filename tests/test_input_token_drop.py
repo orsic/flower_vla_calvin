@@ -521,3 +521,89 @@ def test_mean_pixel_is_ignored_in_training():
     B, T, C, H, W = batch["rgb_obs"]["rgb_static"].shape
     assert torch.equal(vlm.seen[0], batch["rgb_obs"]["rgb_static"].view(-1, C, H, W))
     assert torch.equal(vlm.seen[1], batch["rgb_obs"]["rgb_gripper"].view(-1, C, H, W))
+
+
+# ---------------------------------------------------------------------------
+# Mean proprioception (eval_proprio_fill): dit_forward puts the training-mean conditioning
+# vector in place of a withheld sample's zeroed proprio term.
+# ---------------------------------------------------------------------------
+
+class _DitStub(torch.nn.Module):
+    """Runs the real FLOWERVLA.dit_forward with every learned part stubbed out, so the
+    conditioning vector it builds (t_emb) can be read off self.adaln's input."""
+
+    dit_forward = FLOWERVLA.dit_forward
+
+    def __init__(self, proprio_embeds, fill=None, training=False):
+        super().__init__()
+        self._p = torch.nn.Parameter(torch.zeros(1))
+        self.train(training)
+        self.use_proprio = True
+        self.eval_proprio_fill = fill
+        self.use_rope, self.use_nope, self.use_adaln_cond = True, False, False
+        self.use_cross_attn, self.action_type_adaln = False, False
+        self.dit = []
+        self._proprio_embeds = proprio_embeds
+        self.seen = None
+
+    @property
+    def device(self):
+        return torch.device("cpu")
+
+    def encode_proprio(self, proprio, action_type, shape):
+        return self._proprio_embeds
+
+    def t_embedder(self, t):
+        return torch.zeros(t.shape[0], self._proprio_embeds.shape[-1])
+
+    def encode_actions(self, z, action_type):
+        return z, None
+
+    def cond_linear(self, x):
+        return x
+
+    def cond_norm(self, x):
+        return x
+
+    def adaln(self, global_cond):
+        self.seen = global_cond
+        return None
+
+    def decode_actions(self, cx, action_type, valid_dims):
+        return cx
+
+
+def _dit_cond(keep):
+    B = len(keep)
+    return {
+        "features": torch.zeros(B, 3, 4),
+        "frequency_embeds": torch.zeros(B, 1, 8),
+        "action_type": torch.ones(B, 10, 7),
+        "proprio": torch.zeros(B, 8),
+        "proprio_keep": torch.tensor(keep),
+    }
+
+
+def _t_emb(stub, keep):
+    stub.dit_forward(torch.zeros(len(keep), 10, 7), torch.zeros(len(keep)), _dit_cond(keep))
+    return stub.seen
+
+
+def test_proprio_fill_replaces_withheld_samples_only():
+    from flower.models.networks.transformers import stateless_norm
+
+    embeds = torch.randn(2, 8)
+    fill = torch.randn(8)
+    got = _t_emb(_DitStub(embeds, fill), [True, False])
+    torch.testing.assert_close(got[0], stateless_norm(embeds)[0])
+    torch.testing.assert_close(got[1], fill)
+
+
+def test_proprio_fill_unset_keeps_zeroing_and_training_ignores_it():
+    from flower.models.networks.transformers import stateless_norm
+
+    embeds = torch.randn(2, 8)
+    assert torch.equal(_t_emb(_DitStub(embeds), [True, False])[1], torch.zeros(8))
+    got = _t_emb(_DitStub(embeds, torch.randn(8), training=True), [True, False])
+    assert torch.equal(got[1], torch.zeros(8))
+    torch.testing.assert_close(got[0], stateless_norm(embeds)[0])

@@ -49,7 +49,7 @@ case "$joined" in
   *"eval_pipeline.py upload"*)
     [[ -n "${FAKE_UPLOAD_LOG:-}" ]] && echo "$joined" >> "$FAKE_UPLOAD_LOG"
     ;;
-  *"eval_pipeline.py restore"*)
+  *"eval_pipeline.py restore"*|*"proprio_mean.py"*)
     [[ -n "${FAKE_PLAN_LOG:-}" ]] && echo "$joined" >> "$FAKE_PLAN_LOG"
     ;;
   *)
@@ -260,4 +260,6 @@ def test_pipeline_masked_restores_then_plans_masked(tmp_path):
     result, evals, plan_lines, _ = _run_pipeline(tmp_path, extra_env={"PIPELINE_MASKED": "1"})
     assert result.returncode == 0, result.stderr
     assert "eval_pipeline.py restore --train-folder /fake/train_dir" in plan_lines[0]
-    assert "eval_pipeline.py plan" in plan_lines[1] and "--masked" in plan_lines[1]
+    # the mean proprio vector, after the restore (which may bring it) and before the evals
+    assert " run --rm -T shell python scripts/proprio_mean.py --train-folder /fake/train_dir" in plan_lines[1]
+    assert "eval_pipeline.py plan" in plan_lines[2] and "--masked" in plan_lines[2]

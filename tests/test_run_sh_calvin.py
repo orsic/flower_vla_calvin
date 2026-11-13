@@ -144,7 +144,8 @@ def test_pipeline_calvin_restores_before_planning(tmp_path):
 def test_pipeline_calvin_masked_restores_then_plans_masked(tmp_path):
     lines = _run(tmp_path, ["pipeline-calvin", "/fake/train_dir"], {"PIPELINE_MASKED": "1"})
     assert "calvin_pipeline.py restore --train-folder /fake/train_dir" in lines[0]
-    assert "calvin_pipeline.py plan" in lines[1] and "--masked" in lines[1]
+    assert " run --rm -T shell-calvin python scripts/proprio_mean.py --train-folder /fake/train_dir" in lines[1]
+    assert "calvin_pipeline.py plan" in lines[2] and "--masked" in lines[2]
     assert "calvin_pipeline.py upload" in lines[-1]
     default = _run(tmp_path, ["pipeline-calvin", "/fake/train_dir"])
     assert "--masked" not in default[0]
@@ -168,3 +169,13 @@ def test_pipeline_calvin_open_loop_withheld_adds_the_masked_cells(tmp_path):
     )
 
     assert "open_loop_calvin.py --train-folder /fake/train_dir --masked-withheld" in lines[1]
+
+
+def test_proprio_mean_picks_the_benchmark_container(tmp_path):
+    for run_dir, service in (
+        ("/saves/train_logs/calvin_abcd_d/r", "shell-calvin"),
+        ("/saves/train_logs/mimicgen/r", "shell-mimicgen"),
+        ("/saves/train_logs/libero_10_static+wrist+lang+proprio/r", "shell"),
+    ):
+        lines = _run(tmp_path, ["proprio-mean", run_dir])
+        assert f" run --rm -T {service} python scripts/proprio_mean.py --train-folder {run_dir}" in lines[0]

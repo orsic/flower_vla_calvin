@@ -134,16 +134,64 @@ def mean_pixel_views(eval_modalities: Optional[Dict[str, bool]]) -> Tuple[bool, 
     return views[0], views[1]
 
 
+def mean_proprio(eval_modalities: Optional[Dict[str, bool]]) -> bool:
+    """Whether eval_modalities.proprio_state=false asks to replace the proprio conditioning
+    by its training mean (see FLOWERVLA.eval_proprio_fill and scripts/proprio_mean.py).
+    That stands in for proprioception, so it requires eval_modalities.proprio to stay on."""
+    eval_modalities = eval_modalities or {}
+    masked = not bool(eval_modalities.get("proprio_state", True))
+    if masked and not bool(eval_modalities.get("proprio", True)):
+        raise ValueError(
+            "eval_modalities.proprio_state=False replaces proprioception by its training mean; "
+            "it requires eval_modalities.proprio=True"
+        )
+    return masked
+
+
+def proprio_mean_path(checkpoint: Union[str, Path]) -> Path:
+    """Where scripts/proprio_mean.py stores a checkpoint's mean proprio conditioning vector:
+    <run>/eval_logs/<checkpoint_name>/proprio_mean.pt, for <run>/seed_*/saved_models/<ckpt>."""
+    checkpoint = Path(checkpoint)
+    return checkpoint.parents[2] / "eval_logs" / checkpoint_name(checkpoint) / "proprio_mean.pt"
+
+
+def apply_mean_proprio(model, eval_modalities: Optional[Dict[str, bool]], checkpoint: Union[str, Path]) -> None:
+    """eval_modalities.proprio_state=false: withhold proprio and put the checkpoint's
+    training-mean proprio conditioning vector in its place (FLOWERVLA.eval_proprio_fill)."""
+    if not mean_proprio(eval_modalities):
+        return
+    if not model.use_proprio:
+        raise ValueError(
+            "eval_modalities.proprio_state=False requires a model with use_proprio=True"
+        )
+    path = proprio_mean_path(checkpoint)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} is missing: compute it with `./run.sh proprio-mean <train_folder>` "
+            "(scripts/proprio_mean.py)"
+        )
+    import torch
+
+    model.eval_proprio_mask = False
+    model.eval_proprio_fill = torch.load(path, map_location="cpu")["mean"]
+
+
 def masked_subdir(eval_modalities: Optional[Dict[str, bool]]) -> str:
     """result_dir() subdir for an eval with masked inputs, "" when nothing is masked.
 
     Instruction alone keeps its original name, "blank_instruction"; anything else is
-    "masked_" + the masked inputs, e.g. "masked_static" or "masked_static+wrist+instruction".
+    "masked_" + the masked inputs, e.g. "masked_static", "masked_proprio" or
+    "masked_static+wrist+instruction".
     """
     static, wrist = mean_pixel_views(eval_modalities)
     parts = [
         name
-        for name, masked in (("static", static), ("wrist", wrist), ("instruction", blank_instruction(eval_modalities)))
+        for name, masked in (
+            ("static", static),
+            ("wrist", wrist),
+            ("instruction", blank_instruction(eval_modalities)),
+            ("proprio", mean_proprio(eval_modalities)),
+        )
         if masked
     ]
     if parts == ["instruction"]:

@@ -1221,13 +1221,27 @@ The view must stay on. Rollout videos still show the real frames. Rows go to
 `eval_logs/<ckpt>/masked_static/` or `masked_wrist/` (any combination of masks gets its own
 `masked_<inputs>/` directory; the instruction alone keeps `blank_instruction/`).
 
-`PIPELINE_MASKED=1 ./run.sh pipeline|pipeline-calvin|pipeline-mimicgen <run>` runs the three
-single-masked evals of a run on its trained inputs (LIBERO: the original LIBERO-10 suite
-only): static camera masked, wrist camera masked, instruction blank. It restores the run's
-earlier results from W&B first, and every `upload` (masked or not) carries the masked CSVs as
-extra members of the run's `eval-<run>` artifact, e.g. `masked_static/libero_orig.csv`,
-`blank_instruction/calvin.csv`, `masked_wrist/mimicgen.csv`. The existing collectors read only
-their own member names, so these never mix into the all-inputs results.
+**Masked proprioception (training-mean conditioning).** `eval_modalities.proprio_state=False`
+withholds proprio and puts the run's mean proprio conditioning vector in its place: the
+average over 4096 training frames of `stateless_norm(encode_proprio(robot_obs))`, the term
+`dit_forward` adds to the conditioning (`FLOWERVLA.eval_proprio_fill`). Zeroing proprio
+(`proprio=False`) also removes this average, which is far from zero (LIBERO 99.8%, MimicGen
+90–94%, CALVIN 58% of the vector's energy). It needs `proprio=True`, a `use_proprio` model and
+the vector, which `./run.sh proprio-mean <run>` (`scripts/proprio_mean.py`) computes from the
+run's training data into `<run>/eval_logs/<ckpt>/proprio_mean.pt`. Rows go to `masked_proprio/`.
+
+`PIPELINE_MASKED=1 ./run.sh pipeline|pipeline-calvin|pipeline-mimicgen <run>` runs the
+single-masked evals of a run on its trained inputs: static camera masked, wrist camera masked,
+instruction blank, and for a `use_proprio` run proprio masked by its mean. LIBERO runs each
+on LIBERO-10 and on LIBERO-Plus. It restores the run's earlier results from W&B first, then
+computes the mean proprio vector unless the restore brought it (a no-op without proprio). Every
+`upload` (masked or not) carries the masked CSVs and the mean vector as extra members of the
+run's `eval-<run>` artifact, e.g. `masked_static/libero_orig.csv`, `masked_wrist/libero_plus.csv`,
+`blank_instruction/calvin.csv`, `masked_proprio/mimicgen.csv`, `proprio_mean.pt`. The existing
+collectors read only their own member names, so these never mix into the all-inputs results.
+Computing the mean needs the benchmark's training data on the worker; compute it where the
+data is (`./run.sh proprio-mean`) and upload it (`PIPELINE_RESTORE=1` then the pipeline's
+`upload`) to spare workers without it.
 
 Compare modality combos — either within one checkpoint's own `result.csv` or across
 two different checkpoints' files — with `scripts/compare_eval_csvs.py`, which takes
