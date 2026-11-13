@@ -119,7 +119,7 @@ import wandb
 from omegaconf import OmegaConf
 
 sys.path.insert(0, Path(__file__).absolute().parents[1].as_posix())
-from flower.evaluation.eval_records import checkpoint_name, read_csv, write_csv  # noqa: E402
+from flower.evaluation.eval_records import checkpoint_name, merge_rows, read_csv, write_csv  # noqa: E402
 
 import pro_sr  # noqa: E402 -- same-directory import, python puts scripts/ on sys.path[0]
 import severity_sr  # noqa: E402
@@ -832,15 +832,26 @@ def download_eval_artifact(train_cfg, run_id: str, root: Path) -> Optional[Path]
 
 
 def restore_files(artifact_dir: Path, targets: Dict[str, Path]) -> List[Path]:
-    """Copy each artifact member (name -> result.csv path) that exists into place, unless
-    a local file is already there: a local result is never overwritten."""
+    """Copy each artifact member (name -> local path) that exists into place. A local file
+    is never replaced: a local result CSV only gains the artifact's rows it lacks (local
+    rows win on a key collision), so an upload after a restore keeps rows evaluated
+    elsewhere even when this host holds an older result.csv. Other files (open-loop
+    parts) are left as they are."""
     written = []
     for name, path in targets.items():
         source = artifact_dir / name
-        if source.exists() and not path.exists():
+        if not source.exists():
+            continue
+        if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, path)
             written.append(path)
+        elif path.suffix == ".csv":
+            local = read_csv(path)
+            merged = merge_rows(read_csv(source), local)
+            if len(merged) > len(local):
+                write_csv(path, merged)
+                written.append(path)
     return written
 
 

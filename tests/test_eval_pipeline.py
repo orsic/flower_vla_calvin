@@ -1640,6 +1640,26 @@ def test_restore_never_overwrites_a_local_result(tmp_path, monkeypatch):
     assert len(read_csv(local)) == 2
 
 
+def test_restore_merges_artifact_rows_into_a_stale_local_result(tmp_path, monkeypatch):
+    """A local result.csv older than the artifact (rows evaluated elsewhere) gains the
+    artifact's missing rows, so the next upload cannot drop them; local rows win on a
+    key collision."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=False, use_proprio=True)
+    local = train_folder / "eval_logs" / "last" / "orig_libero_10" / "result.csv"
+    mine = {**_row(True, True, True, True), "success": "1"}
+    write_csv(local, [mine])
+    remote_same = {**_row(True, True, True, True), "success": "0"}
+    art = _fake_artifact(tmp_path, {"libero_orig.csv": [remote_same, _row(True, False, True, True), _row(False, True, True, True)]})
+    monkeypatch.setattr(eval_pipeline, "download_eval_artifact", lambda *a, **k: art)
+
+    eval_pipeline.restore(str(train_folder), [])
+
+    rows = read_csv(local)
+    assert len(rows) == 3
+    assert rows[0]["success"] == "1"
+
+
 def test_restore_without_an_artifact_does_nothing(tmp_path, monkeypatch):
     train_folder = tmp_path / "run"
     _write_train_cfg(train_folder, dropout=False, use_proprio=True)
