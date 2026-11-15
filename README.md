@@ -1246,6 +1246,16 @@ Computing the mean needs the benchmark's training data on the worker; compute it
 data is (`./run.sh proprio-mean`) and upload it (`PIPELINE_RESTORE=1` then the pipeline's
 `upload`) to spare workers without it.
 
+`PIPELINE_MASKED_VARIANTS` restricts the masked evals to a comma-separated subset of
+`masked_static`, `masked_wrist`, `blank_instruction` and `masked_proprio`, and
+`PIPELINE_MASKED_SKIP_PLUS=1` leaves out the LIBERO-Plus ones (LIBERO only). For example, proprio
+masked by its mean only, on LIBERO-10 but not LIBERO-Plus, through the queue:
+
+```bash
+./run.sh dist-sched add --run libero_10_dropout_2026-09-14_17-00-43 --tag pmean \
+    --opts "PIPELINE_MASKED=1 PIPELINE_MASKED_VARIANTS=masked_proprio PIPELINE_MASKED_SKIP_PLUS=1"
+```
+
 Compare modality combos — either within one checkpoint's own `result.csv` or across
 two different checkpoints' files — with `scripts/compare_eval_csvs.py`, which takes
 `--modalities-a`/`--modalities-b` (each a comma-separated subset of

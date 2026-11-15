@@ -61,7 +61,7 @@ def _run_pipeline_mimicgen(tmp_path, extra_env=None):
     env["FAKE_UPLOAD_LOG"] = str(upload_log)
     for key in (
         "PIPELINE_REEVAL", "PIPELINE_RESUME", "PIPELINE_ALL_COMBOS", "PIPELINE_SKIP_MULTI_OFF", "PIPELINE_RESTORE", "PIPELINE_MASKED",
-        "FAKE_PLAN_EMPTY",
+        "PIPELINE_MASKED_VARIANTS", "PIPELINE_MASKED_SKIP_PLUS", "FAKE_PLAN_EMPTY",
     ):
         env.pop(key, None)
     env.update(extra_env or {})
@@ -335,6 +335,15 @@ def test_pipeline_mimicgen_restores_before_planning(tmp_path):
     assert "pipeline-artifacts-mimicgen" in plan[0]
     assert "mimicgen_pipeline.py plan" in plan[1]
     assert len(evals) == 1
+
+
+def test_pipeline_mimicgen_masked_variants_reach_the_planner(tmp_path):
+    result, _, plan, _ = _run_pipeline_mimicgen(
+        tmp_path, {"PIPELINE_MASKED": "1", "PIPELINE_MASKED_VARIANTS": "masked_proprio"}
+    )
+    assert result.returncode == 0, result.stderr
+    line = next(line for line in plan if "mimicgen_pipeline.py plan" in line)
+    assert "--masked-variants masked_proprio" in line
 
 
 def test_pipeline_mimicgen_masked_restores_then_plans_masked(tmp_path):

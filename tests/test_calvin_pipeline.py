@@ -164,6 +164,13 @@ def test_plan_lines_masked_one_line_per_masked_input_with_resume(tmp_path):
     ]
 
 
+def test_plan_lines_masked_variants_restrict_the_plan(tmp_path):
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, use_proprio=True)
+    plan = plan_lines(str(train_folder), [], reeval=False, masked=True, masked_variants={"masked_proprio"})
+    assert [_masks(o) for _, o in plan] == [["eval_modalities.proprio_state=False"]]
+
+
 def test_upload_and_restore_carry_masked_results(tmp_path, monkeypatch):
     import calvin_pipeline
     from flower.evaluation.eval_records import read_csv, write_csv

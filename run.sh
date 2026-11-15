@@ -429,9 +429,13 @@ case "$CMD" in
     all_combos_flag=()
     [[ -n "${PIPELINE_ALL_COMBOS:-}" ]] && all_combos_flag=(--all-combos)
     # PIPELINE_MASKED: only the masked-input evals; restores first, since the upload replaces
-    # the artifact and must carry the earlier results along.
+    # the artifact and must carry the earlier results along. PIPELINE_MASKED_VARIANTS (comma
+    # list of masked_static,masked_wrist,blank_instruction,masked_proprio) keeps only those;
+    # PIPELINE_MASKED_SKIP_PLUS=1 leaves out the LIBERO-Plus masked evals.
     masked_flag=()
     [[ -n "${PIPELINE_MASKED:-}" ]] && masked_flag=(--masked)
+    [[ -n "${PIPELINE_MASKED_VARIANTS:-}" ]] && masked_flag+=(--masked-variants "$PIPELINE_MASKED_VARIANTS")
+    [[ -n "${PIPELINE_MASKED_SKIP_PLUS:-}" ]] && masked_flag+=(--masked-skip-plus)
 
     if [[ -n "${PIPELINE_RESTORE:-}${PIPELINE_MASKED:-}" ]]; then
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts \
@@ -577,8 +581,10 @@ case "$CMD" in
     [[ -n "${PIPELINE_RESUME:-}" ]] && flags+=(--resume)
     [[ -n "${PIPELINE_ALL_COMBOS:-}" ]] && flags+=(--all-combos)
     [[ -n "${PIPELINE_SKIP_MULTI_OFF:-}" ]] && flags+=(--skip-multi-off)
-    # PIPELINE_MASKED: only the masked-input evals, after a restore (see ./run.sh pipeline).
+    # PIPELINE_MASKED: only the masked-input evals, after a restore (see ./run.sh pipeline),
+    # PIPELINE_MASKED_VARIANTS restricting which.
     [[ -n "${PIPELINE_MASKED:-}" ]] && flags+=(--masked)
+    [[ -n "${PIPELINE_MASKED_VARIANTS:-}" ]] && flags+=(--masked-variants "$PIPELINE_MASKED_VARIANTS")
 
     if [[ -n "${PIPELINE_RESTORE:-}${PIPELINE_MASKED:-}" ]]; then
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-mimicgen \
@@ -711,8 +717,10 @@ case "$CMD" in
     [[ -n "${PIPELINE_RESUME:-}" ]] && flags+=(--resume)
     [[ -n "${PIPELINE_ALL_COMBOS:-}" ]] && flags+=(--all-combos)
     [[ -n "${PIPELINE_SKIP_MULTI_OFF:-}" ]] && flags+=(--skip-multi-off)
-    # PIPELINE_MASKED: only the masked-input evals, after a restore (see ./run.sh pipeline).
+    # PIPELINE_MASKED: only the masked-input evals, after a restore (see ./run.sh pipeline),
+    # PIPELINE_MASKED_VARIANTS restricting which.
     [[ -n "${PIPELINE_MASKED:-}" ]] && flags+=(--masked)
+    [[ -n "${PIPELINE_MASKED_VARIANTS:-}" ]] && flags+=(--masked-variants "$PIPELINE_MASKED_VARIANTS")
 
     if [[ -n "${PIPELINE_RESTORE:-}${PIPELINE_MASKED:-}" ]]; then
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \

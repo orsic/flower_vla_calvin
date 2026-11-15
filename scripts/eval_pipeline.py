@@ -432,19 +432,33 @@ def masked_lines(
     csv_path: Path,
     use_proprio: bool,
     resume: bool,
+    variants: Optional[Set[str]] = None,
 ) -> List[Tuple[str, List[str]]]:
     """One eval line per masked input the model was trained on (shared with
     calvin_pipeline.py and mimicgen_pipeline.py). `overrides` already select the trained
     inputs `full`; the mask is appended last, so it wins. resume skips a variant whose
     result.csv already holds `full`. Proprio is masked only on a use_proprio model
-    (trained_combo marks it on for every run)."""
+    (trained_combo marks it on for every run). `variants` (parse_masked_variants), when
+    given, keeps only those MASKED_VARIANTS."""
     return [
         (service, overrides + [f"eval_modalities.{key}=False"])
         for variant, (needed, key) in MASKED_VARIANTS.items()
-        if full[needed]
+        if (variants is None or variant in variants)
+        and full[needed]
         and (needed != "proprio" or use_proprio)
         and not (resume and combo_in_csv(masked_csv_path(csv_path, variant), full, use_proprio))
     ]
+
+
+def parse_masked_variants(arg: Optional[str]) -> Optional[Set[str]]:
+    """--masked-variants (comma-separated MASKED_VARIANTS keys) -> set; None means all."""
+    if arg is None:
+        return None
+    variants = {v.strip() for v in arg.split(",") if v.strip()}
+    unknown = variants - set(MASKED_VARIANTS)
+    if unknown:
+        raise ValueError(f"unknown masked variant(s) {sorted(unknown)}; expected some of {list(MASKED_VARIANTS)}")
+    return variants
 
 
 def masked_artifact_members(csv_path: Path, member: str) -> List[Tuple[Path, str]]:
@@ -508,9 +522,11 @@ def plan_lines(
     skip_multi_off: bool = False,
     all_combos: bool = False,
     masked: bool = False,
+    masked_variants: Optional[Set[str]] = None,
+    masked_skip_plus: bool = False,
 ) -> List[Tuple[str, List[str]]]:
-    """masked plans only the masked-input evals (MASKED_VARIANTS), on the original suite
-    and on LIBERO-Plus.
+    """masked plans only the masked-input evals (MASKED_VARIANTS, or just masked_variants),
+    on the original suite and, unless masked_skip_plus, on LIBERO-Plus.
 
     reeval_variants, when given, restricts the plan to those variants only, and each
     of them is replanned unconditionally (see should_replan below) -- the caller
@@ -528,9 +544,10 @@ def plan_lines(
         orig_csv = _csv_path(resolved_train_folder, checkpoint, "orig", benchmark_name)
         plus_csv = _csv_path(resolved_train_folder, checkpoint, "plus", benchmark_name)
         base = _eval_overrides(benchmark_name, resolved_train_folder, checkpoint, full) + extra_overrides
-        return masked_lines("eval", base, full, orig_csv, use_proprio, resume) + masked_lines(
-            "eval-plus", base, full, plus_csv, use_proprio, resume
-        )
+        lines = masked_lines("eval", base, full, orig_csv, use_proprio, resume, masked_variants)
+        if not masked_skip_plus:
+            lines += masked_lines("eval-plus", base, full, plus_csv, use_proprio, resume, masked_variants)
+        return lines
 
     def already_done(variant: str, combo: Dict[str, bool]) -> bool:
         if not resume:
@@ -933,6 +950,8 @@ def main() -> None:
     plan_p.add_argument("--skip-multi-off", action="store_true")
     plan_p.add_argument("--all-combos", action="store_true")
     plan_p.add_argument("--masked", action="store_true", help="only the masked-input evals (MASKED_VARIANTS)")
+    plan_p.add_argument("--masked-variants", default=None, help="with --masked: only these, e.g. masked_proprio")
+    plan_p.add_argument("--masked-skip-plus", action="store_true", help="with --masked: LIBERO-10 only, no LIBERO-Plus")
     plan_p.add_argument("overrides", nargs="*")
 
     upload_p = subparsers.add_parser("upload")
@@ -948,6 +967,10 @@ def main() -> None:
     if args.cmd == "restore":
         restore(args.train_folder, args.overrides)
     elif args.cmd == "plan":
+        try:
+            masked_variants = parse_masked_variants(args.masked_variants)
+        except ValueError as exc:
+            sys.exit(str(exc))
         if args.reeval_suites is not None and not args.reeval:
             sys.exit("--reeval-suites requires --reeval")
 
@@ -982,6 +1005,8 @@ def main() -> None:
             args.skip_multi_off,
             args.all_combos,
             args.masked,
+            masked_variants,
+            args.masked_skip_plus,
         ):
             print("\t".join([service] + overrides))
     elif args.cmd == "upload":

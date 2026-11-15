@@ -34,7 +34,7 @@ import re
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
 import wandb
 from omegaconf import OmegaConf
@@ -46,6 +46,7 @@ from eval_pipeline import (  # noqa: E402
     download_eval_artifact,
     masked_artifact_members,
     masked_lines,
+    parse_masked_variants,
     masked_restore_targets,
     proprio_mean_members,
     PROPRIO_MEAN_MEMBER,
@@ -72,6 +73,7 @@ def plan_lines(
     skip_multi_off: bool = False,
     resume: bool = False,
     masked: bool = False,
+    masked_variants: Optional[Set[str]] = None,
 ) -> List[Tuple[str, List[str]]]:
     train_cfg = OmegaConf.load(Path(train_folder) / ".hydra" / "config.yaml")
     resolved_train_folder, checkpoint = _resolve(train_folder, extra_overrides)
@@ -83,7 +85,9 @@ def plan_lines(
         full = trained_combo(train_cfg)
         use_proprio = bool(train_cfg.model.get("use_proprio", False))
         path = csv_path(train_folder, extra_overrides)
-        return masked_lines(SERVICE, overrides + modality_overrides(full), full, path, use_proprio, resume)
+        return masked_lines(
+            SERVICE, overrides + modality_overrides(full), full, path, use_proprio, resume, masked_variants
+        )
     combos = planned_combos(train_cfg, all_combos, skip_multi_off)
     # A plain run's single all-inputs line names no modalities; a sweep, or a fixed-subset
     # run's trained inputs, are named so result.csv's use_* columns record them.
@@ -224,6 +228,7 @@ def main() -> None:
     plan_p.add_argument("--all-combos", action="store_true")
     plan_p.add_argument("--skip-multi-off", action="store_true")
     plan_p.add_argument("--masked", action="store_true", help="only the masked-input evals (MASKED_VARIANTS)")
+    plan_p.add_argument("--masked-variants", default=None, help="with --masked: only these, e.g. masked_proprio")
     plan_p.add_argument("overrides", nargs="*")
 
     upload_p = subparsers.add_parser("upload")
@@ -244,6 +249,10 @@ def main() -> None:
     if args.cmd == "restore":
         restore(args.train_folder, args.overrides)
     elif args.cmd == "plan":
+        try:
+            masked_variants = parse_masked_variants(args.masked_variants)
+        except ValueError as exc:
+            sys.exit(str(exc))
         for service, overrides in plan_lines(
             args.train_folder,
             args.overrides,
@@ -252,6 +261,7 @@ def main() -> None:
             args.skip_multi_off,
             args.resume,
             args.masked,
+            masked_variants,
         ):
             print("\t".join([service] + overrides))
     elif args.cmd == "upload":

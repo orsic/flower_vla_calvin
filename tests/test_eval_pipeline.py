@@ -1727,6 +1727,37 @@ def test_plan_masked_skips_inputs_the_model_lacks_and_resumes(tmp_path):
     ]
 
 
+def test_parse_masked_variants():
+    assert eval_pipeline.parse_masked_variants(None) is None
+    assert eval_pipeline.parse_masked_variants("masked_proprio") == {"masked_proprio"}
+    assert eval_pipeline.parse_masked_variants("masked_static, blank_instruction") == {
+        "masked_static",
+        "blank_instruction",
+    }
+    with pytest.raises(ValueError, match="masked_bogus"):
+        eval_pipeline.parse_masked_variants("masked_proprio,masked_bogus")
+
+
+def test_plan_masked_variants_and_skip_plus_restrict_the_plan(tmp_path):
+    """Proprio masked by its mean only, LIBERO-10 only: one line (a dropout run too)."""
+    train_folder = tmp_path / "run"
+    _write_train_cfg(train_folder, dropout=True, use_proprio=True)
+    lines = plan_lines(
+        str(train_folder),
+        resume=False,
+        extra_overrides=[],
+        masked=True,
+        masked_variants={"masked_proprio"},
+        masked_skip_plus=True,
+    )
+    assert [(svc, _masks_of(o)) for svc, o in lines] == [("eval", ["eval_modalities.proprio_state=False"])]
+    assert _combo_of(lines[0][1]) == (True, True, True, True)
+    with_plus = plan_lines(
+        str(train_folder), resume=False, extra_overrides=[], masked=True, masked_variants={"masked_proprio"}
+    )
+    assert [svc for svc, _ in with_plus] == ["eval", "eval-plus"]
+
+
 def test_upload_and_restore_carry_masked_results(tmp_path, monkeypatch):
     train_folder = tmp_path / "run"
     _write_train_cfg(train_folder, dropout=False, use_proprio=True)

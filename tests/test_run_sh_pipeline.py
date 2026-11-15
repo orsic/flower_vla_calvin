@@ -84,7 +84,7 @@ def _run_pipeline(tmp_path, extra_env=None):
     for key in (
         "PIPELINE_RESUME", "PIPELINE_REEVAL", "PIPELINE_REEVAL_SUITES", "PIPELINE_SKIP_MODALITY_OFF",
         "PIPELINE_SKIP_PRO_COMBOS", "PIPELINE_SKIP_MULTI_OFF", "PIPELINE_ALL_COMBOS", "PIPELINE_RESTORE", "PIPELINE_MASKED",
-        "FAKE_PLAN_EXIT", "FAKE_PLAN_EMPTY",
+        "PIPELINE_MASKED_VARIANTS", "PIPELINE_MASKED_SKIP_PLUS", "FAKE_PLAN_EXIT", "FAKE_PLAN_EMPTY",
     ):
         env.pop(key, None)
     env.update(extra_env or {})
@@ -254,6 +254,17 @@ def test_pipeline_restores_before_planning_when_env_set(tmp_path):
     (tmp_path / "default").mkdir()
     _, _, default, _ = _run_pipeline(tmp_path / "default")
     assert not any("restore" in line for line in default)
+
+
+def test_pipeline_masked_variants_and_skip_plus_reach_the_planner(tmp_path):
+    env = {"PIPELINE_MASKED": "1", "PIPELINE_MASKED_VARIANTS": "masked_proprio", "PIPELINE_MASKED_SKIP_PLUS": "1"}
+    result, _, plan_lines, _ = _run_pipeline(tmp_path, extra_env=env)
+    assert result.returncode == 0, result.stderr
+    plan = next(line for line in plan_lines if "eval_pipeline.py plan" in line)
+    assert "--masked-variants masked_proprio" in plan and "--masked-skip-plus" in plan
+    _, _, default, _ = _run_pipeline(tmp_path, extra_env={"PIPELINE_MASKED": "1"})
+    plan = next(line for line in default if "eval_pipeline.py plan" in line)
+    assert "--masked-variants" not in plan and "--masked-skip-plus" not in plan
 
 
 def test_pipeline_masked_restores_then_plans_masked(tmp_path):

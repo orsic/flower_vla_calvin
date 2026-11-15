@@ -43,6 +43,7 @@ def _run(tmp_path, args, extra_env=None):
     for key in (
         "PIPELINE_REEVAL", "SKIP_PIPELINE", "PIPELINE_RESUME", "PIPELINE_ALL_COMBOS", "PIPELINE_SKIP_MULTI_OFF",
         "PIPELINE_RESTORE", "PIPELINE_MASKED", "PIPELINE_OPEN_LOOP", "PIPELINE_OPEN_LOOP_WITHHELD",
+        "PIPELINE_MASKED_VARIANTS", "PIPELINE_MASKED_SKIP_PLUS",
     ):
         env.pop(key, None)
     env.update(extra_env or {})
@@ -139,6 +140,14 @@ def test_pipeline_calvin_restores_before_planning(tmp_path):
     assert "pipeline-artifacts-calvin" in lines[0]
     assert "calvin_pipeline.py plan" in lines[1]
     assert len([line for line in lines if "flower_evaluate.py" in line]) == 3
+
+
+def test_pipeline_calvin_masked_variants_reach_the_planner(tmp_path):
+    env = {"PIPELINE_MASKED": "1", "PIPELINE_MASKED_VARIANTS": "masked_proprio", "PIPELINE_MASKED_SKIP_PLUS": "1"}
+    lines = _run(tmp_path, ["pipeline-calvin", "/fake/train_dir"], env)
+    plan = next(line for line in lines if "calvin_pipeline.py plan" in line)
+    assert "--masked-variants masked_proprio" in plan
+    assert "--masked-skip-plus" not in plan  # LIBERO-Plus only
 
 
 def test_pipeline_calvin_masked_restores_then_plans_masked(tmp_path):

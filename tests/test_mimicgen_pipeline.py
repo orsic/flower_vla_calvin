@@ -380,6 +380,15 @@ def test_plan_lines_masked_one_line_per_masked_input(tmp_path):
     assert all(s == "eval-mimicgen" and _combo(ov) == ("True",) * 4 and "n_eval=2" in ov for s, ov in plan)
 
 
+def test_plan_lines_masked_variants_restrict_the_plan(tmp_path):
+    train_folder = tmp_path / "mimicgen" / "run1"
+    _write_train_cfg(train_folder, use_proprio=True)
+    plan = plan_lines(str(train_folder), [], reeval=False, masked=True, masked_variants={"masked_proprio"})
+    assert [[o for o in ov if o.startswith("eval_modalities.") and o.endswith("=False")] for _, ov in plan] == [
+        ["eval_modalities.proprio_state=False"]
+    ]
+
+
 def test_upload_and_restore_carry_masked_results(tmp_path, monkeypatch):
     from flower.evaluation.eval_records import read_csv
 
