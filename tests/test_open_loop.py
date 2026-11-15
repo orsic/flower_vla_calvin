@@ -155,6 +155,27 @@ def test_set_combo_rejects_masking_an_input_the_combo_withholds():
         set_combo(_mask_model(), ALL_ON, masked="proprio")
 
 
+def test_set_combo_masks_proprio_with_its_mean_and_resets():
+    fill = torch.arange(4.0)
+    model = _mask_model()
+    set_combo(model, ALL_ON, masked="proprio", proprio_fill=fill)
+    assert model.eval_proprio_mask is False and model.eval_proprio_fill is fill
+    assert model.eval_modality_mask is None and model.eval_mean_pixel == (False, False)
+    # The zeroed-proprio cell must not keep the mean from the previous cell.
+    set_combo(model, {**ALL_ON, "proprio": False})
+    assert model.eval_proprio_mask is False and model.eval_proprio_fill is None
+    set_combo(model, ALL_ON, masked="proprio", proprio_fill=fill)
+    set_combo(model, ALL_ON)
+    assert model.eval_proprio_mask is None and model.eval_proprio_fill is None
+
+
+def test_set_combo_rejects_proprio_mean_without_a_fill_or_with_proprio_withheld():
+    with pytest.raises(ValueError):
+        set_combo(_mask_model(), ALL_ON, masked="proprio")
+    with pytest.raises(ValueError):
+        set_combo(_mask_model(), {**ALL_ON, "proprio": False}, masked="proprio", proprio_fill=torch.zeros(4))
+
+
 def test_gripper_phases_never_closes():
     assert gripper_phases(np.ones(8)) == ["no_grasp"] * 8
 

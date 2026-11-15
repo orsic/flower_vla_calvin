@@ -3,7 +3,9 @@
 - A dropout run is scored on every combo of modality_combos (14 with proprio, now with
   distinct labels); a plain run on the inputs it was trained on.
 - --masked-withheld adds each trained input withheld: cameras by their mean pixel, language
-  as the blank instruction, proprio zeroed.
+  as the blank instruction, proprio zeroed and proprio replaced by its training mean (the
+  last cell, so earlier cells keep their indices).
+- proprio_fill loads the run's mean proprio vector only when a cell to score needs it.
 - Labels and part files of runs without proprio are unchanged, so earlier parts resume.
 """
 
@@ -13,7 +15,11 @@ from pathlib import Path
 from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from open_loop_calvin import cell_label, cells, model_label, part_name  # noqa: E402
+import pytest  # noqa: E402
+import torch  # noqa: E402
+
+from flower.evaluation.eval_records import proprio_mean_path  # noqa: E402
+from open_loop_calvin import cell_label, cells, model_label, part_name, proprio_fill  # noqa: E402
 
 ALL_ON = {"rgb_static": True, "rgb_gripper": True, "language": True, "proprio": True}
 
@@ -54,6 +60,7 @@ def test_masked_withheld_adds_each_trained_input_withheld():
         (ALL_ON, "wrist"),
         (ALL_ON, "lang"),
         ({**ALL_ON, "proprio": False}, None),
+        (ALL_ON, "proprio"),
     ]
     assert [cell_label(c, m, True) for c, m in got] == [
         "static+wrist+lang+proprio",
@@ -61,13 +68,15 @@ def test_masked_withheld_adds_each_trained_input_withheld():
         "static+lang+proprio (wrist masked)",
         "static+wrist+proprio (lang masked)",
         "static+wrist+lang",
+        "static+wrist+lang (proprio masked)",
     ]
     assert part_name(ALL_ON, "static", True) == "wrist+lang+proprio.masked_static.csv.gz"
+    assert part_name(ALL_ON, "proprio", True) == "static+wrist+lang.masked_proprio.csv.gz"
     # Without proprio there is nothing to zero, and a fixed subset masks only its own inputs.
     assert len(cells(_cfg(), masked_withheld=True)) == 4
     subset = {"rgb_static": True, "rgb_gripper": False, "language": True, "proprio": True}
     masks = [m for _, m in cells(_cfg(use_proprio=True, modalities=subset), masked_withheld=True)]
-    assert masks == [None, "static", "lang", None]
+    assert masks == [None, "static", "lang", None, "proprio"]
 
 
 def test_labels_of_runs_without_proprio_are_unchanged():
@@ -83,3 +92,14 @@ def test_model_label():
     assert model_label(_cfg(dropout=True, use_proprio=True, strategy="subset")) == "subset keep0.5 + proprio"
     subset = {"rgb_static": True, "rgb_gripper": False, "language": True, "proprio": True}
     assert model_label(_cfg(use_proprio=True, modalities=subset)) == "no dropout + proprio (trained without wrist)"
+
+
+def test_proprio_fill_loads_the_mean_only_when_a_cell_to_score_needs_it(tmp_path):
+    ckpt = tmp_path / "run" / "seed_42" / "saved_models" / "last.ckpt"
+    run_cells = cells(_cfg(use_proprio=True), masked_withheld=True)
+    assert proprio_fill(run_cells, [0, 1, 2, 3, 4], ckpt) is None  # no file needed, none read
+    with pytest.raises(FileNotFoundError):
+        proprio_fill(run_cells, [5], ckpt)
+    proprio_mean_path(ckpt).parent.mkdir(parents=True)
+    torch.save({"mean": torch.ones(3)}, proprio_mean_path(ckpt))
+    assert torch.equal(proprio_fill(run_cells, [5], ckpt), torch.ones(3))

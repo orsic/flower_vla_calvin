@@ -164,6 +164,13 @@ def apply_mean_proprio(model, eval_modalities: Optional[Dict[str, bool]], checkp
         raise ValueError(
             "eval_modalities.proprio_state=False requires a model with use_proprio=True"
         )
+    fill = load_proprio_mean(checkpoint)
+    model.eval_proprio_mask = False
+    model.eval_proprio_fill = fill
+
+
+def load_proprio_mean(checkpoint: Union[str, Path]):
+    """The checkpoint's mean proprio conditioning vector (scripts/proprio_mean.py)."""
     path = proprio_mean_path(checkpoint)
     if not path.exists():
         raise FileNotFoundError(
@@ -172,8 +179,7 @@ def apply_mean_proprio(model, eval_modalities: Optional[Dict[str, bool]], checkp
         )
     import torch
 
-    model.eval_proprio_mask = False
-    model.eval_proprio_fill = torch.load(path, map_location="cpu")["mean"]
+    return torch.load(path, map_location="cpu")["mean"]
 
 
 def masked_subdir(eval_modalities: Optional[Dict[str, bool]]) -> str:

@@ -687,12 +687,19 @@ case "$CMD" in
     # PIPELINE_OPEN_LOOP: the open-loop eval (scripts/open_loop_calvin.py) instead of the
     # closed-loop one, between a restore and an upload of the run's open-loop-<run> W&B
     # artifact, so a queue worker (which runs pipeline-calvin) can take it.
-    # PIPELINE_OPEN_LOOP_WITHHELD adds --masked-withheld.
+    # PIPELINE_OPEN_LOOP_WITHHELD adds --masked-withheld; its proprio-mean cell needs the run's
+    # proprio_mean.pt, restored from the eval artifact (the vector the closed-loop masked eval
+    # used) or else computed (both no-ops when it is already there or the run has no proprio).
     if [[ -n "${PIPELINE_OPEN_LOOP:-}" ]]; then
         ol_flags=()
         [[ -n "${PIPELINE_OPEN_LOOP_WITHHELD:-}" ]] && ol_flags+=(--masked-withheld)
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \
             python scripts/calvin_pipeline.py restore-open-loop --train-folder "$train_dir" -- "$@"
+        if [[ -n "${PIPELINE_OPEN_LOOP_WITHHELD:-}" ]]; then
+            podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \
+                python scripts/calvin_pipeline.py restore --train-folder "$train_dir" -- "$@"
+            run_proprio_mean shell-calvin "$train_dir"
+        fi
         podman-compose -f "$COMPOSE" run --rm -T eval-calvin \
             python scripts/open_loop_calvin.py --train-folder "$train_dir" "${ol_flags[@]}"
         podman-compose -f "$COMPOSE" run --rm -T pipeline-artifacts-calvin \

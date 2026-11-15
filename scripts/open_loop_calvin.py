@@ -17,7 +17,8 @@ A dropout run is scored on every combo (eval_pipeline.modality_combos, proprio w
 too when the model receives it), a plain run on the inputs it was trained on.
 --masked-withheld adds each trained input withheld one at a time: a camera by replacing its
 frames with their mean pixel, language by a blank instruction (prompt template kept),
-proprio by zeroing it. Each cell is written atomically to
+proprio by zeroing it and, as a last cell, by its training-mean conditioning vector
+(<run>/eval_logs/<ckpt>/proprio_mean.pt, ./run.sh proprio-mean). Each cell is written atomically to
 <train_folder>/open_loop/<ckpt>/parts/<cell>.csv.gz (an interrupted run resumes at the
 next missing cell, and --combos can split one model across processes); once every cell
 is present they are merged into <train_folder>/open_loop/<ckpt>/calvin_val.csv.gz.
@@ -45,7 +46,7 @@ from eval_pipeline import modality_combos, trained_combo  # noqa: E402
 from mimicgen_pipeline import _resolve  # noqa: E402
 from open_loop_analysis import combo_label  # noqa: E402
 
-from flower.evaluation.eval_records import checkpoint_name  # noqa: E402
+from flower.evaluation.eval_records import checkpoint_name, load_proprio_mean  # noqa: E402
 from flower.evaluation.open_loop import (  # noqa: E402
     annotation_batches,
     assert_single_instruction,
@@ -90,7 +91,8 @@ def model_label(train_cfg) -> str:
 def cells(train_cfg, masked_withheld: bool) -> List[Cell]:
     """(combo, masked) pairs to score: every combo of a dropout run, the trained inputs of a
     plain run; masked_withheld adds the trained inputs with each one withheld (cameras and
-    language masked, proprio zeroed)."""
+    language masked, proprio zeroed), then proprio masked by its training mean. New cells go
+    last, so the indices (--combos) and part files of earlier cells stay the same."""
     use_proprio = bool(train_cfg.model.get("use_proprio", False))
     if train_cfg.model.get("modality_dropout", False):
         out: List[Cell] = [(c, None) for c in modality_combos(use_proprio)]
@@ -101,8 +103,16 @@ def cells(train_cfg, masked_withheld: bool) -> List[Cell]:
         extra: List[Cell] = [(trained, name) for key, name in INPUTS[:3] if trained[key]]
         if use_proprio and trained["proprio"]:
             extra.append(({**trained, "proprio": False}, None))
+            extra.append((trained, "proprio"))
         out += [cell for cell in extra if cell not in out]
     return out
+
+
+def proprio_fill(run_cells: List[Cell], todo: List[int], checkpoint: str) -> Optional[torch.Tensor]:
+    """The run's mean proprio vector if a cell to score masks proprio by it, else None."""
+    if any(run_cells[i][1] == "proprio" for i in todo):
+        return load_proprio_mean(checkpoint)
+    return None
 
 
 def combo_flags(combo: Dict[str, bool], masked: Optional[str], use_proprio: bool) -> Dict[str, bool]:
@@ -147,8 +157,8 @@ def sample_index(dataset) -> pd.DataFrame:
 
 
 @torch.inference_mode()
-def score_combo(model, loader, index, combo, masked, t_grid, seed, device) -> pd.DataFrame:
-    set_combo(model, combo, masked)
+def score_combo(model, loader, index, combo, masked, t_grid, seed, device, fill=None) -> pd.DataFrame:
+    set_combo(model, combo, masked, fill)
     K = len(t_grid)
     out = []
     for batch in loader:
@@ -187,7 +197,8 @@ def main() -> None:
     parser.add_argument(
         "--masked-withheld",
         action="store_true",
-        help="also each trained input withheld: cameras by their mean pixel, language as a blank instruction, proprio zeroed",
+        help="also each trained input withheld: cameras by their mean pixel, language as a blank instruction, "
+        "proprio zeroed and proprio by its training mean",
     )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--num-workers", type=int, default=8)
@@ -215,6 +226,7 @@ def main() -> None:
     print(f"{train_folder}: {len(run_cells)} cells, {len(todo)} to score -> {out_dir}")
 
     if todo:
+        fill = proprio_fill(run_cells, todo, checkpoint)  # before the slow model load: fail fast
         model, _, data_module, _ = get_default_mode_and_env(
             train_folder,
             DATASET_PATH,
@@ -252,7 +264,7 @@ def main() -> None:
             flags = combo_flags(combo, masked, use_proprio)
             label = cell_label(combo, masked, use_proprio)
             start = time.time()
-            df = score_combo(model, loader, index, combo, masked, t_grid, args.seed, device)
+            df = score_combo(model, loader, index, combo, masked, t_grid, args.seed, device, fill)
             cols = {**meta, "combo": label, **flags, "masked": masked or ""}
             df = pd.concat([pd.DataFrame(cols, index=df.index), df], axis=1)
             write_atomic(df, parts[i])

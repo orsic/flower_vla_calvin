@@ -53,19 +53,27 @@ def sample_noise(frame_ids: Sequence[int], n: int, shape: Tuple[int, ...], seed:
     return torch.stack(rows)
 
 
-def set_combo(model, combo: Dict[str, bool], masked: Optional[str] = None) -> None:
+def set_combo(
+    model, combo: Dict[str, bool], masked: Optional[str] = None, proprio_fill: Optional[torch.Tensor] = None
+) -> None:
     """Point the model's eval-time masks at one combo, with proprio withheld (zeroed) when
     combo["proprio"] is False. Unlike flower_evaluate.apply_eval_modalities, the all-on
     combo resets the mask to None, so combos can be swept on one loaded model. `masked`
     ("static", "wrist" or "lang") keeps that input's tokens but masks its content: the
-    camera's frames become their mean pixel, the instruction is left blank."""
+    camera's frames become their mean pixel, the instruction is left blank. masked="proprio"
+    withholds proprio and puts `proprio_fill`, its training-mean conditioning vector
+    (eval_records.load_proprio_mean), in its place, as eval_modalities.proprio_state=false."""
     keep = tuple(bool(combo[k]) for k in TOKEN_KEYS)
     if not any(keep):
         raise ValueError(f"combo must keep at least one token modality, got {combo}")
-    if masked is not None and (masked not in MASKABLE or not keep[MASKABLE.index(masked)]):
+    if masked == "proprio":
+        if not combo["proprio"] or proprio_fill is None:
+            raise ValueError(f"masking proprio needs a combo that keeps it and a proprio_fill ({combo})")
+    elif masked is not None and (masked not in MASKABLE or not keep[MASKABLE.index(masked)]):
         raise ValueError(f"cannot mask {masked!r}: not a token input this combo keeps ({combo})")
     model.eval_modality_mask = None if all(keep) else keep
-    model.eval_proprio_mask = None if combo["proprio"] else False
+    model.eval_proprio_mask = None if combo["proprio"] and masked != "proprio" else False
+    model.eval_proprio_fill = proprio_fill if masked == "proprio" else None
     model.eval_mean_pixel = (masked == "static", masked == "wrist")
     model.eval_blank_instruction = masked == "lang"
 

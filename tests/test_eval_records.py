@@ -11,6 +11,7 @@ import pytest
 from flower.evaluation.eval_records import (
     ALL_COLUMNS,
     apply_mean_proprio,
+    load_proprio_mean,
     base_task_name,
     blank_instruction,
     checkpoint_name,
@@ -640,6 +641,17 @@ def test_apply_mean_proprio_loads_the_fill_and_withholds_proprio(tmp_path):
     untouched = _ProprioModel()
     apply_mean_proprio(untouched, {}, ckpt)
     assert untouched.eval_proprio_mask is None and untouched.eval_proprio_fill is None
+
+
+def test_load_proprio_mean(tmp_path):
+    import torch
+
+    ckpt = tmp_path / "run" / "seed_42" / "saved_models" / "last.ckpt"
+    with pytest.raises(FileNotFoundError, match="proprio-mean"):
+        load_proprio_mean(ckpt)
+    proprio_mean_path(ckpt).parent.mkdir(parents=True)
+    torch.save({"mean": torch.arange(4.0)}, proprio_mean_path(ckpt))
+    assert torch.equal(load_proprio_mean(ckpt), torch.arange(4.0))
 
 
 def test_apply_mean_proprio_errors(tmp_path):

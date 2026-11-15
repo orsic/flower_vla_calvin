@@ -168,7 +168,14 @@ def test_pipeline_calvin_open_loop_withheld_adds_the_masked_cells(tmp_path):
         tmp_path, ["pipeline-calvin", "/fake/train_dir"], {"PIPELINE_OPEN_LOOP": "1", "PIPELINE_OPEN_LOOP_WITHHELD": "1"}
     )
 
-    assert "open_loop_calvin.py --train-folder /fake/train_dir --masked-withheld" in lines[1]
+    # The proprio-mean cell needs the run's proprio_mean.pt: restored from the eval artifact
+    # (the vector the closed-loop masked eval used), computed only if that has none.
+    assert len(lines) == 5
+    assert "calvin_pipeline.py restore-open-loop --train-folder /fake/train_dir" in lines[0]
+    assert "pipeline-artifacts-calvin python scripts/calvin_pipeline.py restore --train-folder" in lines[1]
+    assert " run --rm -T shell-calvin python scripts/proprio_mean.py --train-folder /fake/train_dir" in lines[2]
+    assert "open_loop_calvin.py --train-folder /fake/train_dir --masked-withheld" in lines[3]
+    assert "calvin_pipeline.py upload-open-loop" in lines[4]
 
 
 def test_proprio_mean_picks_the_benchmark_container(tmp_path):
