@@ -48,5 +48,5 @@ subset keep0.5 + proprio,wrist,,False,True,False,False,3,5 42 100,0.0972622,0.00
 subset keep0.5 + proprio,lang+proprio,,False,False,True,True,3,5 42 100,0.121943,0.00240738,0.17713,0.00030857,0.0589676,0.00332938,0.0476745,0.000710412
 subset keep0.5 + proprio,lang,,False,False,True,False,3,5 42 100,0.267694,0.0009316,0.220927,0.000791822,0.204718,0.000637759,0.0914715,0.000240855
 no dropout + proprio (trained without wrist),static+lang+proprio,,True,False,True,True,3,5 42 100,0.0621529,0.000623081,0.129053,0.000533546,,,,
-no dropout + proprio (trained without lang),static+wrist+proprio,,True,True,False,True,3,5 42,0.082868,0.0020867,0.147625,0.00081026,,,,
+no dropout + proprio (trained without lang),static+wrist+proprio,,True,True,False,True,3,5 42 100,0.0823516,0.00139777,0.147538,0.00074211,,,,
 no dropout + proprio (trained without static),wrist+lang+proprio,,False,True,True,True,3,5 42 100,0.0629021,0.000732355,0.131029,0.000703719,,,,
