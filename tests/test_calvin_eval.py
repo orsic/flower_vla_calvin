@@ -115,3 +115,15 @@ def test_apply_eval_modalities_mean_proprio_needs_the_checkpoint_and_its_mean(tm
     torch.save({"mean": torch.ones(3)}, proprio_mean_path(ckpt))
     assert apply_eval_modalities(model, {"proprio_state": False}, str(ckpt)) is True
     assert model.eval_proprio_mask is False and torch.equal(model.eval_proprio_fill, torch.ones(3))
+
+
+def test_get_log_dir_two_calls_in_the_same_second_dont_collide(tmp_path, monkeypatch):
+    """Two CALVIN evals on one machine (two queue workers) starting in the same second used
+    to collide on os.makedirs(..., exist_ok=False), as flower_eval_libero's did."""
+    import flower.evaluation.flower_evaluate as flower_evaluate
+
+    monkeypatch.setattr(flower_evaluate.time, "strftime", lambda *a, **k: "2026-01-01_00-00-00")
+    first = flower_evaluate.get_log_dir(str(tmp_path))
+    second = flower_evaluate.get_log_dir(str(tmp_path))
+    assert first != second and first.exists() and second.exists()
+    assert first.parent == tmp_path / "logs" and first.name.startswith("2026-01-01_00-00-00_")

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sys
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from omegaconf import OmegaConf
@@ -63,7 +64,10 @@ def get_log_dir(log_dir):
         if not log_dir.exists():
             log_dir = Path("/tmp/evaluation")
 
-    log_dir = log_dir / "logs" / time.strftime("%Y-%m-%d_%H-%M-%S")
+    # A random suffix, as in flower_eval_libero.get_log_dir: two evals on one machine (two
+    # queue workers) starting in the same second must not collide on the folder name.
+    stamp = f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{uuid.uuid4().hex[:8]}"
+    log_dir = log_dir / "logs" / stamp
     os.makedirs(log_dir, exist_ok=False)
     print(f"logging to {log_dir}")
     return log_dir
