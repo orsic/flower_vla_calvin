@@ -5,6 +5,7 @@ no dropout + proprio,wrist+lang+proprio (static masked),static,False,True,True,T
 no dropout + proprio,static+lang+proprio (wrist masked),wrist,True,False,True,True,3,5 42 100,0.0866659,0.00233602,0.158889,0.0020643,0.0271214,0.00271797,0.0300784,0.0021919
 no dropout + proprio,static+wrist+proprio (lang masked),lang,True,True,False,True,3,5 42 100,0.123739,0.00654272,0.204305,0.00152134,0.0641949,0.00691073,0.0754942,0.00198932
 no dropout + proprio,static+wrist+lang,,True,True,True,False,3,5 42 100,0.0869733,0.00380619,0.217843,0.00889389,0.0274287,0.00391055,0.0890321,0.00842999
+no dropout + proprio,static+wrist+lang (proprio masked),proprio,True,True,True,False,3,5 42 100,0.0650099,0.000745894,0.138232,0.002398,0.00546536,0.000706747,0.00942118,0.00206745
 dirichlet keep0.5,static+wrist+lang,,True,True,True,False,3,5 42 100,0.064514,0.000668529,0.129574,0.000153645,0,0,0,0
 dirichlet keep0.5,static+wrist,,True,True,False,False,3,5 42 100,0.091422,0.00080265,0.15041,0.000660167,0.026908,0.000497619,0.0208363,0.000634495
 dirichlet keep0.5,static+lang,,True,False,True,False,3,5 42 100,0.0718501,0.00230937,0.136154,0.00180486,0.00733616,0.00258115,0.00657984,0.00190774

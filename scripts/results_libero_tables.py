@@ -22,7 +22,7 @@ PROJECT = "multimodal_florence"
 MODELS: Dict[str, Dict[int, str]] = {
     "no dropout": {
         42: "libero_10_2026-09-18_16-47-38",
-        5: "libero_10_2026-09-18_16-47-48",
+        5: "libero_10_2026-11-13_23-10-24",
         100: "libero_10_2026-09-18_16-48-01",
     },
     "no dropout + proprio": {
