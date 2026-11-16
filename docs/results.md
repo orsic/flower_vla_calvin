@@ -689,6 +689,75 @@ The "only masked / only removed" column counts the paired episodes (600) that on
 - **The same picture as with proprioception.** A blank instruction keeps 72.0% on LIBERO-10 (72.8% for no dropout + proprio) and 54.4% on LIBERO-Plus, where removing the language tokens gives 0.0%. Masking the wrist camera fails like removing it.
 - **Masking the static camera is about the same as removing it on LIBERO-Plus** (23.6% vs 22.6%; 573 tasks solved only masked, 492 only removed). Seeds 42 and 100 do slightly better masked, seed 5 slightly worse (16.6% vs 18.3%).
 
+**LIBERO-Plus by perturbation category, difficulty and size, masked vs removed** (the two no-dropout models above, 3 seeds each, mean ± sd over seeds, %; the same 2519 tasks per seed, paired task for task). The size tables are in the [appendix](#libero-plus-by-perturbation-size-with-an-input-masked-no-dropout-models). The wrist camera is 0.0% masked and removed in every category, level and size bin, so it has no table.
+
+*Static camera* (paired tasks only masked / only removed: no dropout 573 / 492, + proprio 679 / 671):
+
+| | no dropout: all inputs | removed | masked | no dropout + proprio: all inputs | removed | masked |
+|---|---|---|---|---|---|---|
+| Camera Viewpoints | 41.4 ± 2.9 | 22.3 ± 11.1 | 25.5 ± 11.9 | 43.3 ± 9.2 | 38.3 ± 5.7 | 34.6 ± 2.3 |
+| Robot Initial States | 63.0 ± 3.8 | 17.3 ± 4.6 | 16.5 ± 2.8 | 64.2 ± 1.8 | 22.2 ± 3.1 | 22.6 ± 1.3 |
+| Language Instructions | 81.9 ± 3.5 | 32.2 ± 7.8 | 31.1 ± 6.5 | 86.5 ± 1.9 | 36.1 ± 2.1 | 37.3 ± 4.8 |
+| Light Conditions | 74.7 ± 5.0 | 24.9 ± 9.0 | 22.7 ± 7.0 | 75.5 ± 4.6 | 32.1 ± 10.3 | 32.2 ± 9.4 |
+| Background Textures | 86.3 ± 1.4 | 17.2 ± 2.9 | 16.1 ± 3.8 | 80.2 ± 2.2 | 23.6 ± 6.2 | 27.6 ± 8.3 |
+| Sensor Noise | 70.1 ± 3.7 | 23.2 ± 9.4 | 29.1 ± 11.5 | 80.8 ± 5.9 | 40.2 ± 8.8 | 37.2 ± 3.1 |
+| Objects Layout | 77.8 ± 1.2 | 19.9 ± 5.4 | 20.9 ± 4.9 | 80.4 ± 3.1 | 23.8 ± 4.0 | 28.1 ± 2.3 |
+| all | 69.3 ± 1.7 | 22.6 ± 5.7 | 23.6 ± 6.9 | 72.2 ± 3.4 | 31.6 ± 3.9 | 31.7 ± 3.4 |
+
+| | no dropout: all inputs | removed | masked | no dropout + proprio: all inputs | removed | masked |
+|---|---|---|---|---|---|---|
+| level 1 | 85.0 ± 2.6 | 22.5 ± 6.7 | 24.0 ± 6.1 | 86.6 ± 3.2 | 30.2 ± 4.8 | 31.4 ± 1.0 |
+| level 2 | 84.4 ± 0.6 | 27.2 ± 6.3 | 30.1 ± 6.9 | 86.0 ± 2.9 | 36.6 ± 6.9 | 33.9 ± 2.8 |
+| level 3 | 79.1 ± 2.3 | 25.3 ± 6.7 | 28.9 ± 8.2 | 82.2 ± 1.3 | 33.6 ± 6.8 | 36.1 ± 3.7 |
+| level 4 | 67.6 ± 3.5 | 21.1 ± 4.3 | 23.0 ± 5.0 | 71.8 ± 4.2 | 32.6 ± 4.7 | 32.9 ± 6.5 |
+| level 5 | 46.3 ± 0.8 | 18.9 ± 7.1 | 16.2 ± 8.5 | 49.4 ± 6.0 | 27.1 ± 1.4 | 26.8 ± 5.7 |
+
+*Language, blank instruction* (only masked / only removed: no dropout 4108 / 1, + proprio 4005 / 3):
+
+| | no dropout: all inputs | removed | masked | no dropout + proprio: all inputs | removed | masked |
+|---|---|---|---|---|---|---|
+| Camera Viewpoints | 41.4 ± 2.9 | 0.0 | 28.2 ± 1.9 | 43.3 ± 9.2 | 0.6 ± 0.8 | 31.7 ± 8.2 |
+| Robot Initial States | 63.0 ± 3.8 | 0.0 | 51.2 ± 0.4 | 64.2 ± 1.8 | 0.3 ± 0.6 | 48.3 ± 5.6 |
+| Language Instructions | 81.9 ± 3.5 | 0.0 | 68.8 ± 4.4 | 86.5 ± 1.9 | 2.7 ± 4.0 | 68.8 ± 8.0 |
+| Light Conditions | 74.7 ± 5.0 | 0.0 | 64.7 ± 4.2 | 75.5 ± 4.6 | 0.6 ± 1.1 | 59.1 ± 7.8 |
+| Background Textures | 86.3 ± 1.4 | 0.0 | 64.8 ± 2.1 | 80.2 ± 2.2 | 0.5 ± 0.8 | 58.8 ± 9.0 |
+| Sensor Noise | 70.1 ± 3.7 | 0.0 | 55.4 ± 5.5 | 80.8 ± 5.9 | 0.7 ± 0.7 | 60.4 ± 5.1 |
+| Objects Layout | 77.8 ± 1.2 | 0.1 ± 0.2 | 55.6 ± 6.6 | 80.4 ± 3.1 | 1.5 ± 2.6 | 54.1 ± 9.4 |
+| all | 69.3 ± 1.7 | 0.0 | 54.4 ± 1.6 | 72.2 ± 3.4 | 1.0 ± 1.2 | 53.9 ± 5.6 |
+
+| | no dropout: all inputs | removed | masked | no dropout + proprio: all inputs | removed | masked |
+|---|---|---|---|---|---|---|
+| level 1 | 85.0 ± 2.6 | 0.1 ± 0.2 | 59.3 ± 3.9 | 86.6 ± 3.2 | 1.7 ± 2.7 | 58.0 ± 4.7 |
+| level 2 | 84.4 ± 0.6 | 0.0 | 61.8 ± 2.9 | 86.0 ± 2.9 | 1.6 ± 1.8 | 58.2 ± 6.0 |
+| level 3 | 79.1 ± 2.3 | 0.0 | 64.0 ± 2.8 | 82.2 ± 1.3 | 1.4 ± 1.9 | 62.3 ± 7.7 |
+| level 4 | 67.6 ± 3.5 | 0.0 | 57.3 ± 1.2 | 71.8 ± 4.2 | 0.7 ± 0.6 | 58.5 ± 5.4 |
+| level 5 | 46.3 ± 0.8 | 0.0 | 38.3 ± 2.0 | 49.4 ± 6.0 | 0.2 ± 0.3 | 40.0 ± 5.6 |
+
+*Proprioception, training-mean vector* (no dropout + proprio; only masked / only zeroed: 2583 / 421):
+
+| | all inputs | proprio zeroed | proprio masked (training mean) |
+|---|---|---|---|
+| Camera Viewpoints | 43.3 ± 9.2 | 22.4 ± 5.3 | 39.3 ± 8.6 |
+| Robot Initial States | 64.2 ± 1.8 | 41.0 ± 6.9 | 60.3 ± 2.2 |
+| Language Instructions | 86.5 ± 1.9 | 56.6 ± 8.6 | 87.5 ± 0.9 |
+| Light Conditions | 75.5 ± 4.6 | 34.9 ± 11.1 | 70.9 ± 2.8 |
+| Background Textures | 80.2 ± 2.2 | 45.6 ± 6.8 | 78.4 ± 8.8 |
+| Sensor Noise | 80.8 ± 5.9 | 37.6 ± 0.3 | 73.7 ± 3.5 |
+| Objects Layout | 80.4 ± 3.1 | 42.7 ± 5.7 | 74.7 ± 4.5 |
+| all | 72.2 ± 3.4 | 39.7 ± 3.7 | 68.3 ± 1.1 |
+
+| | all inputs | proprio zeroed | proprio masked (training mean) |
+|---|---|---|---|
+| level 1 | 86.6 ± 3.2 | 52.4 ± 4.0 | 82.4 ± 1.3 |
+| level 2 | 86.0 ± 2.9 | 47.3 ± 1.8 | 81.6 ± 2.9 |
+| level 3 | 82.2 ± 1.3 | 44.8 ± 3.6 | 77.4 ± 2.3 |
+| level 4 | 71.8 ± 4.2 | 41.8 ± 8.9 | 68.6 ± 0.1 |
+| level 5 | 49.4 ± 6.0 | 23.5 ± 1.6 | 46.4 ± 4.8 |
+
+- **Masking the static camera equals removing it under every perturbation.** Per category the two are within 6 points (largest: sensor noise without dropout, 29.1% masked vs 23.2% removed), inside the seed spread, and the paired tasks split almost evenly. Under camera-viewpoint perturbations, which move the static camera, its mean-pixel image is as useless as its absence.
+- **The blank instruction keeps the model working under every perturbation, 10–26 points below all inputs.** The gap is largest for object layout (−22 and −26 points for the two models) and background textures (−22 and −21), where distractors and a changed scene make the instruction more informative, and smallest for light conditions without dropout (−10). It narrows with difficulty: about 25 points at levels 1–3, 8–9 at level 5. Against reworded instructions (Language Instructions) the blank one gives 68.8%, 13–18 points below: the reworded text still carries most of the instruction's value.
+- **The training-mean proprio vector is within 7 points of all inputs in every category** (−7 sensor noise, −6 object layout, +1 reworded instructions), while zeroed proprioception loses 21–43 points. At difficulty level 5 it keeps 46.4%, against 49.4% with all inputs and 23.5% zeroed.
+
 **CALVIN** (the three no dropout + proprio runs of the [CALVIN section](#calvin-abcdd), 1000 chains per seed, rollout seeds matching chain for chain). avg_seq_len, mean ± sd over seeds 42 / 5 / 100 (5/5 %); all inputs 4.455 ± 0.097 (81.1). The "longer when masked / removed" column counts the paired chains (3000) that get further with one than with the other:
 
 | input | removed | masked | masked per seed (42 / 5 / 100) | longer when masked / removed | trained without it |
@@ -1567,6 +1636,7 @@ Training runs live under `$SAVES_DIR/train_logs/`, and closed-loop results in `<
 | LIBERO no dropout + proprio, trained without the wrist camera, seeds 42 / 5 / 100 | `libero_10_static+lang+proprio/2026-11-06_15-30-31` / `2026-11-06_15-30-36` / `2026-11-07_12-41-07` |
 | LIBERO no dropout + proprio, masked inputs, seeds 42 / 5 / 100 | `libero_10_static+wrist+lang+proprio/2026-09-18_16-47-17` / `16-47-22` / `16-47-49`, queued with `dist-sched add --tag masked --opts "PIPELINE_MASKED=1"`, and with `--tag masked2` for the proprio mean and LIBERO-Plus; artifact members `masked_static/`, `masked_wrist/`, `blank_instruction/`, `masked_proprio/` with `libero_orig.csv` and `libero_plus.csv` |
 | LIBERO no dropout, masked inputs, seeds 42 / 5 / 100 | `libero_10/2026-09-18_16-47-38` / `2026-11-13_23-10-24` / `2026-09-18_16-48-01`, queued with `dist-sched add --tag masked2 --opts "PIPELINE_MASKED=1"`; artifact members `masked_static/`, `masked_wrist/`, `blank_instruction/` with `libero_orig.csv` and `libero_plus.csv` |
+| LIBERO-Plus masked vs removed by category, difficulty and size (no dropout models) | `./run.sh results-libero-collect` then `./run.sh results-libero-tables` (section "LIBERO-Plus with one input masked vs removed"; the masked severity bins are computed once and cached as `<member>/severity_sr.csv` in the collected artifacts) |
 | LIBERO no dropout + proprio, trained without language, seeds 42 / 5 / 100 | `libero_10_static+wrist+proprio/2026-11-06_15-30-50` / `2026-11-06_15-30-57` / `2026-11-07_12-41-16` |
 | MimicGen no dropout, seeds 42 / 5 / 100 | `mimicgen/2026-10-01_19-26-58` / `2026-10-27_02-50-24` / `2026-11-08_12-35-41` |
 | MimicGen no dropout + proprio, seeds 42 / 5 / 100 | `mimicgen/2026-10-16_16-38-11` / `2026-10-16_16-38-21` / `2026-11-06_16-39-08` |
@@ -1991,3 +2061,159 @@ Success rate (%) per LIBERO-Plus perturbation category with one input removed at
 | Background Textures | 45.6 ± 6.8 | 24.0 ± 0.8 | 76.4 ± 9.5 | 81.8 ± 1.4 | 74.9 ± 8.3 |
 | Sensor Noise | 37.6 ± 0.3 | 29.2 ± 7.7 | 82.7 ± 1.7 | 80.8 ± 5.6 | 84.0 ± 1.1 |
 | Objects Layout | 42.7 ± 5.7 | 33.7 ± 10.4 | 83.2 ± 0.8 | 84.8 ± 2.6 | 84.1 ± 0.5 |
+
+### LIBERO-Plus by perturbation size with an input masked (no dropout models)
+
+Doubled ranges as in [Doubled ranges](#doubled-ranges), mean ± sd over seeds (%), the two no-dropout models with each input removed and masked. The wrist camera (0.0% everywhere) is left out. Regenerated by `./run.sh results-libero-tables` (section "LIBERO-Plus with one input masked vs removed").
+
+#### Camera Viewpoints, camera rotation, static masked vs removed (tasks summed: 342 of 419)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| rot~0-30deg | 162 | 11.5 ± 5.6 | 21.6 ± 8.4 | 34.8 ± 21.8 | 25.7 ± 4.6 |
+| rot~30-60deg | 121 | 15.4 ± 13.4 | 21.8 ± 8.3 | 40.5 ± 9.3 | 41.3 ± 9.3 |
+| rot~60-90deg | 59 | 62.1 ± 26.9 | 43.5 ± 31.5 | 47.5 ± 1.7 | 42.4 ± 4.5 |
+
+#### Camera Viewpoints, camera distance scale, static masked vs removed (tasks summed: 77 of 419)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| scale~1.2-1.3x | 15 | 44.4 ± 38.5 | 62.2 ± 7.7 | 77.8 ± 13.9 | 80.0 ± 13.3 |
+| scale~1.4-1.5x | 18 | 48.1 ± 25.1 | 40.7 ± 25.1 | 33.3 ± 28.9 | 38.9 ± 11.1 |
+| scale~1.6-1.7x | 19 | 21.1 ± 18.2 | 17.5 ± 16.9 | 36.8 ± 39.7 | 35.1 ± 11.0 |
+| scale~1.8-2.0x | 25 | 0.0 ± 0.0 | 0.0 ± 0.0 | 9.3 ± 16.2 | 10.7 ± 9.2 |
+
+#### Robot Initial States, initial joint offset, static masked vs removed (tasks summed: 393 of 393)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| 0.1-0.2rad | 118 | 24.0 ± 8.5 | 24.9 ± 6.4 | 29.1 ± 2.7 | 29.7 ± 3.7 |
+| 0.3-0.5rad | 275 | 14.4 ± 2.9 | 12.8 ± 1.4 | 19.3 ± 3.2 | 19.6 ± 2.2 |
+
+#### Light Conditions, light severity, static masked vs removed (tasks summed: 274 of 274)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| severity~0.1-0.2 | 23 | 34.8 ± 13.0 | 36.2 ± 13.3 | 34.8 ± 15.7 | 50.7 ± 15.3 |
+| severity~0.3-0.4 | 80 | 26.2 ± 7.8 | 26.2 ± 8.2 | 35.8 ± 11.3 | 37.9 ± 8.1 |
+| severity~0.5-0.6 | 116 | 23.0 ± 8.0 | 20.4 ± 9.2 | 29.6 ± 12.4 | 31.0 ± 10.8 |
+| severity~0.7-0.9 | 55 | 23.0 ± 12.4 | 17.0 ± 6.4 | 30.9 ± 4.8 | 18.8 ± 8.4 |
+
+#### Sensor Noise by level, pooled over the 5 noise types, static masked vs removed (tasks summed: 449 of 449)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| level 1-2 | 80 | 26.7 ± 10.1 | 32.9 ± 12.5 | 41.7 ± 5.9 | 43.3 ± 8.9 |
+| level 3-4 | 88 | 25.8 ± 10.2 | 29.2 ± 13.3 | 42.4 ± 7.6 | 40.5 ± 5.7 |
+| level 5-6 | 93 | 21.9 ± 9.1 | 26.2 ± 11.9 | 38.7 ± 8.8 | 35.5 ± 2.8 |
+| level 7-8 | 93 | 21.1 ± 8.6 | 29.7 ± 10.3 | 39.1 ± 10.4 | 33.7 ± 1.2 |
+| level 9-10 | 95 | 21.1 ± 9.0 | 28.1 ± 10.5 | 39.3 ± 11.6 | 34.0 ± 2.4 |
+
+#### Objects Layout, target displacement, static masked vs removed (tasks summed: 139 of 312)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| displacement_1-2 | 38 | 28.9 ± 2.6 | 28.9 ± 0.0 | 32.5 ± 8.5 | 40.4 ± 9.2 |
+| displacement_3-5 | 101 | 22.8 ± 5.5 | 24.1 ± 5.6 | 27.4 ± 1.5 | 30.0 ± 0.6 |
+
+#### Objects Layout, number of distractors, static masked vs removed (tasks summed: 173 of 312)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| distractors_1-2 | 45 | 24.4 ± 5.9 | 23.0 ± 4.6 | 31.1 ± 4.4 | 29.6 ± 12.2 |
+| distractors_3-5 | 128 | 13.3 ± 7.9 | 15.4 ± 7.8 | 15.9 ± 6.0 | 22.4 ± 3.2 |
+
+
+#### Camera Viewpoints, camera rotation, language masked vs removed (tasks summed: 342 of 419)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| rot~0-30deg | 162 | 0.0 ± 0.0 | 46.3 ± 3.3 | 0.2 ± 0.4 | 45.1 ± 2.1 |
+| rot~30-60deg | 121 | 0.0 ± 0.0 | 15.4 ± 1.7 | 0.3 ± 0.5 | 20.4 ± 12.2 |
+| rot~60-90deg | 59 | 0.0 ± 0.0 | 2.8 ± 1.0 | 0.0 ± 0.0 | 13.0 ± 10.2 |
+
+#### Camera Viewpoints, camera distance scale, language masked vs removed (tasks summed: 77 of 419)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| scale~1.2-1.3x | 15 | 0.0 ± 0.0 | 53.3 ± 6.7 | 8.9 ± 15.4 | 68.9 ± 10.2 |
+| scale~1.4-1.5x | 18 | 0.0 ± 0.0 | 27.8 ± 16.7 | 0.0 ± 0.0 | 40.7 ± 28.5 |
+| scale~1.6-1.7x | 19 | 0.0 ± 0.0 | 43.9 ± 26.5 | 1.8 ± 3.0 | 33.3 ± 24.9 |
+| scale~1.8-2.0x | 25 | 0.0 ± 0.0 | 5.3 ± 4.6 | 0.0 ± 0.0 | 14.7 ± 12.9 |
+
+#### Robot Initial States, initial joint offset, language masked vs removed (tasks summed: 393 of 393)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| 0.1-0.2rad | 118 | 0.0 ± 0.0 | 67.8 ± 5.2 | 0.0 ± 0.0 | 63.3 ± 9.6 |
+| 0.3-0.5rad | 275 | 0.0 ± 0.0 | 44.1 ± 1.7 | 0.5 ± 0.8 | 41.9 ± 4.0 |
+
+#### Light Conditions, light severity, language masked vs removed (tasks summed: 274 of 274)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| severity~0.1-0.2 | 23 | 0.0 ± 0.0 | 84.1 ± 2.5 | 1.4 ± 2.5 | 78.3 ± 4.3 |
+| severity~0.3-0.4 | 80 | 0.0 ± 0.0 | 66.2 ± 5.7 | 0.8 ± 1.4 | 61.7 ± 7.5 |
+| severity~0.5-0.6 | 116 | 0.0 ± 0.0 | 61.2 ± 5.2 | 0.6 ± 1.0 | 57.2 ± 8.0 |
+| severity~0.7-0.9 | 55 | 0.0 ± 0.0 | 61.8 ± 7.9 | 0.0 ± 0.0 | 51.5 ± 10.7 |
+
+#### Sensor Noise by level, pooled over the 5 noise types, language masked vs removed (tasks summed: 449 of 449)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| level 1-2 | 80 | 0.0 ± 0.0 | 76.2 ± 6.6 | 1.7 ± 1.4 | 76.7 ± 3.1 |
+| level 3-4 | 88 | 0.0 ± 0.0 | 73.5 ± 4.3 | 1.1 ± 1.1 | 73.9 ± 6.3 |
+| level 5-6 | 93 | 0.0 ± 0.0 | 61.6 ± 4.8 | 0.7 ± 1.2 | 65.9 ± 9.1 |
+| level 7-8 | 93 | 0.0 ± 0.0 | 46.6 ± 9.7 | 0.0 ± 0.0 | 51.3 ± 5.4 |
+| level 9-10 | 95 | 0.0 ± 0.0 | 23.5 ± 6.8 | 0.0 ± 0.0 | 37.9 ± 4.6 |
+
+#### Objects Layout, target displacement, language masked vs removed (tasks summed: 139 of 312)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| displacement_1-2 | 38 | 0.0 ± 0.0 | 65.8 ± 13.9 | 1.8 ± 3.0 | 65.8 ± 2.6 |
+| displacement_3-5 | 101 | 0.0 ± 0.0 | 65.0 ± 7.6 | 1.3 ± 2.3 | 60.4 ± 6.9 |
+
+#### Objects Layout, number of distractors, language masked vs removed (tasks summed: 173 of 312)
+| bin | tasks | no dropout, removed | no dropout, masked | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|---|---|
+| distractors_1-2 | 45 | 0.0 ± 0.0 | 66.7 ± 9.7 | 2.2 ± 3.8 | 63.7 ± 10.0 |
+| distractors_3-5 | 128 | 0.3 ± 0.5 | 41.1 ± 6.3 | 1.3 ± 2.3 | 42.2 ± 15.0 |
+
+
+#### Camera Viewpoints, camera rotation, proprio masked vs removed (tasks summed: 342 of 419)
+| bin | tasks | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|
+| rot~0-30deg | 162 | 40.7 ± 8.1 | 66.3 ± 6.0 |
+| rot~30-60deg | 121 | 6.9 ± 5.3 | 17.1 ± 12.0 |
+| rot~60-90deg | 59 | 11.3 ± 10.8 | 11.3 ± 15.4 |
+
+#### Camera Viewpoints, camera distance scale, proprio masked vs removed (tasks summed: 77 of 419)
+| bin | tasks | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|
+| scale~1.2-1.3x | 15 | 35.6 ± 16.8 | 73.3 ± 6.7 |
+| scale~1.4-1.5x | 18 | 22.2 ± 14.7 | 27.8 ± 20.0 |
+| scale~1.6-1.7x | 19 | 19.3 ± 13.2 | 36.8 ± 19.0 |
+| scale~1.8-2.0x | 25 | 0.0 ± 0.0 | 28.0 ± 20.8 |
+
+#### Robot Initial States, initial joint offset, proprio masked vs removed (tasks summed: 393 of 393)
+| bin | tasks | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|
+| 0.1-0.2rad | 118 | 55.1 ± 9.2 | 83.1 ± 5.1 |
+| 0.3-0.5rad | 275 | 34.9 ± 6.6 | 50.5 ± 1.0 |
+
+#### Light Conditions, light severity, proprio masked vs removed (tasks summed: 274 of 274)
+| bin | tasks | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|
+| severity~0.1-0.2 | 23 | 47.8 ± 19.0 | 87.0 ± 4.3 |
+| severity~0.3-0.4 | 80 | 42.9 ± 9.5 | 77.1 ± 3.1 |
+| severity~0.5-0.6 | 116 | 26.4 ± 12.4 | 62.6 ± 5.5 |
+| severity~0.7-0.9 | 55 | 35.8 ± 9.3 | 72.7 ± 1.8 |
+
+#### Sensor Noise by level, pooled over the 5 noise types, proprio masked vs removed (tasks summed: 449 of 449)
+| bin | tasks | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|
+| level 1-2 | 80 | 59.2 ± 4.7 | 87.9 ± 5.1 |
+| level 3-4 | 88 | 47.0 ± 6.3 | 89.4 ± 1.7 |
+| level 5-6 | 93 | 41.2 ± 1.6 | 79.9 ± 5.9 |
+| level 7-8 | 93 | 29.0 ± 2.2 | 66.7 ± 5.7 |
+| level 9-10 | 95 | 15.4 ± 2.4 | 48.1 ± 5.4 |
+
+#### Objects Layout, target displacement, proprio masked vs removed (tasks summed: 139 of 312)
+| bin | tasks | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|
+| displacement_1-2 | 38 | 57.9 ± 4.6 | 92.1 ± 0.0 |
+| displacement_3-5 | 101 | 45.2 ± 3.2 | 79.2 ± 5.5 |
+
+#### Objects Layout, number of distractors, proprio masked vs removed (tasks summed: 173 of 312)
+| bin | tasks | no dropout + proprio, removed | no dropout + proprio, masked |
+|---|---|---|---|
+| distractors_1-2 | 45 | 42.2 ± 2.2 | 88.1 ± 5.1 |
+| distractors_3-5 | 128 | 36.5 ± 10.5 | 61.2 ± 6.3 |

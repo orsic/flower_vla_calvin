@@ -17,6 +17,8 @@ from typing import Callable, Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+import severity_sr
+
 CUT = "2026-09-23_14-46-43"  # ca969a8, 2026-09-23 16:46:43 +0200, in the CSVs' UTC timestamps
 PROJECT = "multimodal_florence"
 MODELS: Dict[str, Dict[int, str]] = {
@@ -402,6 +404,7 @@ def main() -> None:
     print_subset(a)
     print_fixed(a)
     print_withheld_sizes(a)
+    print_masked(a)
 
 
 def print_subset(a: Artifacts) -> None:
@@ -578,6 +581,91 @@ def print_withheld_sizes(a: Artifacts) -> None:
                 tab = size_table(sev, cat, lab, doubled=doubled, paired=False)
                 print(f"\n#### {title}, {v} withheld (tasks summed: {tab.tasks.sum()} of {CAT_TASKS[cat]})\n" + md(tab))
 
+
+# Masked inputs (PIPELINE_MASKED): the input keeps its tokens but carries no content -- a camera's
+# frames become their mean pixel, the instruction is blank, proprio is the training-mean vector.
+# Input -> artifact member folder; evaluated for the two no-dropout models.
+MASKED = {"static": "masked_static", "wrist": "masked_wrist", "lang": "blank_instruction", "proprio": "masked_proprio"}
+MASKED_MODELS = ("no dropout", "no dropout + proprio")
+
+
+def masked_breakdown(a: Artifacts, runs: Dict[int, str], v: str, n_tasks: int = 2519) -> Dict[str, Dict[str, str]]:
+    """Input v removed (libero_plus_no_<v>.csv) vs masked (<MASKED[v]>/libero_plus.csv) on
+    LIBERO-Plus: mean ± sd over seeds per category, per difficulty level and overall, plus the
+    paired task counts (over all seeds) that only one of the two solves."""
+    removed = [a.load(r, f"libero_plus_no_{v}.csv") for r in runs.values()]
+    masked = [a.load(r, f"{MASKED[v]}/libero_plus.csv") for r in runs.values()]
+    assert all(len(d) == n_tasks for d in removed + masked), v
+    out: Dict[str, Dict[str, str]] = {}
+    for name, ds in (("removed", removed), ("masked", masked)):
+        cats = sorted(set(ds[0].task_category), key=lambda c: CATS.index(c) if c in CATS else len(CATS))
+        t = {c: ms([d[d.task_category == c].success.mean() for d in ds]) for c in cats}
+        t.update(
+            {
+                f"level {lv}": ms([d[d.difficulty_level == lv].success.mean() for d in ds])
+                for lv in sorted(set(ds[0].difficulty_level))
+            }
+        )
+        t["all"] = ms([d.success.mean() for d in ds])
+        out[name] = t
+    key = ["suite", "task_idx", "task_name", "episode_idx"]
+    only_m = only_r = 0
+    for rd, md_ in zip(removed, masked):
+        j = rd[key + ["success"]].merge(md_[key + ["success"]], on=key, suffixes=("_r", "_m"), validate="1:1")
+        assert len(j) == n_tasks, v
+        only_m += int(((j.success_m == 1) & (j.success_r == 0)).sum())
+        only_r += int(((j.success_r == 1) & (j.success_m == 0)).sum())
+    out["only masked / only removed"] = f"{only_m} / {only_r}"
+    return out
+
+
+def masked_severity(a: Artifacts, run: str, variant: str) -> pd.DataFrame:
+    """The severity rows (scripts/severity_sr.py) of <variant>/libero_plus.csv, computed once and
+    cached next to it as severity_sr.csv; unpaired, as for the withheld-input tables."""
+    path = a.path(run, f"{variant}/severity_sr.csv")
+    if not path.exists():
+        rows = severity_sr.load_rows(str(a.path(run, f"{variant}/libero_plus.csv")))
+        severity_sr.write_csv(path, severity_sr.collect(rows, severity_sr.DEFAULT_LIBERO_PLUS_ROOT))
+    return pd.read_csv(path).query("axis == 'severity'")
+
+
+def print_masked(a: Artifacts) -> None:
+    """LIBERO-Plus with one input masked vs removed, for the no-dropout models: overall,
+    by perturbation category, by difficulty level and by physical perturbation size."""
+    print("\n## LIBERO-Plus with one input masked vs removed (no dropout models), mean ± sd over seeds, %")
+    for v in MASKED:
+        models = [m for m in MASKED_MODELS if v != "proprio" or PROPRIO[m]]
+        b = {m: masked_breakdown(a, MODELS[m], v) for m in models}
+        print(f"\n### {v} masked vs removed")
+        print("seeds: " + "; ".join(f"{m} {'/'.join(map(str, MODELS[m]))}" for m in models))
+        t = {}
+        for m in models:
+            t[f"{m}, removed"] = b[m]["removed"]
+            t[f"{m}, masked"] = b[m]["masked"]
+        tab = pd.DataFrame(t)
+        print("\n#### Overall and by category\n" + md(tab.loc[CATS + ["all"]].rename_axis("category")))
+        print(
+            "paired tasks, only masked / only removed: "
+            + "; ".join(f"{m} {b[m]['only masked / only removed']}" for m in models)
+        )
+        print("\n#### By difficulty level\n" + md(tab.loc[[f"level {lv}" for lv in range(1, 6)]].rename_axis("level")))
+        sev = {}
+        for m in models:
+            sev[f"{m}, removed"] = {
+                sd: pd.read_csv(a.path(r, f"severity_sr_no_{v}.csv")).query("axis == 'severity'")
+                for sd, r in MODELS[m].items()
+            }
+            sev[f"{m}, masked"] = {sd: masked_severity(a, r, MASKED[v]) for sd, r in MODELS[m].items()}
+        for doubled in (False, True):
+            print(f"\n#### By physical perturbation size{', doubled ranges' if doubled else ''}")
+            for cat, title, lab, ranged in GROUPS.values():
+                if doubled and not ranged:
+                    continue
+                st = size_table(sev, cat, lab, doubled=doubled, paired=False)
+                print(
+                    f"\n##### {title}, {v} masked vs removed (tasks summed: {st.tasks.sum()} of {CAT_TASKS[cat]})\n"
+                    + md(st)
+                )
 
 if __name__ == "__main__":
     main()
