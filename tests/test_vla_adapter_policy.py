@@ -12,8 +12,13 @@ import numpy as np
 import pytest
 import torch
 
+from flower.evaluation.eval_records import apply_mean_proprio, blank_instruction, mean_pixel_views
+from flower.evaluation.flower_evaluate import apply_eval_modalities
 from flower.evaluation.vla_adapter_policy import (
+    Modalities,
     VLAAdapterPolicy,
+    layout_positions,
+    mean_pixel,
     calvin_ensemble_action,
     calvin_gripper,
     calvin_observation,
@@ -51,8 +56,8 @@ class _Counter:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, obs, instruction):
-        self.calls.append((obs, instruction))
+    def __call__(self, obs, instruction, mods):
+        self.calls.append((obs, instruction, mods))
         return np.full((8, 7), float(len(self.calls) - 1))
 
 
@@ -126,7 +131,7 @@ def test_step_batch_accepts_per_sample_instructions():
     policy = VLAAdapterPolicy(stub, "libero")
     data, goal = policy.process_raw_obs([_libero_obs(0), _libero_obs(1)], ["a", "b"])
     policy.step_batch(data, goal)
-    assert [instr for _, instr in stub.calls] == ["a", "b"]
+    assert [instr for _, instr, _ in stub.calls] == ["a", "b"]
 
 
 def test_calvin_reference_schedule_queries_three_times_per_ten_steps():
@@ -148,16 +153,72 @@ def test_calvin_chunk_schedule_replans_every_8_steps():
 
 
 def test_calvin_actions_carry_a_binary_gripper():
-    policy = VLAAdapterPolicy(lambda obs, instr: np.full((8, 7), 0.9), "calvin")
+    policy = VLAAdapterPolicy(lambda obs, instr, mods: np.full((8, 7), 0.9), "calvin")
     # Raw 0.9 -> flipped 0.1 -> -sign(2 * 0.1 - 1) = +1 (open in CALVIN)
     assert policy.step(_calvin_obs(), {"lang_text": "x"})[-1] == 1.0
 
 
-def test_masking_requests_are_refused_until_implemented():
-    policy = VLAAdapterPolicy(_Counter(), "calvin")
-    policy.eval_modality_mask = (True, False, True)
-    with pytest.raises(NotImplementedError):
-        policy.step(_calvin_obs(), {"lang_text": "x"})
+FULL = {"rgb_static": True, "rgb_gripper": True, "language": True, "proprio": True}
+CONDITIONS = {
+    # removed: the modality's own flag off (scripts/eval_pipeline.py:modality_overrides)
+    "no static": ({"rgb_static": False}, Modalities(static=False)),
+    "no wrist": ({"rgb_gripper": False}, Modalities(wrist=False)),
+    "no lang": ({"language": False}, Modalities(lang=False)),
+    "no proprio": ({"proprio": False}, Modalities(proprio="off")),
+    # masked: scripts/eval_pipeline.py:MASKED_VARIANTS
+    "masked_static": ({"rgb_static_pixels": False}, Modalities(mean_static=True)),
+    "masked_wrist": ({"rgb_gripper_pixels": False}, Modalities(mean_wrist=True)),
+    "blank_instruction": ({"instruction": False}, Modalities(blank_instruction=True)),
+    "masked_proprio": ({"proprio_state": False}, Modalities(proprio="mean")),
+}
+
+
+@pytest.mark.parametrize("name", list(CONDITIONS))
+def test_harness_eval_modalities_reach_predict_chunk_as_the_matching_spec(name):
+    """The CALVIN harness's apply_eval_modalities (the same attribute writes as
+    EvaluateLibero.__init__) turns each single-input condition into the right spec."""
+    overrides, expected = CONDITIONS[name]
+    stub = _Counter()
+    policy = VLAAdapterPolicy(stub, "calvin", proprio_mean=np.zeros(8))
+    uses_proprio = apply_eval_modalities(policy, {**FULL, **overrides}, checkpoint="/ckpt/CALVIN-ABC-Pro")
+    policy.step(_calvin_obs(), {"lang_text": "x"})
+    assert stub.calls[0][2] == expected
+    assert uses_proprio == (name != "no proprio")  # result.csv's use_proprio column
+
+
+def test_all_inputs_is_the_default_spec():
+    stub = _Counter()
+    policy = VLAAdapterPolicy(stub, "libero")
+    apply_eval_modalities(policy, FULL, checkpoint="/ckpt")
+    data, goal = policy.process_raw_obs([_libero_obs()], "x")
+    policy.step_batch(data, goal)
+    assert stub.calls[0][2] == Modalities() and Modalities().complete
+
+
+def test_masked_proprio_fill_is_the_policys_training_mean_not_a_proprio_mean_file():
+    policy = VLAAdapterPolicy(_Counter(), "libero", proprio_mean=np.arange(8.0))
+    apply_mean_proprio(policy, {**FULL, "proprio_state": False}, "/no/such/run/ckpt")
+    np.testing.assert_array_equal(policy.eval_proprio_fill, np.arange(8.0))
+    assert policy.modalities().proprio == "mean"
+
+
+def test_layout_positions_keep_full_layout_positions_of_kept_tokens():
+    n = 4  # patches per image
+    full = layout_positions(3, True, True, True, n_patches=n)
+    assert full == list(range(1 + 2 * n + 3 + 65))  # contiguous with everything present
+    no_static = layout_positions(3, False, True, True, n_patches=n)
+    assert no_static == [0] + list(range(1 + n, 1 + 2 * n + 3 + 65))
+    no_wrist = layout_positions(3, True, False, True, n_patches=n)
+    assert no_wrist == [0] + list(range(1, 1 + n)) + list(range(1 + 2 * n, 1 + 2 * n + 3 + 65))
+    no_lang = layout_positions(3, True, True, False, n_patches=n)
+    assert no_lang == list(range(1 + 2 * n)) + list(range(1 + 2 * n + 3, 1 + 2 * n + 3 + 65))
+
+
+def test_mean_pixel_replaces_only_the_masked_images_channels_by_their_spatial_mean():
+    pv = torch.arange(2 * 6 * 3 * 3, dtype=torch.float32).reshape(1, 12, 3, 3)
+    out = mean_pixel(pv, [False, True])
+    torch.testing.assert_close(out[:, :6], pv[:, :6])
+    torch.testing.assert_close(out[:, 6:], pv[:, 6:].mean(dim=(-2, -1), keepdim=True).expand(1, 6, 3, 3))
 
 
 def test_harness_attributes_match_what_the_evaluators_read_and_set():

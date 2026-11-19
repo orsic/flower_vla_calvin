@@ -47,6 +47,7 @@
 #   ./run.sh download-vla-adapter         Download VLA-Adapter's LIBERO-Long-Pro + CALVIN-ABC-Pro checkpoints
 #   ./run.sh eval-vla-adapter [...]       LIBERO-10 eval of VLA-Adapter (LIBERO-Long-Pro) in flower_eval_libero.py
 #   ./run.sh eval-calvin-vla-adapter [...]  CALVIN eval of VLA-Adapter (CALVIN-ABC-Pro) in flower_evaluate.py
+#   ./run.sh pipeline-vla-adapter <libero|calvin>  VLA-Adapter with all inputs, each removed, each masked
 #
 # Valid benchmarks: libero_10, libero_90, libero_spatial, libero_object, libero_goal
 #
@@ -694,9 +695,9 @@ for name in ("LIBERO-Long-Pro", "CALVIN-ABC-Pro"):
     ;;
 
   eval-vla-adapter)
-    # VLA-Adapter in the LIBERO harness (flower/evaluation/vla_adapter_policy.py) with its
-    # reference eval's protocol: renders at 256, 10 warm-up steps with the gripper open, 50
-    # episodes per task. result.csv lands under the checkpoint
+    # VLA-Adapter in the LIBERO harness (flower/evaluation/vla_adapter_policy.py): renders at
+    # 256 like its reference eval, the harness's warm-up (so episodes pair with FlowerVLA's;
+    # num_steps_wait=10 wait_gripper=-1.0 for the reference's), 50 episodes per task. result.csv lands under the checkpoint
     # dir (train_folder). LIBERO_VARIANT=plus|pro and benchmark_name= work as for FlowerVLA.
     podman-compose -f "$COMPOSE" run --rm -T eval-vla-adapter \
         python flower/evaluation/flower_eval_libero.py \
@@ -707,8 +708,6 @@ for name in ("LIBERO-Long-Pro", "CALVIN-ABC-Pro"):
         dataset_path=/workspace \
         log_dir=/saves/eval_logs \
         env_img_res=256 \
-        num_steps_wait=10 \
-        wait_gripper=-1.0 \
         n_eval=50 \
         num_videos=0 \
         log_wandb=False \
@@ -726,6 +725,40 @@ for name in ("LIBERO-Long-Pro", "CALVIN-ABC-Pro"):
         checkpoint=/saves/checkpoints/vla_adapter/CALVIN-ABC-Pro \
         "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)" \
         "$@"
+    ;;
+
+  pipeline-vla-adapter)
+    # VLA-Adapter's evals with all inputs, each input removed and each masked
+    # (scripts/vla_adapter_pipeline.py), in FlowerVLA's result layout under the checkpoint
+    # dir, then collected under FlowerVLA's artifact member names (<ckpt>/artifact/).
+    # PIPELINE_RESUME=1 skips the evals result.csv already holds.
+    if [[ $# -lt 1 || ( "$1" != libero && "$1" != calvin ) ]]; then
+        echo "Usage: ./run.sh pipeline-vla-adapter <libero|calvin>" >&2
+        exit 1
+    fi
+    benchmark="$1"; shift
+    flags=()
+    [[ -n "${PIPELINE_RESUME:-}" ]] && flags+=(--resume)
+    plan="$(podman-compose -f "$COMPOSE" run --rm -T shell-vla-adapter \
+        python scripts/vla_adapter_pipeline.py plan --benchmark "$benchmark" "${flags[@]}")"
+
+    mapfile -t plan_lines <<< "$plan"
+
+    i=0
+    for line in "${plan_lines[@]}"; do
+        IFS=$'\t' read -r -a fields <<< "$line"
+        [[ ${#fields[@]} -eq 0 ]] && continue
+        script="${fields[0]}"
+        overrides=("${fields[@]:1}")
+        i=$((i + 1))
+        podman-compose -f "$COMPOSE" run --rm -T eval-vla-adapter \
+            python "$script" \
+            "${overrides[@]}" \
+            "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)_${i}"
+    done
+
+    podman-compose -f "$COMPOSE" run --rm -T shell-vla-adapter \
+        python scripts/vla_adapter_pipeline.py collect --benchmark "$benchmark"
     ;;
 
   pipeline-calvin)

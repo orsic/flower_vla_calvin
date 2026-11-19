@@ -157,14 +157,16 @@ def proprio_mean_path(checkpoint: Union[str, Path]) -> Path:
 
 def apply_mean_proprio(model, eval_modalities: Optional[Dict[str, bool]], checkpoint: Union[str, Path]) -> None:
     """eval_modalities.proprio_state=false: withhold proprio and put the checkpoint's
-    training-mean proprio conditioning vector in its place (FLOWERVLA.eval_proprio_fill)."""
+    training-mean proprio conditioning vector in its place (FLOWERVLA.eval_proprio_fill).
+    A policy with its own training mean (VLAAdapterPolicy.training_mean_proprio) supplies it."""
     if not mean_proprio(eval_modalities):
         return
     if not model.use_proprio:
         raise ValueError(
             "eval_modalities.proprio_state=False requires a model with use_proprio=True"
         )
-    fill = load_proprio_mean(checkpoint)
+    training_mean = getattr(model, "training_mean_proprio", None)
+    fill = training_mean() if training_mean is not None else load_proprio_mean(checkpoint)
     model.eval_proprio_mask = False
     model.eval_proprio_fill = fill
 

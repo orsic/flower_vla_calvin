@@ -15,8 +15,6 @@ def test_eval_vla_adapter_runs_the_libero_harness_with_the_reference_resolution(
         "benchmark_name=libero_10",
         "checkpoint=/saves/checkpoints/vla_adapter/LIBERO-Long-Pro",
         "env_img_res=256",
-        "num_steps_wait=10",
-        "wait_gripper=-1.0",
         "n_eval=50",
     ):
         assert f" {override} " in cmd
@@ -39,3 +37,27 @@ def test_download_vla_adapter_fetches_both_checkpoints(tmp_path):
 
     assert " run --rm -T shell-vla-adapter python -c " in log
     assert "LIBERO-Long-Pro" in log and "CALVIN-ABC-Pro" in log
+
+
+def test_eval_vla_adapter_keeps_the_harness_warm_up(tmp_path):
+    (cmd,) = _run(tmp_path, ["eval-vla-adapter"])
+    assert "num_steps_wait" not in cmd and "wait_gripper" not in cmd
+
+
+def test_pipeline_vla_adapter_runs_plan_every_line_then_collect(tmp_path):
+    lines = _run(tmp_path, ["pipeline-vla-adapter", "calvin"], {"PIPELINE_RESUME": "1"})
+
+    assert (
+        " run --rm -T shell-vla-adapter python scripts/vla_adapter_pipeline.py plan --benchmark calvin --resume"
+        in lines[0]
+    )
+    evals = lines[1:-1]
+    assert len(evals) == 2
+    assert all(
+        " run --rm -T eval-vla-adapter python flower/evaluation/flower_evaluate.py policy=vla_adapter " in e
+        for e in evals
+    )
+    assert "eval_modalities.rgb_static=False" in evals[1]
+    assert (
+        " run --rm -T shell-vla-adapter python scripts/vla_adapter_pipeline.py collect --benchmark calvin" in lines[-1]
+    )

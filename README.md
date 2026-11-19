@@ -2421,27 +2421,48 @@ evaluator glue is ours, mirroring its reference evaluators:
   chunks averaged; `vla_adapter_calvin_schedule=chunk` for a plain 8-step open loop).
 
 It needs its own image (`transformers==4.40.1` and a TensorFlow data stack) built on the CALVIN one.
-Modality masking is not wired yet: a masked `eval_modalities` raises.
+
+Inputs are withheld through the same `eval_modalities` keys as for FlowerVLA, and results land in
+the same layout (`use_*` key columns, `masked_*` / `blank_instruction` subdirs).
+`forward_chunk` re-implements VLA-Adapter's `predict_action` with inputs left out; with all
+inputs it is bit-identical to VLA-Adapter's own `get_action` (`tests/test_vla_adapter_equivalence.py`).
+
+| input | removed | masked |
+|---|---|---|
+| static / wrist camera | its 256 patch tokens left out; the other tokens keep their full-layout positions | normalized pixels replaced per channel by their mean |
+| language | the whole prompt left out (its first chat token stays, anchoring the layout like FlowerVLA's `<Flow>`) | instruction blanked inside the prompt template |
+| proprio | its token left out of the action head's adapter attention | the training-mean state from `dataset_statistics.json` |
+
+Unlike FlowerVLA's masked proprio (the mean of its proprio *conditioning* over training samples),
+VLA-Adapter's training data isn't available here, so the mean is taken in state space.
 
 ```bash
 ./run.sh build-vla-adapter        # flower-vla-adapter:latest, needs ./run.sh build-calvin
 ./run.sh download-vla-adapter     # VLA-Adapter/LIBERO-Long-Pro + CALVIN-ABC-Pro -> /saves/checkpoints/vla_adapter/
 CUDA_VISIBLE_DEVICES=0,1 ./run.sh eval-vla-adapter          # LIBERO-10, 50 episodes/task
 CUDA_VISIBLE_DEVICES=2,3 ./run.sh eval-calvin-vla-adapter   # CALVIN, 1000 chains on scene D
+# All inputs, each input removed, each input masked (scripts/vla_adapter_pipeline.py); LIBERO
+# at 20 episodes/task, the episodes FlowerVLA's LIBERO-10 evals cover. Then copies the results
+# to <ckpt>/artifact/ under FlowerVLA's artifact member names (libero_orig.csv / calvin.csv,
+# <variant>/...). PIPELINE_RESUME=1 skips what is already recorded.
+CUDA_VISIBLE_DEVICES=0,1 ./run.sh pipeline-vla-adapter libero
+CUDA_VISIBLE_DEVICES=2,3 ./run.sh pipeline-vla-adapter calvin
 ```
 
 `result.csv` lands under the checkpoint dir, e.g.
 `/saves/checkpoints/vla_adapter/LIBERO-Long-Pro/eval_logs/LIBERO-Long-Pro/orig_libero_10/`.
-`eval-vla-adapter` uses the reference LIBERO protocol: render at 256 (`env_img_res`), and 10
-warm-up steps with the gripper open (`num_steps_wait=10 wait_gripper=-1.0`; FlowerVLA's default
-is 5 steps of a zero action, which half-closes the gripper).
+VLA-Adapter renders LIBERO at 256 (`env_img_res`), as in its reference eval. It keeps the
+harness's warm-up (5 steps of a zero action, which half-closes the gripper), so every episode
+starts from the same state as FlowerVLA's and the two pair episode by episode (rollout seeds,
+init states, CALVIN chains). The reference warm-up (10 steps, gripper open) is
+`num_steps_wait=10 wait_gripper=-1.0`.
 
 Integration check with the public checkpoints (RTX A6000; VLA-Adapter reports H100 numbers):
 
 | benchmark | checkpoint | ours | reported |
 |---|---|---|---|
+| LIBERO-10, harness warm-up (default) | LIBERO-Long-Pro | 90.4% (500 episodes) | — |
 | LIBERO-10, reference warm-up | LIBERO-Long-Pro | 92.6% (500 episodes) | 96.4% |
-| LIBERO-10, FlowerVLA warm-up | LIBERO-Long-Pro | 90.4% (500 episodes) | — |
 | CALVIN ABC→D, avg. length | CALVIN-ABC-Pro | 4.41 (1000 chains) | 4.50 |
 
 CALVIN chain success 1–5: 98.3 / 94.3 / 88.8 / 82.8 / 76.5% (reported: 98.5 / … / 80.0%). Our
