@@ -694,6 +694,21 @@ for name in ("LIBERO-Long-Pro", "CALVIN-ABC-Pro"):
 '
     ;;
 
+  download-vla-adapter-train)
+    # Training inputs for ./run.sh train-vla-adapter-dropout: the LIBERO-10 RLDS dataset
+    # VLA-Adapter trains on (openvla/modified_libero_rlds, no-noops) and its base VLM (config +
+    # the checkpoint prismatic.models.load reads). The VLM dir name must stay: upstream
+    # finetune.py branches on it.
+    podman-compose -f "$COMPOSE" run --rm -T shell-vla-adapter python -c '
+from huggingface_hub import snapshot_download
+print(snapshot_download("openvla/modified_libero_rlds", repo_type="dataset",
+    allow_patterns=["libero_10_no_noops/*"], local_dir="/saves/datasets/libero_rlds"))
+print(snapshot_download("Stanford-ILIAD/prism-qwen25-extra-dinosiglip-224px-0_5b",
+    allow_patterns=["config.json", "config.yaml", "checkpoints/step-020792-epoch-01-loss=0.5268.pt"],
+    local_dir="/saves/checkpoints/vla_adapter/prism-qwen25-extra-dinosiglip-224px-0_5b"))
+'
+    ;;
+
   eval-vla-adapter)
     # VLA-Adapter in the LIBERO harness (flower/evaluation/vla_adapter_policy.py): renders at
     # 256 like its reference eval, the harness's warm-up (so episodes pair with FlowerVLA's;
