@@ -70,3 +70,14 @@ def test_collect_uses_flowervla_member_names(tmp_path):
     art = tmp_path / "LIBERO-Long-Pro" / "artifact"
     assert (art / "libero_orig.csv").read_text() == csv_path.read_text()
     assert (art / "blank_instruction" / "libero_orig.csv").exists()
+
+
+def test_fine_tuned_checkpoint_without_masked_plans_all_inputs_and_each_removed(tmp_path):
+    ckpt = tmp_path / "run--200000_chkpt"
+    lines = vap.plan_lines("libero", "/unused", resume=False, checkpoint=str(ckpt), masked=False)
+    assert len(lines) == 5
+    assert all(line[1:3] == [f"train_folder={ckpt}", f"checkpoint={ckpt}"] for _, line in lines)
+    assert not any("pixels" in tok or "instruction" in tok or "proprio_state" in tok for _, l in lines for tok in l)
+    assert vap.result_csv("libero", "/unused", str(ckpt)) == (
+        ckpt / "eval_logs" / ckpt.name / "orig_libero_10" / "result.csv"
+    )

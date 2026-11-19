@@ -21,15 +21,15 @@ Inputs can be withheld the way the harnesses withhold them from FlowerVLA (forwa
 with all inputs it reproduces VLA-Adapter's predict_action exactly):
 - removed (eval_modality_mask / eval_proprio_mask=False): a camera's patch tokens or the
   whole prompt (all but its first token, which anchors the layout like FlowerVLA's <Flow>)
-  are left out, kept tokens keep their full-layout positions; proprio's token is left out
-  of the action head's adapter attention.
+  are masked out of attention at unchanged full-layout positions, in the LLM and the action
+  head; proprio's token is masked out of the action head's adapter attention. The same
+  masks as dropout training (flower/vla_adapter/masked_forward.py).
 - masked: a camera's normalized pixels replaced per channel by their mean
   (eval_mean_pixel), the instruction blanked inside the prompt template
   (eval_blank_instruction), proprio replaced by its training-mean state from the
   checkpoint's dataset_statistics.json (eval_proprio_fill, via training_mean_proprio).
 """
 
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,7 +43,6 @@ PLATFORMS = ("libero", "calvin")
 CALVIN_SCHEDULES = ("reference", "chunk")
 CALVIN_PERIOD = 10
 NUM_ACTION_QUERIES = 64  # prismatic.vla.constants.NUM_TOKENS
-PATCHES_PER_IMAGE = 256
 PROMPT = (
     "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n"
     "<|im_start|>user\nWhat action should the robot take to {}?<|im_end|>\n<|im_start|>assistant\n"
@@ -148,22 +147,6 @@ def select_unnorm_key(norm_stats: Dict[str, Any], platform: str) -> str:
     if preferred in norm_stats:
         return preferred
     raise ValueError(f"Cannot pick an unnorm key for {platform} from {sorted(norm_stats)}")
-
-
-def layout_positions(
-    n_prompt: int, static: bool, wrist: bool, lang: bool, n_patches: int = PATCHES_PER_IMAGE
-) -> List[int]:
-    """Position ids of the kept tokens in the full sequence layout
-    [tok0, static patches, wrist patches, n_prompt prompt tokens, action queries, stop]:
-    a removed input's tokens are left out without shifting the others (FlowerVLA's
-    position_correct)."""
-    static_ids = list(range(1, 1 + n_patches))
-    wrist_ids = list(range(1 + n_patches, 1 + 2 * n_patches))
-    prompt_start = 1 + 2 * n_patches
-    prompt_ids = list(range(prompt_start, prompt_start + n_prompt))
-    tail_start = prompt_start + n_prompt
-    tail_ids = list(range(tail_start, tail_start + NUM_ACTION_QUERIES + 1))
-    return [0] + static_ids * static + wrist_ids * wrist + prompt_ids * lang + tail_ids
 
 
 def mean_pixel(pixel_values: torch.Tensor, masked: Sequence[bool]) -> torch.Tensor:
@@ -292,6 +275,8 @@ def load_vla_adapter(
     tf.config.set_visible_devices([], "GPU")
     from experiments.robot import openvla_utils, robot_utils
 
+    from flower.vla_adapter.masked_forward import is_pro_action_head
+
     # VLA-Adapter hardcodes cuda:0 as a module global; point it at this worker's GPU.
     openvla_utils.DEVICE = robot_utils.DEVICE = torch.device(f"cuda:{device}")
     checkpoint = str(checkpoint)
@@ -304,8 +289,10 @@ def load_vla_adapter(
         num_images_in_input=2,
         use_proprio=True,
         use_l1_regression=True,
-        # get_action_head infers this from "Pro" in the path; made explicit here.
-        use_pro_version="Pro" in Path(checkpoint).name,
+        # get_action_head would infer this from "Pro" in the path; read it off the weights.
+        use_pro_version=is_pro_action_head(
+            openvla_utils.load_component_state_dict(openvla_utils.find_checkpoint_file(checkpoint, "action_head"))
+        ),
         center_crop=True,
         num_open_loop_steps=CHUNK,
         save_version="",
@@ -329,53 +316,30 @@ def load_vla_adapter(
     return policy
 
 
-@contextmanager
-def rope_covering(language_model: torch.nn.Module, n_positions: int):
-    """Let Qwen2's rotary tables cover position ids up to n_positions - 1. transformers
-    4.40 slices them to the sequence length, which a sequence with tokens left out (but
-    keeping their full-layout positions) undercuts; the values are the same table, longer."""
-    rotaries = [m for m in language_model.modules() if type(m).__name__.endswith("RotaryEmbedding")]
-    originals = [m.forward for m in rotaries]
-    for module, original in zip(rotaries, originals):
-        module.forward = lambda x, seq_len=None, _f=original: _f(x, seq_len=max(seq_len, n_positions))
-    try:
-        yield
-    finally:
-        for module, original in zip(rotaries, originals):
-            module.forward = original
-
-
 @torch.inference_mode()
 def forward_chunk(parts: SimpleNamespace, obs: Dict[str, np.ndarray], instruction: str, mods: Modalities) -> np.ndarray:
     """VLA-Adapter's predict_action (L1-regression head, B=1) with inputs removed or masked
     per `mods`; returns the un-normalized (8, 7) chunk. Mirrors
-    OpenVLAForActionPrediction.predict_action / _regression_or_discrete_prediction and
-    L1RegressionActionHead.predict_action step for step, including which hidden states they
-    slice, so that Modalities() reproduces them exactly (tests/test_vla_adapter_equivalence.py)."""
+    OpenVLAForActionPrediction.predict_action / _regression_or_discrete_prediction step for
+    step, so Modalities() reproduces it exactly (tests/test_vla_adapter_equivalence.py).
+    Removal is key masking at full-layout positions (flower/vla_adapter/masked_forward.py),
+    exactly as in dropout training."""
     from experiments.robot import openvla_utils
-    from prismatic.vla.constants import ACTION_DIM, IGNORE_INDEX, NUM_ACTIONS_CHUNK
+    from prismatic.vla.constants import IGNORE_INDEX
+
+    from flower.vla_adapter.masked_forward import drop_masks, keep_flags, predict_action_masked
 
     cfg, vla, processor, action_head = parts.cfg, parts.vla, parts.processor, parts.action_head
     device = openvla_utils.DEVICE
-    views = [(obs["full_image"], mods.static, mods.mean_static), (obs["wrist_image"], mods.wrist, mods.mean_wrist)]
-    kept = [(image, masked) for image, keep, masked in views if keep]
-    if not kept:
-        raise ValueError("At least one camera must be kept")
-    images = openvla_utils.prepare_images_for_vla([image for image, _ in kept], cfg)
+    images = openvla_utils.prepare_images_for_vla([obs["full_image"], obs["wrist_image"]], cfg)
     prompt = PROMPT.format(("" if mods.blank_instruction else instruction).lower())
     inputs = processor(prompt, images[0]).to(device, dtype=torch.bfloat16)
-    pixel_values = torch.cat(
-        [inputs["pixel_values"]]
-        + [processor(prompt, image).to(device, dtype=torch.bfloat16)["pixel_values"] for image in images[1:]],
-        dim=1,
-    )
-    if any(masked for _, masked in kept):
-        pixel_values = mean_pixel(pixel_values, [masked for _, masked in kept])
+    wrist = processor(prompt, images[1]).to(device, dtype=torch.bfloat16)
+    pixel_values = torch.cat([inputs["pixel_values"], wrist["pixel_values"]], dim=1)
+    if mods.mean_static or mods.mean_wrist:
+        pixel_values = mean_pixel(pixel_values, [mods.mean_static, mods.mean_wrist])
 
     input_ids, attention_mask = inputs["input_ids"], inputs["attention_mask"]
-    n_prompt_full = input_ids.shape[-1] - 1
-    if not mods.lang:
-        input_ids, attention_mask = input_ids[:, :1], attention_mask[:, :1]
     n_prompt = input_ids.shape[-1] - 1
     labels = input_ids.clone()
     labels[:] = IGNORE_INDEX
@@ -384,34 +348,32 @@ def forward_chunk(parts: SimpleNamespace, obs: Dict[str, np.ndarray], instructio
     input_embeddings = vla.get_input_embeddings()(input_ids)
     all_actions_mask = vla._process_action_masks(labels)
 
-    vla.vision_backbone.set_num_images_in_input(len(kept))
+    vla.vision_backbone.set_num_images_in_input(2)
     patch_embeddings = vla._process_vision_features(pixel_values, None, False)
-    n_patches = vla.vision_backbone.get_num_patches() * len(kept)
+    n_patches = vla.vision_backbone.get_num_patches() * 2
 
     batch = input_embeddings.shape[0]
     queries = vla.action_queries.weight
     queries = queries.view(1, queries.shape[0], queries.shape[1]).repeat(batch, 1, 1)
     input_embeddings = vla._replace_input_embeddings(input_embeddings.clone(), all_actions_mask, queries)
     embeddings, multimodal_mask = vla._build_multimodal_attention(input_embeddings, patch_embeddings, attention_mask)
-    position_ids, n_positions = None, embeddings.shape[1]
-    if not mods.complete:
-        positions = layout_positions(
-            n_prompt_full, mods.static, mods.wrist, mods.lang, vla.vision_backbone.get_num_patches()
-        )
-        position_ids, n_positions = torch.tensor([positions], device=embeddings.device), positions[-1] + 1
-    with rope_covering(vla.language_model, n_positions):
-        output = vla.language_model(
-            input_ids=None,
-            attention_mask=multimodal_mask,
-            position_ids=position_ids,
-            past_key_values=None,
-            inputs_embeds=embeddings,
-            labels=None,
-            use_cache=None,
-            output_attentions=False,
-            output_hidden_states=True,
-            return_dict=True,
-        )
+    masks = None
+    if not mods.complete or mods.proprio == "off":
+        keep = keep_flags(mods.static, mods.wrist, mods.lang, mods.proprio != "off", device=labels.device)
+        masks = drop_masks(keep, labels, attention_mask, vla.vision_backbone.get_num_patches())
+        multimodal_mask = masks.attention.to(device=multimodal_mask.device, dtype=multimodal_mask.dtype)
+    output = vla.language_model(
+        input_ids=None,
+        attention_mask=multimodal_mask,
+        position_ids=None,
+        past_key_values=None,
+        inputs_embeds=embeddings,
+        labels=None,
+        use_cache=None,
+        output_attentions=False,
+        output_hidden_states=True,
+        return_dict=True,
+    )
     start = n_patches + n_prompt
     layers = []
     for hidden in output.hidden_states:
@@ -419,25 +381,21 @@ def forward_chunk(parts: SimpleNamespace, obs: Dict[str, np.ndarray], instructio
         task = hidden[:, :n_patches].reshape(batch, 1, n_patches, -1)
         layers.append(torch.cat((task, actions.to(torch.bfloat16)), 2))
     hidden_states = torch.cat(layers, dim=1)
-    task_states, action_states = hidden_states[:, :, :n_patches, :], hidden_states[:, :, n_patches:, :]
 
-    if mods.proprio == "off":
-        proprio_features = action_states.new_zeros((batch, 0, action_states.shape[-1]))
+    stats = vla.norm_stats[cfg.unnorm_key]["proprio"]
+    state = np.asarray(stats["mean"]) if mods.proprio == "mean" else obs["state"]
+    proprio = torch.Tensor(openvla_utils.normalize_proprio(state, stats))
+    proprio = proprio.to(patch_embeddings.device, dtype=patch_embeddings.dtype)
+    if masks is None:
+        normalized = action_head.predict_action(
+            hidden_states, proprio=proprio, proprio_projector=parts.proprio_projector
+        )
     else:
-        stats = vla.norm_stats[cfg.unnorm_key]["proprio"]
-        state = np.asarray(stats["mean"]) if mods.proprio == "mean" else obs["state"]
-        proprio = torch.Tensor(openvla_utils.normalize_proprio(state, stats))
-        proprio = proprio.to(patch_embeddings.device, dtype=patch_embeddings.dtype)
-        proprio = proprio.reshape(batch, -1).to(torch.bfloat16)
-        proprio_features = parts.proprio_projector(proprio).unsqueeze(dim=1)
-    cond = torch.zeros(
-        (batch, action_head.action_dim * NUM_ACTIONS_CHUNK, action_head.hidden_dim),
-        device=action_states.device,
-        dtype=action_states.dtype,
-    )
-    normalized = action_head.model(
-        cond.reshape(batch, NUM_ACTIONS_CHUNK, -1), h_a=action_states, p=proprio_features, h_t=task_states
-    )
+        normalized = predict_action_masked(
+            action_head, hidden_states, proprio, parts.proprio_projector, masks.task, masks.proprio
+        )
+    from prismatic.vla.constants import ACTION_DIM, NUM_ACTIONS_CHUNK
+
     normalized = normalized.reshape(NUM_ACTIONS_CHUNK, ACTION_DIM).float().cpu().detach().numpy()
     return vla._unnormalize_actions(normalized, cfg.unnorm_key)
 

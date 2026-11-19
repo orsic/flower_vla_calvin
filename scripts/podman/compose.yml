@@ -679,3 +679,23 @@ services:
   eval-vla-adapter:
     <<: *base-vla-adapter
     command: ["bash"]
+
+  # VLA-Adapter fine-tuning (flower/vla_adapter/finetune_dropout.py around upstream
+  # vla-scripts/finetune.py; torchrun command from ./run.sh train-vla-adapter-dropout).
+  # Upstream logs to W&B offline; WANDB_DIR keeps those files out of the repo.
+  train-vla-adapter:
+    <<: *base-vla-adapter
+    shm_size: "16g"
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0,1}
+      TOKENIZERS_PARALLELISM: "false"
+      TF_CPP_MIN_LOG_LEVEL: "2"
+      WANDB_DIR: /saves/wandb
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    command: ["bash"]

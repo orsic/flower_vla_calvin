@@ -21,6 +21,10 @@ case "$joined" in
   *"calvin_pipeline.py plan"*)
     printf '%s\\n' "eval-calvin\tcombo=1" "eval-calvin\tcombo=2" "eval-calvin\tcombo=3"
     ;;
+  *"_chkpt | sort -V"*)
+    run_dir="$(sed -E 's/.*ls -d ([^ ]+)\\/\\*_chkpt.*/\\1/' <<< "$joined")"
+    echo "$run_dir/run--50_chkpt"
+    ;;
   *"vla_adapter_pipeline.py plan"*)
     printf '%s\n' "flower/evaluation/flower_evaluate.py\tpolicy=vla_adapter\teval_modalities.rgb_static=True" \
       "flower/evaluation/flower_evaluate.py\tpolicy=vla_adapter\teval_modalities.rgb_static=False"

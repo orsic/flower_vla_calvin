@@ -12,8 +12,13 @@ checkpoint dir (train_folder = checkpoint): removed inputs merge into
 ./run.sh pipeline-vla-adapter.
 
 Usage:
-  python scripts/vla_adapter_pipeline.py plan --benchmark libero|calvin [--ckpt-root DIR] [--resume]
-  python scripts/vla_adapter_pipeline.py collect --benchmark libero|calvin [--ckpt-root DIR]
+  python scripts/vla_adapter_pipeline.py plan --benchmark libero|calvin [--ckpt-root DIR | --checkpoint DIR]
+      [--resume] [--no-masked]
+  python scripts/vla_adapter_pipeline.py collect --benchmark libero|calvin [--ckpt-root DIR | --checkpoint DIR]
+
+--checkpoint evaluates one of our fine-tuned checkpoint dirs (finetune_dropout.py) instead of
+the public one under --ckpt-root; --no-masked keeps all inputs and each input removed, the
+set FlowerVLA evaluates for a dropout run (PIPELINE_SKIP_MULTI_OFF).
 
 `plan` prints one line per eval, tab-separated:
     <eval script>\t<override1>\t<override2>\t...
@@ -26,7 +31,7 @@ import argparse
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent))
 from eval_pipeline import combo_in_csv, masked_artifact_members, masked_lines, modality_overrides  # noqa: E402
@@ -62,21 +67,23 @@ BENCHMARKS = {
 }
 
 
-def checkpoint_dir(benchmark: str, ckpt_root: str) -> Path:
-    return Path(ckpt_root) / BENCHMARKS[benchmark]["checkpoint"]
+def checkpoint_dir(benchmark: str, ckpt_root: str, checkpoint: Optional[str] = None) -> Path:
+    return Path(checkpoint) if checkpoint else Path(ckpt_root) / BENCHMARKS[benchmark]["checkpoint"]
 
 
-def result_csv(benchmark: str, ckpt_root: str) -> Path:
+def result_csv(benchmark: str, ckpt_root: str, checkpoint: Optional[str] = None) -> Path:
     """eval_records.result_dir(...)/result.csv for the unmasked evals of this checkpoint."""
-    ckpt = checkpoint_dir(benchmark, ckpt_root)
+    ckpt = checkpoint_dir(benchmark, ckpt_root, checkpoint)
     return ckpt / "eval_logs" / ckpt.name / BENCHMARKS[benchmark]["suite_dir"] / "result.csv"
 
 
-def plan_lines(benchmark: str, ckpt_root: str, resume: bool) -> List[Tuple[str, List[str]]]:
-    """All inputs, then each input removed, then each input masked."""
+def plan_lines(
+    benchmark: str, ckpt_root: str, resume: bool, checkpoint: Optional[str] = None, masked: bool = True
+) -> List[Tuple[str, List[str]]]:
+    """All inputs, then each input removed, then (unless masked=False) each input masked."""
     spec = BENCHMARKS[benchmark]
-    ckpt = checkpoint_dir(benchmark, ckpt_root)
-    csv_path = result_csv(benchmark, ckpt_root)
+    ckpt = checkpoint_dir(benchmark, ckpt_root, checkpoint)
+    csv_path = result_csv(benchmark, ckpt_root, checkpoint)
     base = ["policy=vla_adapter", f"train_folder={ckpt}", f"checkpoint={ckpt}"] + spec["overrides"]
     combos = [FULL] + [{**FULL, key: False} for key in FULL]
     lines = [
@@ -84,14 +91,16 @@ def plan_lines(benchmark: str, ckpt_root: str, resume: bool) -> List[Tuple[str, 
         for combo in combos
         if not (resume and combo_in_csv(csv_path, combo, use_proprio=True))
     ]
+    if not masked:
+        return lines
     return lines + masked_lines(spec["script"], base + modality_overrides(FULL), FULL, csv_path, True, resume)
 
 
-def collect(benchmark: str, ckpt_root: str) -> Dict[str, Path]:
+def collect(benchmark: str, ckpt_root: str, checkpoint: Optional[str] = None) -> Dict[str, Path]:
     """Copy the result.csv files to <ckpt>/artifact/<member>; returns member -> copy."""
     spec = BENCHMARKS[benchmark]
-    csv_path = result_csv(benchmark, ckpt_root)
-    out_dir = checkpoint_dir(benchmark, ckpt_root) / "artifact"
+    csv_path = result_csv(benchmark, ckpt_root, checkpoint)
+    out_dir = checkpoint_dir(benchmark, ckpt_root, checkpoint) / "artifact"
     sources = [(csv_path, spec["member"])] if csv_path.exists() else []
     sources += masked_artifact_members(csv_path, spec["member"])
     copies = {}
@@ -108,13 +117,16 @@ def main(argv: List[str]) -> None:
     parser.add_argument("command", choices=["plan", "collect"])
     parser.add_argument("--benchmark", choices=list(BENCHMARKS), required=True)
     parser.add_argument("--ckpt-root", default=DEFAULT_CKPT_ROOT)
+    parser.add_argument("--checkpoint", default=None, help="a fine-tuned checkpoint dir instead of the public one")
     parser.add_argument("--resume", action="store_true", help="skip evals result.csv already holds")
+    parser.add_argument("--no-masked", action="store_true", help="all inputs and each removed only")
     args = parser.parse_args(argv)
     if args.command == "plan":
-        for script, overrides in plan_lines(args.benchmark, args.ckpt_root, args.resume):
+        lines = plan_lines(args.benchmark, args.ckpt_root, args.resume, args.checkpoint, masked=not args.no_masked)
+        for script, overrides in lines:
             print("\t".join([script] + overrides))
     else:
-        for member, target in collect(args.benchmark, args.ckpt_root).items():
+        for member, target in collect(args.benchmark, args.ckpt_root, args.checkpoint).items():
             print(f"{member} -> {target}")
 
 

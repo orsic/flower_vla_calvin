@@ -2429,9 +2429,9 @@ inputs it is bit-identical to VLA-Adapter's own `get_action` (`tests/test_vla_ad
 
 | input | removed | masked |
 |---|---|---|
-| static / wrist camera | its 256 patch tokens left out; the other tokens keep their full-layout positions | normalized pixels replaced per channel by their mean |
-| language | the whole prompt left out (its first chat token stays, anchoring the layout like FlowerVLA's `<Flow>`) | instruction blanked inside the prompt template |
-| proprio | its token left out of the action head's adapter attention | the training-mean state from `dataset_statistics.json` |
+| static / wrist camera | its 256 patch tokens masked out of attention (LLM and action head); every token keeps its full-layout position | normalized pixels replaced per channel by their mean |
+| language | the whole prompt masked out (its first chat token stays, anchoring the layout like FlowerVLA's `<Flow>`) | instruction blanked inside the prompt template |
+| proprio | its token masked out of the action head's adapter attention | the training-mean state from `dataset_statistics.json` |
 
 Unlike FlowerVLA's masked proprio (the mean of its proprio *conditioning* over training samples),
 VLA-Adapter's training data isn't available here, so the mean is taken in state space.
@@ -2456,6 +2456,30 @@ harness's warm-up (5 steps of a zero action, which half-closes the gripper), so 
 starts from the same state as FlowerVLA's and the two pair episode by episode (rollout seeds,
 init states, CALVIN chains). The reference warm-up (10 steps, gripper open) is
 `num_steps_wait=10 wait_gripper=-1.0`.
+
+### Fine-tuning VLA-Adapter with whole-modality dropout
+
+`flower/vla_adapter/finetune_dropout.py` runs upstream `vla-scripts/finetune.py` unchanged
+(data, LoRA, DDP, checkpoints) and only wraps its forward pass: each training sample keeps a
+non-empty subset of (static camera, wrist camera, language, proprio) drawn as in FlowerVLA's
+`subset` strategy (weight 2^|S|), and the dropped inputs are masked out of the LLM and the action
+head at unchanged positions (`flower/vla_adapter/masked_forward.py`, the same masks the evaluation
+uses for a removed input). With every input kept it gives exactly upstream's loss
+(`tests/test_vla_adapter_equivalence.py`). `--modality_dropout none` trains the upstream recipe.
+
+```bash
+./run.sh download-vla-adapter-train   # libero_10_no_noops RLDS + Prismatic Qwen2.5-0.5B base VLM
+# Upstream's 40-48GB-GPU recipe, no gradient accumulation: batch 8 per GPU, LoRA r64, lr 2e-4,
+# 200k steps (~0.9 s/step on 2 RTX A6000, ~2 days), checkpoint every 25k steps (3.2 GB each),
+# then evaluates the last checkpoint with all inputs and each removed (SKIP_PIPELINE=1 to skip).
+CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-vla-adapter-dropout
+# Evaluate another checkpoint the same way:
+./run.sh pipeline-vla-adapter libero --checkpoint /saves/train_logs/vla_adapter_libero_10_dropout/<ts>/<run>--<step>_chkpt --no-masked
+```
+
+The base VLM's Qwen2.5 is loaded without FlashAttention-2 (not in the image); upstream only reads
+its weights from it. Upstream writes `config.json.back.*` backups into
+`VLA-Adapter/pretrained_models/configs/` at every launch.
 
 Integration check with the public checkpoints (RTX A6000; VLA-Adapter reports H100 numbers):
 

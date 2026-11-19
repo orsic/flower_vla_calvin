@@ -17,7 +17,6 @@ from flower.evaluation.flower_evaluate import apply_eval_modalities
 from flower.evaluation.vla_adapter_policy import (
     Modalities,
     VLAAdapterPolicy,
-    layout_positions,
     mean_pixel,
     calvin_ensemble_action,
     calvin_gripper,
@@ -200,18 +199,6 @@ def test_masked_proprio_fill_is_the_policys_training_mean_not_a_proprio_mean_fil
     apply_mean_proprio(policy, {**FULL, "proprio_state": False}, "/no/such/run/ckpt")
     np.testing.assert_array_equal(policy.eval_proprio_fill, np.arange(8.0))
     assert policy.modalities().proprio == "mean"
-
-
-def test_layout_positions_keep_full_layout_positions_of_kept_tokens():
-    n = 4  # patches per image
-    full = layout_positions(3, True, True, True, n_patches=n)
-    assert full == list(range(1 + 2 * n + 3 + 65))  # contiguous with everything present
-    no_static = layout_positions(3, False, True, True, n_patches=n)
-    assert no_static == [0] + list(range(1 + n, 1 + 2 * n + 3 + 65))
-    no_wrist = layout_positions(3, True, False, True, n_patches=n)
-    assert no_wrist == [0] + list(range(1, 1 + n)) + list(range(1 + 2 * n, 1 + 2 * n + 3 + 65))
-    no_lang = layout_positions(3, True, True, False, n_patches=n)
-    assert no_lang == list(range(1 + 2 * n)) + list(range(1 + 2 * n + 3, 1 + 2 * n + 3 + 65))
 
 
 def test_mean_pixel_replaces_only_the_masked_images_channels_by_their_spatial_mean():

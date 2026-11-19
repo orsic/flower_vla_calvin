@@ -61,3 +61,36 @@ def test_pipeline_vla_adapter_runs_plan_every_line_then_collect(tmp_path):
     assert (
         " run --rm -T shell-vla-adapter python scripts/vla_adapter_pipeline.py collect --benchmark calvin" in lines[-1]
     )
+
+
+def test_pipeline_vla_adapter_passes_checkpoint_and_no_masked_to_plan_and_collect(tmp_path):
+    lines = _run(tmp_path, ["pipeline-vla-adapter", "libero", "--checkpoint", "/saves/x--5_chkpt", "--no-masked"])
+    assert "plan --benchmark libero --checkpoint /saves/x--5_chkpt --no-masked" in lines[0]
+    assert "collect --benchmark libero --checkpoint /saves/x--5_chkpt --no-masked" in lines[-1]
+
+
+def test_train_vla_adapter_dropout_runs_torchrun_per_gpu_then_evaluates_the_last_checkpoint(tmp_path):
+    lines = _run(tmp_path, ["train-vla-adapter-dropout", "--max_steps", "50"], {"CUDA_VISIBLE_DEVICES": "0,1"})
+    train = lines[0]
+    assert " run --rm -T train-vla-adapter torchrun --standalone --nnodes 1 --nproc-per-node 2 " in train
+    assert "flower/vla_adapter/finetune_dropout.py --modality_dropout subset " in train
+    for flag in (
+        "--batch_size 8",
+        "--grad_accumulation_steps 1",
+        "--lora_rank 64",
+        "--learning_rate 2e-4",
+        "--max_steps 200005",
+        "--dataset_name libero_10_no_noops",
+        "--use_pro_version True",
+    ):
+        assert f" {flag} " in train
+    assert train.endswith("--max_steps 50")
+    run_dir = train.split("--run_root_dir ")[1].split()[0]
+    assert run_dir.startswith("/saves/train_logs/vla_adapter_libero_10_dropout/")
+    plan = next(line for line in lines if "vla_adapter_pipeline.py plan" in line)
+    assert f"--checkpoint {run_dir}/run--50_chkpt --no-masked" in plan
+
+
+def test_train_vla_adapter_dropout_skip_pipeline(tmp_path):
+    lines = _run(tmp_path, ["train-vla-adapter-dropout"], {"SKIP_PIPELINE": "1"})
+    assert len(lines) == 1
