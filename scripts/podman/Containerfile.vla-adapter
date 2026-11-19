@@ -1,0 +1,22 @@
+# Extends flower-vla-calvin:latest (LIBERO + CALVIN simulators) with VLA-Adapter's inference
+# stack, so the VLA-Adapter policy runs inside this repo's LIBERO and CALVIN eval harnesses.
+# Kept out of the base images: VLA-Adapter pins transformers==4.40.1 (FlowerVLA uses 4.48.3).
+# The VLA-Adapter/ submodule is NOT baked: it is bind-mounted with the rest of the repo at
+# /workspace, and a .pth file puts it on sys.path (same as calvin_env, see Containerfile.calvin).
+FROM flower-vla-calvin:latest
+
+# ----- layer v1: model stack (versions from VLA-Adapter/pyproject.toml; torch stays at the base 2.2.2) -----
+RUN python -m pip install --no-cache-dir \
+        "transformers==4.40.1" "tokenizers==0.19.1" "timm==0.9.10" "peft==0.11.1" \
+        "sentencepiece==0.1.99" "draccus==0.8.0" einops json-numpy jsonlines rich
+
+# ----- layer v2: TF data stack, imported at module level by VLA-Adapter's inference utils
+# (JPEG round-trip + lanczos resize, as in its training pipeline) and by prismatic.vla.datasets -----
+RUN python -m pip install --no-cache-dir \
+        "tensorflow==2.15.0" "tensorflow_datasets==4.9.3" "tensorflow_graphics==2021.12.3" \
+        "dlimp @ git+https://github.com/moojink/dlimp_openvla@040105d256bd28866cc6620621a3d5f7b6b91b46"
+
+# ----- layer v3: VLA-Adapter on sys.path, robot_utils' msgpack imports, numpy re-pinned last
+# (same reason as base layer 6) -----
+RUN echo /workspace/VLA-Adapter > /usr/local/lib/python3.9/dist-packages/vla_adapter.pth \
+    && python -m pip install --no-cache-dir msgpack msgpack-numpy "numpy~=1.23"

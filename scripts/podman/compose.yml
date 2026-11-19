@@ -630,3 +630,52 @@ services:
       OPENBLAS_NUM_THREADS: "1"
       MKL_NUM_THREADS: "1"
       TOKENIZERS_PARALLELISM: "false"
+
+  # --- VLA-Adapter services ---
+  # Run on flower-vla-adapter:latest (scripts/podman/Containerfile.vla-adapter): the CALVIN
+  # image plus VLA-Adapter's inference stack, with the VLA-Adapter/ submodule on sys.path.
+  # One image serves both harnesses, so both datasets are mounted. See ./run.sh
+  # build-vla-adapter and flower/evaluation/vla_adapter_policy.py.
+  x-base-vla-adapter: &base-vla-adapter
+    image: flower-vla-adapter:latest
+    <<: *limits
+    hostname: "${HOST_HOSTNAME:-flower-vla}"
+    working_dir: /workspace
+    volumes:
+      - ${REPO_ROOT}:/workspace:z
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface:z
+      - ${SAVES_DIR}:/saves:z
+      - ${LIBERO_HDF5_DIR:-./data/libero_hdf5}:/libero_hdf5:ro
+      - ${CALVIN_DATA_DIR:-./data/calvin}:/calvin_data:ro
+    devices:
+      - "nvidia.com/gpu=all"
+    shm_size: "8g"
+    environment:
+      MUJOCO_GL: egl
+      PYOPENGL_PLATFORM: egl
+      PYTHONPATH: /workspace
+      HYDRA_FULL_ERROR: "1"
+      WANDB_MODE: disabled
+      HF_HOME: /root/.cache/huggingface
+      CUDA_DEVICE_ORDER: PCI_BUS_ID
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      TF_CPP_MIN_LOG_LEVEL: "2"
+      LIBERO_VARIANT: ${LIBERO_VARIANT:-orig}
+
+  # Interactive shell on the VLA-Adapter image.
+  shell-vla-adapter:
+    <<: *base-vla-adapter
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+  # VLA-Adapter evaluation; ./run.sh eval-vla-adapter / eval-calvin-vla-adapter pass the
+  # full command (LIBERO: flower_eval_libero.py, CALVIN: flower_evaluate.py).
+  eval-vla-adapter:
+    <<: *base-vla-adapter
+    command: ["bash"]

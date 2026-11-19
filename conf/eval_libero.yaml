@@ -26,6 +26,10 @@ env_start_method: spawn  # spawn (parallel, real subprocesses) | dummy (sequenti
 cross_task_batching: false  # true = fill each batch with episodes from different tasks
 num_sampling_steps: 4
 multistep: 10
+policy: flower  # flower | vla_adapter (checkpoint = a VLA-Adapter checkpoint dir, see flower/evaluation/vla_adapter_policy.py)
+env_img_res: 224  # LIBERO camera render resolution (VLA-Adapter's reference renders at 256)
+num_steps_wait: 5  # no-op steps before the policy starts (VLA-Adapter's reference: 10)
+wait_gripper: 0.0  # gripper command during those steps; 0 half-closes it, -1 keeps it open (VLA-Adapter's reference)
 
 benchmark_name: libero_10 # [LIBERO_SPATIAL, LIBERO_OBJECT, LIBERO_GOAL, LIBERO_90, LIBERO_10]
 task_category: null  # null = all tasks; LIBERO-Plus only: filter to one perturbation category

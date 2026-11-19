@@ -127,3 +127,44 @@ def test_get_log_dir_two_calls_in_the_same_second_dont_collide(tmp_path, monkeyp
     second = flower_evaluate.get_log_dir(str(tmp_path))
     assert first != second and first.exists() and second.exists()
     assert first.parent == tmp_path / "logs" and first.name.startswith("2026-01-01_00-00-00_")
+
+
+def test_evaluate_with_vla_adapter_loads_the_policy_and_a_raw_env(monkeypatch):
+    """policy=vla_adapter: no FlowerVLA config/datamodule, the cfg's num_sampling_steps and
+    multistep are left alone, and the rows record the policy's own values."""
+    import flower.evaluation.flower_evaluate as fe
+    import flower.evaluation.vla_adapter_policy as vap
+    from omegaconf import OmegaConf
+
+    from flower.evaluation.vla_adapter_policy import VLAAdapterPolicy
+
+    calls = {}
+    policy = VLAAdapterPolicy(lambda obs, instr: None, "calvin")
+
+    def _load(checkpoint, platform, device, calvin_schedule):
+        calls["load"] = (checkpoint, platform, device, calvin_schedule)
+        return policy
+
+    monkeypatch.setattr(vap, "load_vla_adapter", _load)
+    monkeypatch.setattr(vap, "make_calvin_env", lambda path, device: calls.setdefault("env", (path, device)))
+    monkeypatch.setattr(fe, "get_default_mode_and_env", lambda *a, **k: pytest.fail("FlowerVLA loader used"))
+    monkeypatch.setattr(fe, "evaluate_policy", lambda model, env, lang, cfg, idx, common, **kw: [common])
+
+    cfg = OmegaConf.create(
+        {
+            "policy": "vla_adapter",
+            "vla_adapter_calvin_schedule": "reference",
+            "checkpoint": "/ckpt/CALVIN-ABC-Pro",
+            "train_folder": "/ckpt/CALVIN-ABC-Pro",
+            "dataset_path": "/calvin_data/task_ABCD_D",
+            "num_sampling_steps": 4,
+            "multistep": 10,
+            "ep_len": 360,
+            "base_seed": 0,
+            "eval_modalities": {"rgb_static": True, "rgb_gripper": True, "language": True, "proprio": True},
+        }
+    )
+    (common,) = fe._evaluate(cfg, 1, [0], "/tmp", 0)
+    assert calls["load"] == ("/ckpt/CALVIN-ABC-Pro", "calvin", 1, "reference")
+    assert calls["env"] == ("/calvin_data/task_ABCD_D", 1)
+    assert (common["multistep"], common["num_sampling_steps"], common["use_proprio"]) == (8, 1, 1)

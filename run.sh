@@ -43,6 +43,10 @@
 #   ./run.sh open-loop-calvin <train_run_dir> [...]  Open-loop per-timestep loss on the validation split, per combo
 #   ./run.sh analyze-open-loop [...]      Figures + summaries from every open-loop-calvin result
 #   ./run.sh open-loop-tables [...]       CSV tables of every open-loop-calvin result
+#   ./run.sh build-vla-adapter            Build the VLA-Adapter image (flower-vla-adapter:latest, needs build-calvin)
+#   ./run.sh download-vla-adapter         Download VLA-Adapter's LIBERO-Long-Pro + CALVIN-ABC-Pro checkpoints
+#   ./run.sh eval-vla-adapter [...]       LIBERO-10 eval of VLA-Adapter (LIBERO-Long-Pro) in flower_eval_libero.py
+#   ./run.sh eval-calvin-vla-adapter [...]  CALVIN eval of VLA-Adapter (CALVIN-ABC-Pro) in flower_evaluate.py
 #
 # Valid benchmarks: libero_10, libero_90, libero_spatial, libero_object, libero_goal
 #
@@ -633,6 +637,14 @@ case "$CMD" in
         "$REPO_ROOT"
     ;;
 
+  build-vla-adapter)
+    # Needs flower-vla-calvin:latest (./run.sh build-calvin).
+    podman build \
+        --tag flower-vla-adapter:latest \
+        --file "$REPO_ROOT/scripts/podman/Containerfile.vla-adapter" \
+        "$REPO_ROOT"
+    ;;
+
   extract-calvin)
     # One-time: writes <split>/extracted/ into both CALVIN_DATA_DIR/task_ABCD_D splits.
     # Already-extracted splits are skipped (pass -f to overwrite).
@@ -667,6 +679,51 @@ case "$CMD" in
     #       checkpoint=/saves/train_logs/calvin_abcd_d/<run>/seed_42/saved_models/last.ckpt
     podman-compose -f "$COMPOSE" run --rm eval-calvin \
         python flower/evaluation/flower_evaluate.py \
+        "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)" \
+        "$@"
+    ;;
+
+  download-vla-adapter)
+    # Into /saves/checkpoints/vla_adapter/<name>; the dir name keeps "Pro", from which
+    # VLA-Adapter picks the Pro action head.
+    podman-compose -f "$COMPOSE" run --rm -T shell-vla-adapter python -c '
+from huggingface_hub import snapshot_download
+for name in ("LIBERO-Long-Pro", "CALVIN-ABC-Pro"):
+    print(snapshot_download(f"VLA-Adapter/{name}", local_dir=f"/saves/checkpoints/vla_adapter/{name}"))
+'
+    ;;
+
+  eval-vla-adapter)
+    # VLA-Adapter in the LIBERO harness (flower/evaluation/vla_adapter_policy.py) with its
+    # reference eval's protocol: renders at 256, 10 warm-up steps with the gripper open, 50
+    # episodes per task. result.csv lands under the checkpoint
+    # dir (train_folder). LIBERO_VARIANT=plus|pro and benchmark_name= work as for FlowerVLA.
+    podman-compose -f "$COMPOSE" run --rm -T eval-vla-adapter \
+        python flower/evaluation/flower_eval_libero.py \
+        policy=vla_adapter \
+        benchmark_name=libero_10 \
+        train_folder=/saves/checkpoints/vla_adapter/LIBERO-Long-Pro \
+        checkpoint=/saves/checkpoints/vla_adapter/LIBERO-Long-Pro \
+        dataset_path=/workspace \
+        log_dir=/saves/eval_logs \
+        env_img_res=256 \
+        num_steps_wait=10 \
+        wait_gripper=-1.0 \
+        n_eval=50 \
+        num_videos=0 \
+        log_wandb=False \
+        "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)" \
+        "$@"
+    ;;
+
+  eval-calvin-vla-adapter)
+    # VLA-Adapter in the CALVIN harness, 1000 chains on task_ABCD_D's validation scene D;
+    # vla_adapter_calvin_schedule=chunk for plain 8-step open loop.
+    podman-compose -f "$COMPOSE" run --rm -T eval-vla-adapter \
+        python flower/evaluation/flower_evaluate.py \
+        policy=vla_adapter \
+        train_folder=/saves/checkpoints/vla_adapter/CALVIN-ABC-Pro \
+        checkpoint=/saves/checkpoints/vla_adapter/CALVIN-ABC-Pro \
         "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)" \
         "$@"
     ;;

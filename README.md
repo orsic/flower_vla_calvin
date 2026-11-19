@@ -2404,6 +2404,54 @@ Baseline checkpoint (`mbreuss/flower_libero_10`), spot check at small `n_eval`:
 
 ---
 
+## VLA-Adapter Evaluation
+
+[VLA-Adapter](https://github.com/OpenHelix-Team/VLA-Adapter) (a Prismatic VLM on Qwen2.5-0.5B with
+an L1-regression action head and a proprio projector) runs inside this repo's LIBERO and CALVIN
+harnesses, so its evals share our seeds, init states, `result.csv` records and multi-GPU split.
+`flower/evaluation/vla_adapter_policy.py` wraps it behind the rollout interface the harnesses call
+on FLOWERVLA (`step` / `step_batch` / `reset`), selected with `policy=vla_adapter`. Inference goes
+through VLA-Adapter's own loaders and `get_action` (the `VLA-Adapter/` submodule); only the
+evaluator glue is ours, mirroring its reference evaluators:
+
+- **LIBERO** (`run_libero_eval.py`): both cameras rotated 180°, state = eef pos + axis-angle +
+  gripper qpos, 8-step chunks executed open-loop, gripper binarized and inverted.
+- **CALVIN** (`evaluate_calvin.py:rollout_hi3`): raw static/wrist images, state =
+  `robot_obs[:7] + robot_obs[-1:]`, and its temporal ensemble (3 queries per 10 steps, overlapping
+  chunks averaged; `vla_adapter_calvin_schedule=chunk` for a plain 8-step open loop).
+
+It needs its own image (`transformers==4.40.1` and a TensorFlow data stack) built on the CALVIN one.
+Modality masking is not wired yet: a masked `eval_modalities` raises.
+
+```bash
+./run.sh build-vla-adapter        # flower-vla-adapter:latest, needs ./run.sh build-calvin
+./run.sh download-vla-adapter     # VLA-Adapter/LIBERO-Long-Pro + CALVIN-ABC-Pro -> /saves/checkpoints/vla_adapter/
+CUDA_VISIBLE_DEVICES=0,1 ./run.sh eval-vla-adapter          # LIBERO-10, 50 episodes/task
+CUDA_VISIBLE_DEVICES=2,3 ./run.sh eval-calvin-vla-adapter   # CALVIN, 1000 chains on scene D
+```
+
+`result.csv` lands under the checkpoint dir, e.g.
+`/saves/checkpoints/vla_adapter/LIBERO-Long-Pro/eval_logs/LIBERO-Long-Pro/orig_libero_10/`.
+`eval-vla-adapter` uses the reference LIBERO protocol: render at 256 (`env_img_res`), and 10
+warm-up steps with the gripper open (`num_steps_wait=10 wait_gripper=-1.0`; FlowerVLA's default
+is 5 steps of a zero action, which half-closes the gripper).
+
+Integration check with the public checkpoints (RTX A6000; VLA-Adapter reports H100 numbers):
+
+| benchmark | checkpoint | ours | reported |
+|---|---|---|---|
+| LIBERO-10, reference warm-up | LIBERO-Long-Pro | 92.6% (500 episodes) | 96.4% |
+| LIBERO-10, FlowerVLA warm-up | LIBERO-Long-Pro | 90.4% (500 episodes) | — |
+| CALVIN ABC→D, avg. length | CALVIN-ABC-Pro | 4.41 (1000 chains) | 4.50 |
+
+CALVIN chain success 1–5: 98.3 / 94.3 / 88.8 / 82.8 / 76.5% (reported: 98.5 / … / 80.0%). Our
+harness gives each subtask `ep_len=360` steps; the reference loop allows up to 800. The LIBERO gap
+that remains after matching the warm-up is uniform across tasks (every task 0–12 points under the
+reference log shipped with the checkpoint); untested differences are robosuite 1.4.0 (ours, pinned
+for LIBERO) vs 1.4.1, per-episode env seeding, and GPU numerics.
+
+---
+
 ## Acknowledgements
 
 This work is only possible because of the code from the following open-source projects and datasets. We thank all authors for their work:

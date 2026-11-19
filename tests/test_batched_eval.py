@@ -187,6 +187,7 @@ def _build_eval_libero_stub(transforms):
     with patch.object(EvaluateLibero, '__init__', lambda self: None):
         ev = EvaluateLibero()
 
+    ev.model = None  # a FlowerVLA (no process_raw_obs): the transforms path
     ev.transforms = transforms
     ev.device = None
     ev._printed_transforms = True  # suppress debug prints
@@ -215,6 +216,23 @@ def test_process_env_obs_batch_shape(B):
 
     assert goal['lang_text'] == [lang_text] * B
     assert len(goal['lang_text']) == B
+
+
+def test_process_env_obs_batch_hands_raw_obs_to_a_policy_that_preprocesses_itself():
+    """A non-FlowerVLA policy (VLAAdapterPolicy) defines process_raw_obs and gets the raw
+    robosuite obs dicts and the instruction instead of FlowerVLA's transform chain."""
+    ev = _build_eval_libero_stub(transforms=None)
+    seen = {}
+
+    class _Policy:
+        def process_raw_obs(self, obs_list, lang_text):
+            seen["args"] = (obs_list, lang_text)
+            return "data", "goal"
+
+    ev.model = _Policy()
+    obs_list = [_make_single_obs(256, 256) for _ in range(2)]
+    assert ev.process_env_obs_batch(obs_list, None, "open the drawer") == ("data", "goal")
+    assert seen["args"] == (obs_list, "open the drawer")
 
 
 def test_process_env_obs_batch_heterogeneous_lang_text():
@@ -884,3 +902,12 @@ def test_seed_list_shorter_than_pool_seeds_only_first_workers():
         assert obs[2]["seed"] is None
     finally:
         env.close()
+
+
+def test_warmup_actions_are_no_ops_with_the_requested_gripper_command():
+    from flower.evaluation.flower_eval_libero import warmup_actions
+
+    default = warmup_actions(3, 0.0)
+    assert default.shape == (3, 7) and not default.any()  # FlowerVLA's historical warm-up
+    open_gripper = warmup_actions(2, -1.0)
+    assert (open_gripper[:, :-1] == 0).all() and (open_gripper[:, -1] == -1).all()
