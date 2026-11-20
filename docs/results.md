@@ -1617,7 +1617,25 @@ Removed and masked as for FlowerVLA (README, VLA-Adapter section): a removed cam
 - **VLA-Adapter ignores proprioception on LIBERO** (90.5% removed, 91.0% masked); FlowerVLA drops to 52% without it but recovers fully with its mean.
 - **Without the instruction both nearly fail**; a blank instruction inside the template costs VLA-Adapter more (59.5%) than FlowerVLA (72.8%).
 
-**CALVIN:** pending (the eight conditions are still running).
+**CALVIN**, paired with FlowerVLA no dropout + proprio (`calvin_abcd_d/2026-10-14_13-37-34` / `2026-10-14_13-37-42` / `2026-10-27_22-04-48`, seeds 42 / 5 / 100) on the same 1000 chains. avg_seq_len; FlowerVLA as mean ± sd over seeds; the last column counts paired chains that get further with one model than with the other, summed over the three seeds. VLA-Adapter's checkpoint is trained on ABC→D, FlowerVLA's on ABCD→D:
+
+| condition | VLA-Adapter | FlowerVLA | further: VLA-Adapter / FlowerVLA |
+|---|---|---|---|
+| all inputs | 4.41 | 4.46 ± 0.10 | 339 / 464 |
+| static camera removed | 1.16 | 1.71 ± 0.26 | 480 / 1278 |
+| wrist camera removed | 0.07 | 1.30 ± 0.16 | 39 / 1689 |
+| language removed | 0.10 | 0.04 ± 0.04 | 233 / 85 |
+| proprio removed | 1.08 | 3.73 ± 0.15 | 198 / 2474 |
+| static camera masked | 1.28 | 1.68 ± 0.24 | 593 / 1071 |
+| wrist camera masked | 0.07 | 0.84 ± 0.21 | 45 / 1223 |
+| instruction blanked | 0.08 | 0.07 ± 0.04 | 180 / 187 |
+| proprio masked | 1.01 | 4.05 ± 0.33 | 116 / 2719 |
+
+- **On CALVIN VLA-Adapter depends on proprioception**, unlike on LIBERO: removing it (1.08) or replacing it by its mean state (1.01) costs over three quarters of the chain length. FlowerVLA loses much less (3.73 removed) and recovers with its mean conditioning (4.05).
+- **It needs the wrist camera** (0.07 without it, removed or masked; FlowerVLA 1.30 / 0.84) and loses more than FlowerVLA without the static camera too (1.16 vs 1.71).
+- **Without language both fail**, as every CALVIN model does.
+
+The CALVIN language-removed row ran with the earlier removal by deletion; at full-layout positions that is the same computation as the masking used since, up to floating-point order. The camera-removed rows of both tables used deletion, which compacted the action head's positions; they are to be rerun with masking once GPUs are free (VLA-Adapter dropout training currently occupies all four). The CALVIN eval's printed summary for the proprio-removed run (5.49) is wrong: `flower_evaluate.print_and_save` filters rows by the camera and language flags only, so it counted the all-inputs rows too; `result.csv` and the table above are keyed on all four flags.
 
 ## Across the benchmarks
 
