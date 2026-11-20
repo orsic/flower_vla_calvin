@@ -208,6 +208,23 @@ tokens; a dropped proprio is zeroed, like the Bernoulli gate below.
 `modality_dropout_keep_fraction`, `modality_dropout_alphas` and
 `modality_dropout_proprio_keep_p` are unused in that mode.
 
+With `model.modality_dropout_strategy=leave_one_out`, the same whole-modality sampling is
+restricted to the full set and the subsets missing exactly one modality, still weighted 2^|S|:
+with proprio, 1/3 for all four and 1/6 for each 3-subset; without it, 0.4 for all three and 0.2
+for each pair. It trains on exactly the combinations `PIPELINE_SKIP_MULTI_OFF=1` evaluates (all
+inputs and each one missing), so the commands below set it for the chained pipeline. Everything
+else (padding, `context_mask`, proprio zeroing) is the `subset` path.
+
+```bash
+# Leave-one-out whole-modality dropout with proprioception; evaluates all inputs + each one missing
+PIPELINE_SKIP_MULTI_OFF=1 ./run.sh train-dropout libero_10 model.use_proprio=True \
+    model.modality_dropout_strategy=leave_one_out
+PIPELINE_SKIP_MULTI_OFF=1 CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-calvin-dropout batch_size=8 \
+    accumulate_grad_batches=2 model.use_proprio=True proprio_dims=8 model.modality_dropout_strategy=leave_one_out
+PIPELINE_SKIP_MULTI_OFF=1 CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-mimicgen-dropout batch_size=8 \
+    accumulate_grad_batches=2 model.use_proprio=True model.modality_dropout_strategy=leave_one_out
+```
+
 Samples in one batch then keep different numbers of tokens, so the kept sequences are padded to
 the longest row (`build_keep_indices(..., ragged=True)`). The padding is masked twice: in the
 Florence-2 encoder's attention mask, and in the DiT's cross-attention through the
@@ -235,7 +252,7 @@ finished run with `./run.sh pipeline` instead (see [Evaluation](#evaluation)). H
 | `modality_dropout` | `False` | Enable pre-encoder token removal |
 | `modality_dropout_keep_fraction` | `0.5` | Fraction of total tokens to keep per sample |
 | `modality_dropout_alphas` | `[1.0, 1.0, 1.0]` | Dirichlet α for [static, wrist, language] |
-| `modality_dropout_strategy` | `dirichlet` | `dirichlet`; `uniform`: keep a random subset of all tokens, ignoring groups; `subset`: keep or drop whole modalities (proprio included), weight 2^size |
+| `modality_dropout_strategy` | `dirichlet` | `dirichlet`; `uniform`: keep a random subset of all tokens, ignoring groups; `subset`: keep or drop whole modalities (proprio included), weight 2^size; `leave_one_out`: `subset` restricted to all inputs and one missing |
 | `modality_dropout_proprio_keep_p` | `0.5` | Proprio keep probability (Bernoulli, not part of the Dirichlet budget above — see below) |
 
 Proprioception isn't a token — see [Training with proprioception](#training-with-proprioception-modeluse_proprio)

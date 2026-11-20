@@ -29,6 +29,7 @@ from flower.models.networks.modality_dropout import (
     sample_token_budget,
     sample_uniform_counts,
     sample_kept_counts,
+    check_modality_dropout_strategy,
     sample_modality_subsets,
     build_keep_indices,
     position_correct,
@@ -707,6 +708,32 @@ class TestSampleModalitySubsets:
             assert abs(share[k].item() - p) < 0.005
 
 
+class TestLeaveOneOutSubsets:
+    """max_missing=1 (model.modality_dropout_strategy=leave_one_out): only the full set and
+    the subsets missing one modality, still weighted 2^|S|."""
+
+    @pytest.mark.parametrize("n,full,each", [(4, 16 / 48, 8 / 48), (3, 8 / 20, 4 / 20)])
+    def test_full_set_and_one_missing_only_weighted_two_to_the_size(self, n, full, each):
+        torch.manual_seed(0)
+        draws = sample_modality_subsets(200_000, n, torch.device("cpu"), max_missing=1)
+        assert draws.shape == (200_000, n) and draws.dtype == torch.bool
+        missing = (~draws).sum(dim=1)
+        assert missing.max().item() <= 1
+        assert abs((missing == 0).float().mean().item() - full) < 0.005
+        for col in range(n):
+            only_this_missing = (missing == 1) & ~draws[:, col]
+            assert abs(only_this_missing.float().mean().item() - each) < 0.005
+
+    def test_default_draws_are_unchanged(self):
+        """max_missing=None is the subset strategy, draw for draw."""
+        a = sample_modality_subsets(1000, 4, torch.device("cpu"), generator=torch.Generator().manual_seed(3))
+        b = sample_modality_subsets(
+            1000, 4, torch.device("cpu"), generator=torch.Generator().manual_seed(3), max_missing=None
+        )
+        assert torch.equal(a, b)
+        assert (~a).sum(dim=1).max().item() >= 2  # subset still drops several at once
+
+
 class TestRaggedKeepIndices:
     def _counts(self):
         avail = make_avail()
@@ -740,3 +767,13 @@ class TestRaggedKeepIndices:
         counts, avail = self._counts()
         with pytest.raises(RuntimeError, match="rectangular"):
             build_keep_indices(make_group_spans(), counts, avail[:, 2], PROMPT_IDX)
+
+
+class TestStrategyNames:
+    @pytest.mark.parametrize("name", ["dirichlet", "uniform", "subset", "leave_one_out"])
+    def test_known_strategies_pass(self, name):
+        check_modality_dropout_strategy(name)
+
+    def test_unknown_strategy_raises_listing_the_options(self):
+        with pytest.raises(ValueError, match="leave_one_out"):
+            check_modality_dropout_strategy("one_off")

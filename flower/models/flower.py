@@ -32,6 +32,7 @@ from flower.models.networks.transformers import (
     zero_init_output_projections,
 )
 from flower.models.networks.modality_dropout import (
+    check_modality_dropout_strategy,
     sample_kept_counts,
     sample_modality_subsets,
     build_keep_indices,
@@ -156,8 +157,9 @@ class FLOWERVLA(pl.LightningModule):
         modality_dropout_keep_fraction: float = 0.5,
         modality_dropout_alphas: tuple = (1.0, 1.0, 1.0),
         # "dirichlet" (per-group proportions above), "uniform" (a random subset of all tokens)
-        # or "subset" (whole modalities kept or dropped, proprio included; see
-        # sample_modality_subsets -- keep_fraction, alphas and proprio_keep_p are unused).
+        # "subset" (whole modalities kept or dropped, proprio included; see
+        # sample_modality_subsets -- keep_fraction, alphas and proprio_keep_p are unused) or
+        # "leave_one_out" (the same, restricted to the full set and one modality missing).
         modality_dropout_strategy: str = "dirichlet",
         # Proprioception isn't a token (see encode_proprio/dit_forward) so it can't join the
         # Dirichlet token budget above; it gets its own per-sample Bernoulli keep gate instead.
@@ -246,11 +248,7 @@ class FLOWERVLA(pl.LightningModule):
                 f"got a fixed subset {modality_tuple} (proprio={proprio_enabled}) together "
                 "with modality_dropout=True"
             )
-        if modality_dropout_strategy not in ("dirichlet", "uniform", "subset"):
-            raise ValueError(
-                f"Unknown modality_dropout_strategy {modality_dropout_strategy!r}: "
-                "expected 'dirichlet', 'uniform' or 'subset'"
-            )
+        check_modality_dropout_strategy(modality_dropout_strategy)
         self.modality_mask: Optional[Tuple[bool, bool, bool]] = None if all(modality_tuple) else modality_tuple
         # Fixed proprio ablation: None (on) leaves the Bernoulli-gate path off; False withholds
         # proprio in every forward (train + eval), same semantics as self.modality_mask above.
@@ -1138,10 +1136,13 @@ class FLOWERVLA(pl.LightningModule):
                 lang_valid_len = avail[:, 2].clone()
             else:
                 avail[:, 2] = text_mask.sum(dim=1)  # non-pad language tokens
-                if self.modality_dropout_strategy == "subset":
+                if self.modality_dropout_strategy in ("subset", "leave_one_out"):
                     # Whole modalities kept or dropped per sample (proprio is column 3), so
                     # the kept-token total differs between samples: padded below.
-                    subset = sample_modality_subsets(B, 4 if self.use_proprio else 3, device)
+                    max_missing = 1 if self.modality_dropout_strategy == "leave_one_out" else None
+                    subset = sample_modality_subsets(
+                        B, 4 if self.use_proprio else 3, device, max_missing=max_missing
+                    )
                     kept_counts = avail * subset[:, :3].long()
                 else:
                     alphas = torch.tensor(

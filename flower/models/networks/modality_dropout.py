@@ -126,21 +126,37 @@ def sample_uniform_counts(avail: LongTensor, keep_fraction: float) -> LongTensor
     return counts
 
 
+# model.modality_dropout_strategy values. "subset" and "leave_one_out" sample whole
+# modalities (sample_modality_subsets); the others sample kept-token counts (sample_kept_counts).
+MODALITY_DROPOUT_STRATEGIES = ("dirichlet", "uniform", "subset", "leave_one_out")
+
+
+def check_modality_dropout_strategy(strategy: str) -> None:
+    if strategy not in MODALITY_DROPOUT_STRATEGIES:
+        raise ValueError(
+            f"Unknown modality_dropout_strategy {strategy!r}: expected one of {MODALITY_DROPOUT_STRATEGIES}"
+        )
+
+
 def sample_kept_counts(strategy: str, avail: LongTensor, keep_fraction: float, alphas: Tensor) -> LongTensor:
     """Training-dropout kept-token counts for model.modality_dropout_strategy:
     "dirichlet" (`sample_token_budget`) or "uniform" (`sample_uniform_counts`).
-    "subset" also decides proprio, so its caller uses `sample_modality_subsets` directly."""
+    "subset" / "leave_one_out" also decide proprio, so their caller uses
+    `sample_modality_subsets` directly."""
     if strategy == "dirichlet":
         return sample_token_budget(avail, keep_fraction, alphas)
     if strategy == "uniform":
         return sample_uniform_counts(avail, keep_fraction)
-    raise ValueError(
-        f"Unknown modality_dropout_strategy {strategy!r}: expected 'dirichlet', 'uniform' or 'subset'"
-    )
+    check_modality_dropout_strategy(strategy)
+    raise ValueError(f"modality_dropout_strategy {strategy!r} samples whole modalities: use sample_modality_subsets")
 
 
 def sample_modality_subsets(
-    B: int, n_modalities: int, device: torch.device, generator: torch.Generator | None = None
+    B: int,
+    n_modalities: int,
+    device: torch.device,
+    generator: torch.Generator | None = None,
+    max_missing: int | None = None,
 ) -> torch.BoolTensor:
     """
     Whole-modality dropout (model.modality_dropout_strategy=subset): per sample, keep a
@@ -149,12 +165,19 @@ def sample_modality_subsets(
     and so on. With 4 modalities the weights total 80 (full set 0.2, each 3-subset 0.1,
     each 2-subset 0.05, each single 0.025); with 3 they total 26.
 
+    max_missing (model.modality_dropout_strategy=leave_one_out: 1) keeps only the subsets
+    missing at most that many modalities, with the same 2^|S| weights: with max_missing=1
+    and 4 modalities the full set has 16/48 = 1/3 and each 3-subset 1/6; with 3, the full
+    set 0.4 and each pair 0.2.
+
     Returns:
         [B, n_modalities] bool, columns (static, wrist, language[, proprio]); every row
         has at least one True.
     """
     codes = torch.arange(1, 2**n_modalities, device=device)  # every non-empty subset
     bits = (codes.unsqueeze(1) >> torch.arange(n_modalities, device=device)) & 1  # [S, n]
+    if max_missing is not None:
+        bits = bits[bits.sum(dim=1) >= n_modalities - max_missing]
     weights = (2.0 ** bits.sum(dim=1)).float()
     pick = torch.multinomial(weights, B, replacement=True, generator=generator)
     return bits[pick].bool()

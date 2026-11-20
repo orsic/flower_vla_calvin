@@ -370,12 +370,17 @@ class TestOtherFixedMaskPaths:
 
 
 class TestSubsetStrategy:
-    def _run(self, monkeypatch, subset, use_proprio=False, batch=None):
+    def _run(self, monkeypatch, subset, use_proprio=False, batch=None, strategy="subset", calls=None):
         import flower.models.flower as fl
 
-        monkeypatch.setattr(fl, "sample_modality_subsets", lambda B, n, device: subset[:B, :n].clone())
+        def sample(B, n, device, max_missing=None):
+            if calls is not None:
+                calls.append((n, max_missing))
+            return subset[:B, :n].clone()
+
+        monkeypatch.setattr(fl, "sample_modality_subsets", sample)
         vlm = _FakeVLM(tokens_per_image=4, embed_dim=8)
-        stub = _ObsStub(modality_dropout=True, modality_dropout_strategy="subset", training=True, vlm=vlm)
+        stub = _ObsStub(modality_dropout=True, modality_dropout_strategy=strategy, training=True, vlm=vlm)
         stub._tokens_per_image = vlm.tokens_per_image
         stub.use_proprio = use_proprio
         stub.modality_dropout_proprio_keep_p = 0.5
@@ -424,6 +429,15 @@ class TestSubsetStrategy:
         _, _, out, _ = self._run(monkeypatch, subset, use_proprio=True)
         assert out["context_mask"][0].sum() == 1
         assert torch.isfinite(out["features"]).all()
+
+    @pytest.mark.parametrize("strategy,max_missing", [("subset", None), ("leave_one_out", 1)])
+    def test_leave_one_out_samples_with_at_most_one_missing_on_the_same_path(self, monkeypatch, strategy, max_missing):
+        calls = []
+        subset = torch.tensor([[True, True, True, False], [True, False, True, True]])
+        _, _, out, _ = self._run(monkeypatch, subset, use_proprio=True, strategy=strategy, calls=calls)
+        assert calls == [(4, max_missing)]
+        assert out["proprio_keep"].tolist() == [False, True]
+        assert out["context_mask"] is not None and out["context_mask"].sum(dim=1).tolist() == [14, 8]
 
     @pytest.mark.parametrize("strategy", ["dirichlet", "uniform"])
     def test_other_strategies_have_no_context_mask(self, strategy):
