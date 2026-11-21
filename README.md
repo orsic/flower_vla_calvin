@@ -2477,6 +2477,21 @@ CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-vla-adapter-dropout
 ./run.sh pipeline-vla-adapter libero --checkpoint /saves/train_logs/vla_adapter_libero_10_dropout/<ts>/<run>--<step>_chkpt --no-masked
 ```
 
+To continue a run from one of its checkpoints, repeat its command with `--resume_from`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 ./run.sh train-vla-adapter-dropout --max_steps 100005 --num_steps_before_decay 100000 \
+    --resume_from /saves/train_logs/vla_adapter_libero_10_dropout/<ts>/<run id>--50000_chkpt
+```
+
+Upstream's `--resume` alone would rebuild the VLA from the base VLM and reload only the action
+head and proprio projector; `--resume_from` also serves the checkpoint's merged VLA weights
+(LoRA + action queries) as the starting point and as the base each save merges the new LoRA into,
+and shifts `--num_steps_before_decay` so the LR decay lands at the same total step. Steps,
+`--max_steps` and checkpoint names count from the original start. Upstream saves no optimizer
+state, so AdamW restarts cold. A 10-step resume at learning rate 0 reproduces the 50k checkpoint
+bit for bit.
+
 The base VLM's Qwen2.5 is loaded without FlashAttention-2 (not in the image); upstream only reads
 its weights from it. Upstream writes `config.json.back.*` backups into
 `VLA-Adapter/pretrained_models/configs/` at every launch.

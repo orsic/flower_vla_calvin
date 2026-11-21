@@ -9,16 +9,27 @@ and the action head at unchanged positions (flower/vla_adapter/masked_forward.py
 masks the evaluation uses for removed inputs). Validation and --modality_dropout none run
 upstream's forward as is.
 
+--resume_from <run>/<run id>--<step>_chkpt continues a run from one of its checkpoints:
+upstream's --resume only reloads the action head and proprio projector and rebuilds the VLA
+from the base VLM, so the VLA weights (merged LoRA + action queries, the checkpoint's
+model.safetensors) are served in place of the base VLM, both as the starting point and as
+the base each save merges the new LoRA into. Pass the original run's flags unchanged:
+--num_steps_before_decay is shifted so the LR decay lands at the same total step
+(upstream's scheduler counts from the resume; --max_steps and checkpoint names count total
+steps). Upstream saves no optimizer state, so AdamW restarts from zero moments.
+
 Usage (cwd-independent; torchrun as for upstream):
   torchrun --standalone --nnodes 1 --nproc-per-node N flower/vla_adapter/finetune_dropout.py \
-      --modality_dropout subset <upstream finetune.py flags...>
+      --modality_dropout subset [--resume_from DIR] <upstream finetune.py flags...>
 """
 
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Callable, List, Tuple
+from types import SimpleNamespace
+from typing import Callable, List, Tuple, Union
 
 import torch
 
@@ -26,6 +37,16 @@ VLA_ADAPTER = Path(__file__).resolve().parents[2] / "VLA-Adapter"
 STRATEGIES = ("none", "subset")
 MODALITIES = ("static", "wrist", "lang", "proprio")
 REPORT_EVERY = 1000  # forward passes between kept-subset frequency reports (rank 0)
+# finetune.py's replace_map: base-VLM key fragments it renames to the HF VLA's names.
+UPSTREAM_RENAMES = (
+    ("vision_backbone.dino_featurizer", "vision_backbone.featurizer"),
+    ("vision_backbone.siglip_featurizer", "vision_backbone.fused_featurizer"),
+    ("llm_backbone.llm", "language_model"),
+    ("projector.projector.0", "projector.fc1"),
+    ("projector.projector.2", "projector.fc2"),
+    ("projector.projector.4", "projector.fc3"),
+    ("gamma", "scale_factor"),
+)
 
 
 def pop_flag(argv: List[str], name: str, default: str) -> Tuple[str, List[str]]:
@@ -42,6 +63,53 @@ def pop_flag(argv: List[str], name: str, default: str) -> Tuple[str, List[str]]:
             rest.append(arg)
         i += 1
     return value, rest
+
+
+def checkpoint_step(checkpoint: Union[str, Path]) -> int:
+    """The training step of a <run id>--<step>_chkpt dir holding its head and projector."""
+    checkpoint = Path(checkpoint)
+    match = re.search(r"--(\d+)_chkpt$", checkpoint.name)
+    if not match:
+        raise ValueError(f"{checkpoint}: expected a <run id>--<step>_chkpt checkpoint dir")
+    step = int(match.group(1))
+    for name in ("action_head", "proprio_projector"):
+        if not (checkpoint / f"{name}--{step}_checkpoint.pt").is_file():
+            raise FileNotFoundError(checkpoint / f"{name}--{step}_checkpoint.pt")
+    return step
+
+
+def resume_argv(argv: List[str], checkpoint: Union[str, Path]) -> List[str]:
+    """Upstream flags resuming from `checkpoint`: --num_steps_before_decay shifted by the
+    step (at least 0, i.e. already decayed), plus upstream's own --resume flags."""
+    step = checkpoint_step(checkpoint)
+    out, shifted, i = [], False, 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--num_steps_before_decay":
+            out += [arg, str(max(int(argv[i + 1]) - step, 0))]
+            shifted, i = True, i + 2
+            continue
+        if arg.startswith("--num_steps_before_decay="):
+            arg, shifted = f"--num_steps_before_decay={max(int(arg.split('=', 1)[1]) - step, 0)}", True
+        out.append(arg)
+        i += 1
+    if not shifted:
+        raise ValueError("--resume_from needs the run's --num_steps_before_decay to place the LR decay")
+    return out + ["--resume", "True", "--resume_step", str(step), "--resum_vla_path", str(checkpoint)]
+
+
+def checkpoint_vlm(checkpoint: Union[str, Path]) -> Callable:
+    """Stand-in for prismatic.models.load in finetune.py: a "VLM" whose state_dict() is the
+    checkpoint's merged VLA weights, which already carry the names finetune.py renames to."""
+    path = Path(checkpoint) / "model.safetensors"
+
+    def load(vlm_path, hf_token=None, load_for_training=True):
+        from safetensors.torch import load_file
+
+        state = load_file(str(path))
+        return SimpleNamespace(state_dict=lambda: state)
+
+    return load
 
 
 def without_flash_attention() -> None:
@@ -106,8 +174,13 @@ def dropout_forward_pass(original: Callable, strategy: str, report: Callable[[st
 
 def main(argv: List[str]) -> None:
     strategy, rest = pop_flag(argv, "modality_dropout", "subset")
+    resume_from, rest = pop_flag(rest, "resume_from", "")
+    if resume_from:
+        rest = resume_argv(rest, resume_from)
     upstream = load_upstream()
     upstream.run_forward_pass = dropout_forward_pass(upstream.run_forward_pass, strategy)
+    if resume_from:
+        upstream.load = checkpoint_vlm(resume_from)
     sys.argv = [sys.argv[0]] + rest
     upstream.finetune()
 
