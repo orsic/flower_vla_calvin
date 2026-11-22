@@ -1639,22 +1639,22 @@ The CALVIN language-removed row ran with the earlier removal by deletion; at ful
 
 ### Whole-modality dropout (`subset`), LIBERO-10
 
-VLA-Adapter fine-tuned from its base VLM on `libero_10_no_noops` with FlowerVLA's `subset` dropout (`flower/vla_adapter/finetune_dropout.py`: each sample keeps a non-empty subset of static camera, wrist camera, language and proprio with weight 2^|S|, the dropped inputs masked out of the LLM and the action head). Upstream's recipe for 40–48 GB GPUs (LoRA r64, lr 2e-4, batch 8 per GPU) on 4 GPUs, global batch 32, planned for 100k steps with the LR decay at 100k (`train_logs/vla_adapter_libero_10_dropout/2026-11-20_17-11-35`). A scheduled shutdown stopped it at about step 53k, so the checkpoint below is **step 50k**: half the plan, before the LR decay.
+VLA-Adapter fine-tuned from its base VLM on `libero_10_no_noops` with FlowerVLA's `subset` dropout (`flower/vla_adapter/finetune_dropout.py`: each sample keeps a non-empty subset of static camera, wrist camera, language and proprio with weight 2^|S|, the dropped inputs masked out of the LLM and the action head). Upstream's recipe for 40–48 GB GPUs (LoRA r64, lr 2e-4, batch 8 per GPU) on 4 GPUs, global batch 32, 100k steps (the same number of samples as upstream's 200k steps at batch 16), with upstream's LR decay at the end (step 100k of 100,005, as its recipe decays at 200k of 200,005). A scheduled shutdown stopped the first run at about step 53k (`train_logs/vla_adapter_libero_10_dropout/2026-11-20_17-11-35`); it was continued from its step-50k checkpoint with `--resume_from` (`2026-11-21_20-10-21`), which restores the merged VLA, the action head and the proprio projector exactly (a 10-step resume at learning rate 0 reproduces the 50k checkpoint bit for bit) but not AdamW's moments, which upstream does not save.
 
-Evaluated with all inputs and each input removed (`./run.sh pipeline-vla-adapter libero --no-masked --checkpoint <run>/…--50000_chkpt`), on episodes 0–19 of each task (200 episodes) with the harness warm-up, so every row pairs episode for episode with the public checkpoint and with FlowerVLA. FlowerVLA columns are the 3-seed means of the [`subset`](#whole-modality-dropout-subset) and no dropout + proprio models; the last column counts paired episodes only one of the two VLA-Adapter checkpoints solves, with the input removed:
+Evaluated with all inputs and each input removed (`./run.sh pipeline-vla-adapter libero --no-masked --checkpoint <run>/<run id>--<step>_chkpt`), on episodes 0–19 of each task (200 episodes) with the harness warm-up, so every row pairs episode for episode with the public checkpoint and with FlowerVLA. FlowerVLA columns are the 3-seed means of the [`subset`](#whole-modality-dropout-subset) and no dropout + proprio models; the last column counts paired episodes only one of the final dropout checkpoint and the public one solves, with the input removed:
 
-| inputs | VLA-Adapter `subset`, 50k | VLA-Adapter public, removed | public, masked | FlowerVLA `subset` + proprio | FlowerVLA no dropout + proprio | only ours / only public |
-|---|---|---|---|---|---|---|
-| all four | 83.0 | 90.5 | — | 95.8 | 91.5 | 11 / 26 |
-| no static camera | 68.5 | 0.0 | 0.0 | 90.2 | 47.0 | 137 / 0 |
-| no wrist camera | 61.0 | 31.5 | 6.5 | 70.8 | 0.0 | 80 / 21 |
-| no language | 75.0 | 9.0 | 59.5 (blank instruction) | 85.8 | 1.3 | 134 / 2 |
-| no proprio | 85.0 | 90.5 | 91.0 | 96.5 | 52.0 | 14 / 25 |
+| inputs | VLA-Adapter `subset`, 100k | `subset`, 50k | VLA-Adapter public, removed | public, masked | FlowerVLA `subset` + proprio | FlowerVLA no dropout + proprio | only 100k / only public |
+|---|---|---|---|---|---|---|---|
+| all four | 88.0 | 83.0 | 90.5 | — | 95.8 | 91.5 | 10 / 15 |
+| no static camera | 73.0 | 68.5 | 0.0 | 0.0 | 90.2 | 47.0 | 146 / 0 |
+| no wrist camera | 71.0 | 61.0 | 31.5 | 6.5 | 70.8 | 0.0 | 96 / 17 |
+| no language | 77.5 | 75.0 | 9.0 | 59.5 (blank instruction) | 85.8 | 1.3 | 140 / 3 |
+| no proprio | 87.0 | 85.0 | 90.5 | 91.0 | 96.5 | 52.0 | 9 / 16 |
 
-- **Dropout makes VLA-Adapter robust to a missing camera or instruction.** The public checkpoint fails without the static camera (0.0) or language (9.0); the dropout checkpoint keeps 68.5 and 75.0, never more than 22 points below its own all-inputs result, and solves almost none fewer of those episodes (0 and 2 that only the public one solves).
-- **At 50k steps it costs 7.5 points with all inputs** (83.0 vs 90.5; 11 vs 26 paired episodes). The run is half done and has not reached its LR decay; the public checkpoint finished upstream's full recipe.
-- **Proprioception is barely used** (85.0 without it), as by the public checkpoint.
-- **The same shape as FlowerVLA `subset`**, 10–20 points lower in every row so far: little lost without proprio or the static camera, more without language, most without the wrist camera.
+- **Dropout makes VLA-Adapter robust to a missing camera or instruction.** The public checkpoint fails without the static camera (0.0) or language (9.0) and keeps 31.5 without the wrist camera; the dropout checkpoint keeps 73.0, 77.5 and 71.0, never more than 17 points below its own all-inputs result, and almost never fails an episode the public one solves (0, 3 and 17).
+- **It costs 2.5 points with all inputs** (88.0 vs 90.5; 10 vs 15 paired episodes, within the noise of 200 episodes). At step 50k the gap was 7.5 points; the second half of training raised every row by 2–10 points, most without the wrist camera (61.0 → 71.0).
+- **Proprioception is barely used** (87.0 without it), as by the public checkpoint.
+- **Against FlowerVLA `subset`**, the same dropout on a different model, it is 8–17 points lower with all inputs and without the static camera, language or proprio, and equal without the wrist camera (71.0 vs 70.8).
 
 The public checkpoint's camera-removed rows used the earlier removal by deletion, not masking (see above); its masked static result is also 0.0, but its wrist-removed 31.5 is to be rerun.
 
