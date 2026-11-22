@@ -274,6 +274,22 @@ Dirichlet keep 0.5 with the robot state as a fourth input (`model.use_proprio=Tr
 - **Language is still required.** Without it no combination exceeds 0.23, as for every CALVIN model.
 - The seeds differ by at most 0.37 (wrist+lang, 3.70–4.08); with all inputs and static+lang by at most 0.09.
 
+#### Whole-modality dropout, leave one out (`leave_one_out`), with proprioception
+
+`model.modality_dropout_strategy=leave_one_out`: the `subset` sampling restricted to the full set and the subsets missing exactly one input, still weighted 2^size (all four inputs 1/3, each 3-subset 1/6), so it trains on exactly the combinations evaluated here. Seed 42 so far (`calvin_abcd_d_dropout/2026-11-20_16-14-54`, batch 8 × 2, evaluated on all inputs and each one missing). avg_seq_len (5/5 %), against `subset` with proprioception (3 seeds, above) and no dropout + proprio (3 seeds):
+
+| inputs | leave one out (seed 42) | `subset` + proprio | no dropout + proprio |
+|---|---|---|---|
+| all four | **4.546** (81.7) | 4.453 ± 0.047 (79.0) | 4.455 ± 0.097 |
+| no proprio | 4.622 (84.8) | 4.408 ± 0.028 (77.1) | 3.73 |
+| no wrist camera (static+lang+proprio) | 4.346 (73.4) | 4.267 ± 0.041 (71.3) | 1.30 |
+| no static camera (wrist+lang+proprio) | 3.998 (59.7) | 3.880 ± 0.187 (57.2) | 1.71 |
+| no language | 0.160 (0.0) | 0.164 ± 0.020 (0.0) | 0.04 |
+
+- **At or above `subset` in every row**, and with all inputs the highest CALVIN avg_seq_len so far (4.546). With one seed this is within `subset`'s seed spread (up to 0.37 without the static camera); seeds 5 and 100 are pending.
+- **Without proprioception it is even higher (4.62)**, so like `subset` it hardly relies on it.
+- **Without language it fails**, as every CALVIN model does.
+
 ### Open loop along the demonstrations
 
 **Method.**
@@ -507,6 +523,22 @@ Findings:
 - **Proprioception alone does not clearly help.** Without dropout, adding it gives 51.7% against 51.2% without (3 seeds each), and the seeds overlap (49.0–53.1% with it, 48.4–53.2% without).
 - **Dropout with all inputs is 2.5–6 points below no dropout** (45.2–48.8% vs 51.2%). Most dropout seeds are at or below the worst no-dropout seed (48.4%); the exceptions are keep 0.75 seed 5 (51.0%), proprio keep 1.0 seed 100 (50.7%), uniform seed 5 (49.5%) and `subset` seed 100 (48.8%). The gap is largest on `threading_d0` (17–43% vs 49–62%) and `coffee_preparation_d1` (11–20% vs 25–35%; see the [appendix](#mimicgen-per-dataset-success-all-inputs)).
   - On `threading_d0` the no-dropout runs with proprioception are low too (37%, 42% and 29%), so that gap comes partly from proprioception, not from dropout.
+
+#### Whole-modality dropout, leave one out (`leave_one_out`), with proprioception
+
+The `subset` sampling restricted to the full set and the subsets missing one input (all four 1/3, each 3-subset 1/6). Seed 42 so far (`mimicgen_dropout/2026-11-20_16-15-10`, batch 8 × 2), evaluated on all inputs and each one missing, 100 episodes per dataset. Success (%), against `subset` + proprio and no dropout + proprio (3 seeds each, above):
+
+| inputs | leave one out (seed 42) | `subset` + proprio | no dropout + proprio |
+|---|---|---|---|
+| all four | **48.5** | 46.3 ± 2.2 | 51.7 ± 2.3 |
+| no proprio | 45.0 | 42.6 ± 1.7 | 22.7 ± 1.5 |
+| no language | 48.5 | 46.4 ± 2.5 | 0.0 |
+| no wrist camera | 28.6 | 29.1 ± 1.0 | 1.0 ± 0.7 |
+| no static camera | 23.4 | 21.1 ± 1.4 | 2.9 ± 0.2 |
+
+- **With all inputs it is 2 points above `subset`, still 3 below no dropout** (48.5 vs 46.3 and 51.7; within one to two seed sds of each).
+- **With one input missing it matches `subset`**: language costs nothing, proprioception 3.5 points, either camera about half the success.
+- Seeds 5 and 100 are pending.
 
 ### Task family × difficulty, all inputs (%)
 
