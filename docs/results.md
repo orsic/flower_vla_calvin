@@ -1007,6 +1007,21 @@ By physical perturbation size, all inputs, each range doubled as in [perturbatio
   - On LIBERO-PRO, rewording the instruction changes these combinations by at most 7 points (seed 42, static+lang: +7.0, p = 0.03); changed tasks give 0–10% as everywhere.
   - Without either camera it fails like every model.
 
+### Whole-modality dropout, leave one out (`leave_one_out`)
+
+`model.modality_dropout_strategy=leave_one_out` with proprioception: the `subset` sampling restricted to the full set and the subsets missing one input, still weighted 2^size (all four 1/3, each 3-subset 1/6). Seeds 42 (`libero_10_dropout/2026-11-21_17-23-04`), 5 (`2026-11-22_18-41-40`) and 100 (`2026-11-22_18-42-57`), the `subset` recipe otherwise, evaluated on the original LIBERO-10 tasks with all inputs and each one removed (200 episodes per seed). Success (%), mean ± sd over the seeds, against `subset` + proprio (3 seeds, above) and no dropout + proprio (3 seeds):
+
+| inputs | leave one out | per seed (42 / 5 / 100) | `subset` + proprio | per seed (42 / 5 / 100) | no dropout + proprio |
+|---|---|---|---|---|---|
+| all four | 95.0 ± 0.9 | 94.5 / 96.0 / 94.5 | 95.8 ± 0.8 | 96.5 / 95.0 / 96.0 | 91.5 ± 3.0 |
+| no proprio | 94.3 ± 2.0 | 96.5 / 94.0 / 92.5 | 96.5 ± 1.7 | 97.5 / 94.5 / 97.5 | 52.0 ± 4.0 |
+| no language | 84.8 ± 1.8 | 86.5 / 85.0 / 83.0 | 85.8 ± 1.8 | 87.5 / 86.0 / 84.0 | 1.3 ± 2.3 |
+| no static camera | 88.5 ± 2.3 | 89.0 / 90.5 / 86.0 | 90.2 ± 3.3 | 93.5 / 90.0 / 87.0 | 47.0 ± 10.8 |
+| no wrist camera | **58.8 ± 7.0** | 64.5 / 61.0 / 51.0 | **70.8 ± 3.2** | 69.5 / 74.5 / 68.5 | 0.0 |
+
+- **With all inputs and without proprio, language or the static camera it matches `subset`**, within 1–2 points and the seed spreads.
+- **Without the wrist camera it is 12 points lower** (58.8 vs 70.8), and its seeds disagree (51.0–64.5). Training on samples that miss two or more inputs, which `leave_one_out` never sees, helps `subset` without the wrist camera, the input LIBERO-10 relies on most. On CALVIN and MimicGen `leave_one_out` matched or beat `subset` (seed 42 so far).
+
 ### No dropout, trained without one input
 
 The no-dropout recipe with proprioception, with one input removed from training altogether (`model.modalities.<input>=False`). It is evaluated only within its trained inputs: LIBERO-10 and LIBERO-PRO with all of them, LIBERO-Plus with all of them and with each one withheld. Seeds 42 / 5 / 100.
