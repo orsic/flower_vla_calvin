@@ -358,6 +358,15 @@ def get_log_dir(log_dir):
     return log_dir
 
 
+def warmup_actions(batch_size: int, gripper: float) -> np.ndarray:
+    """No-op actions stepped before the policy starts, so objects settle. The gripper
+    command 0 (the FlowerVLA default) half-closes robosuite's gripper; -1 keeps it open,
+    as OpenVLA-style evaluators (VLA-Adapter's run_libero_eval.py) do."""
+    actions = np.zeros((batch_size, 7))
+    actions[:, -1] = gripper
+    return actions
+
+
 def seed_and_reset(env, ids: List[int], seeds: List[int]) -> None:
     """Seed each slot's env, then reset -- in that order, not the reverse.
 
@@ -401,8 +410,13 @@ class EvaluateLibero:
         cross_task_batching: bool = False,
         pro_init_states: str = "native",
         rerun_cfg: Optional[Dict[str, Any]] = None,
+        img_res: int = 224,
+        num_steps_wait: int = 5,
+        wait_gripper: float = 0.0,
     ):
         self.model = model
+        self.num_steps_wait = num_steps_wait
+        self.wait_gripper = wait_gripper
         self.transforms = transforms
         self.log_dir = log_dir
         self.checkpoint = str(checkpoint)
@@ -514,8 +528,8 @@ class EvaluateLibero:
         self.benchmark = get_benchmark(self.benchmark_name)(self.task_order)
         self.n_eval = n_eval
         self.eval_batch_size = eval_batch_size
-        self.img_h = 224
-        self.img_w = 224
+        self.img_h = img_res
+        self.img_w = img_res
         self.rank = None
         self.world_size = None
         self.num_sequences = num_sequences
@@ -720,8 +734,8 @@ class EvaluateLibero:
                 np.random.seed(self.base_seed % (2**32))
 
                 # Dummy warmup steps — obs from last warmup step is the starting obs
-                dummy = np.zeros((current_batch_size, 7))
-                for _ in range(5):
+                dummy = warmup_actions(current_batch_size, self.wait_gripper)
+                for _ in range(self.num_steps_wait):
                     obs, _, _, _ = env.step(dummy, id=ids)
 
                 # Open video writers for episodes that should be recorded
@@ -962,8 +976,8 @@ class EvaluateLibero:
                 torch.manual_seed(self.base_seed)
                 np.random.seed(self.base_seed % (2**32))
 
-                dummy = np.zeros((B, 7))
-                for _ in range(5):
+                dummy = warmup_actions(B, self.wait_gripper)
+                for _ in range(self.num_steps_wait):
                     obs, _, _, _ = env.step(dummy, id=ids)
 
                 video_writers: Dict[int, cv2.VideoWriter] = {}
@@ -1107,7 +1121,18 @@ class EvaluateLibero:
         Returns data with rgb_obs tensors of shape [B, 1, C, H, W] and goal with
         lang_text as a list of B strings (handled by model.forward).
         """
+        process_raw_obs = getattr(self.model, "process_raw_obs", None)
+        if process_raw_obs is not None:
+            # A non-FlowerVLA policy (e.g. VLAAdapterPolicy) does its own preprocessing.
+            return process_raw_obs(obs_list, lang_text)
         return obs_translation.process_env_obs_batch(obs_list, lang_embed, lang_text, self.transforms, self.device)
+
+
+def load_vla_adapter_policy(checkpoint: str, device: int):
+    """policy=vla_adapter: the VLA-Adapter checkpoint dir behind FLOWERVLA's rollout interface."""
+    from flower.evaluation.vla_adapter_policy import load_vla_adapter
+
+    return load_vla_adapter(checkpoint, "libero", device)
 
 def _eval_worker(
     rank: int,
@@ -1131,14 +1156,18 @@ def _eval_worker(
     os.environ["MUJOCO_EGL_DEVICE_ID"] = str(phys_gpu)
 
     # Load model on this worker's GPU
-    model_overwrite = cfg_dict.get("eval_cfg_overwrite", {}).get("model", {})
-    model = load_mode_from_safetensor(Path(cfg_dict["checkpoint"]), overwrite_cfg=model_overwrite)
-    model.freeze()
-    model = model.cuda(rank)
-    model.eval()
+    if cfg_dict.get("policy", "flower") == "vla_adapter":
+        model = load_vla_adapter_policy(cfg_dict["checkpoint"], rank)
+        transforms = None
+    else:
+        model_overwrite = cfg_dict.get("eval_cfg_overwrite", {}).get("model", {})
+        model = load_mode_from_safetensor(Path(cfg_dict["checkpoint"]), overwrite_cfg=model_overwrite)
+        model.freeze()
+        model = model.cuda(rank)
+        model.eval()
 
-    # Instantiate transforms (hydra.utils.instantiate does not need GlobalHydra context)
-    transforms = hydra.utils.instantiate(transforms_cfg)
+        # Instantiate transforms (hydra.utils.instantiate does not need GlobalHydra context)
+        transforms = hydra.utils.instantiate(transforms_cfg)
 
     eval_libero = EvaluateLibero(
         model=model,
@@ -1162,6 +1191,9 @@ def _eval_worker(
         # Rank 0 only, like num_videos above: every rank shares one rerun.path, and each
         # shard evaluates a different slice of the tasks anyway.
         rerun_cfg=cfg_dict.get("rerun") if rank == 0 else None,
+        img_res=cfg_dict.get("env_img_res", 224),
+        num_steps_wait=cfg_dict.get("num_steps_wait", 5),
+        wait_gripper=cfg_dict.get("wait_gripper", 0.0),
     )
     eval_libero.setup()
 
@@ -1184,22 +1216,30 @@ def _eval_worker(
 @hydra.main(config_path="../../conf", config_name="eval_libero")
 def main(cfg):
     seed_everything(0, workers=True)
-    model, _, dm, _ = get_default_mode_and_env(
-        cfg.train_folder,
-        cfg.dataset_path,
-        cfg.checkpoint,
-        env=42,
-        lang_embeddings=None,
-        eval_cfg_overwrite=cfg.eval_cfg_overwrite,
-        device_id=cfg.device,
-        prep_dm_and_deps=False
-    )
+    policy: str = OmegaConf.select(cfg, "policy", default="flower")
+    if policy == "vla_adapter":
+        model = load_vla_adapter_policy(cfg.checkpoint, cfg.device)
+        transforms = transforms_cfg = None
+    elif policy == "flower":
+        model, _, dm, _ = get_default_mode_and_env(
+            cfg.train_folder,
+            cfg.dataset_path,
+            cfg.checkpoint,
+            env=42,
+            lang_embeddings=None,
+            eval_cfg_overwrite=cfg.eval_cfg_overwrite,
+            device_id=cfg.device,
+            prep_dm_and_deps=False
+        )
 
-    model = model.to(cfg.device)
-    model.eval()
+        model = model.to(cfg.device)
+        model.eval()
+        transforms = hydra.utils.instantiate(dm.transforms)
+        transforms_cfg = dm.transforms  # raw OmegaConf DictConfig, picklable
+    else:
+        raise ValueError(f"policy must be 'flower' or 'vla_adapter', got {policy!r}")
 
     log_dir = get_log_dir(cfg.log_dir)
-    transforms = hydra.utils.instantiate(dm.transforms)
 
     task_category: Optional[str] = OmegaConf.select(cfg, "task_category", default=None)
     base_seed: int = OmegaConf.select(cfg, "seed", default=0)
@@ -1241,6 +1281,9 @@ def main(cfg):
         cross_task_batching=cross_task_batching,
         pro_init_states=pro_init_states,
         rerun_cfg=rerun_cfg,
+        img_res=OmegaConf.select(cfg, "env_img_res", default=224),
+        num_steps_wait=OmegaConf.select(cfg, "num_steps_wait", default=5),
+        wait_gripper=OmegaConf.select(cfg, "wait_gripper", default=0.0),
     )
     csv_dir_override = OmegaConf.select(cfg, "csv_dir", default=None)
     if csv_dir_override:
@@ -1319,7 +1362,6 @@ def main(cfg):
         torch.cuda.empty_cache()
 
         cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-        transforms_cfg = dm.transforms  # raw OmegaConf DictConfig, picklable
 
         ctx = tmp.get_context("spawn")
         processes = []

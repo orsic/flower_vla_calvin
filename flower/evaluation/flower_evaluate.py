@@ -304,27 +304,39 @@ def rollout(env, model, task_oracle, cfg, subtask, lang_embeddings, val_annotati
 
 def _evaluate(cfg, device_id, sequence_indices, log_dir, num_videos):
     """Load model + env on one GPU and evaluate `sequence_indices`; returns result.csv rows."""
-    model, env, _, lang_embeddings = get_default_mode_and_env(
-        cfg.train_folder,
-        cfg.dataset_path,
-        cfg.checkpoint,
-        env=None,
-        lang_embeddings=None,
-        eval_cfg_overwrite=cfg.eval_cfg_overwrite,
-        device_id=device_id,
-    )
+    policy = OmegaConf.select(cfg, "policy", default="flower")
+    if policy == "vla_adapter":
+        # VLA-Adapter takes raw calvin_env observations and keeps its own replanning
+        # schedule, so num_sampling_steps/multistep don't apply.
+        from flower.evaluation.vla_adapter_policy import load_vla_adapter, make_calvin_env
 
-    model = model.to(device_id)
+        model = load_vla_adapter(cfg.checkpoint, "calvin", device_id, calvin_schedule=cfg.vla_adapter_calvin_schedule)
+        env = make_calvin_env(cfg.dataset_path, device_id)
+        lang_embeddings = None
+    elif policy == "flower":
+        model, env, _, lang_embeddings = get_default_mode_and_env(
+            cfg.train_folder,
+            cfg.dataset_path,
+            cfg.checkpoint,
+            env=None,
+            lang_embeddings=None,
+            eval_cfg_overwrite=cfg.eval_cfg_overwrite,
+            device_id=device_id,
+        )
 
-    if cfg.num_sampling_steps is not None:
-        model.num_sampling_steps = cfg.num_sampling_steps
-    if cfg.multistep is not None:
-        model.multistep = cfg.multistep
-    print(model.num_sampling_steps, model.multistep)
+        model = model.to(device_id)
+
+        if cfg.num_sampling_steps is not None:
+            model.num_sampling_steps = cfg.num_sampling_steps
+        if cfg.multistep is not None:
+            model.multistep = cfg.multistep
+        print(model.num_sampling_steps, model.multistep)
+        model.eval()
+    else:
+        raise ValueError(f"policy must be 'flower' or 'vla_adapter', got {policy!r}")
 
     eval_modalities = OmegaConf.to_container(cfg.eval_modalities, resolve=True)
     uses_proprio = apply_eval_modalities(model, eval_modalities, cfg.checkpoint)
-    model.eval()
 
     common = {
         "libero_variant": LIBERO_VARIANT,

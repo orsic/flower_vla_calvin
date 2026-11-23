@@ -30,6 +30,12 @@ num_sequences: 1000
 ep_len: 360
 num_sampling_steps: 4
 multistep: 10
+# flower | vla_adapter: checkpoint (and train_folder, which only locates result.csv) is then a
+# VLA-Adapter checkpoint dir; see flower/evaluation/vla_adapter_policy.py.
+policy: flower
+# VLA-Adapter's CALVIN replanning: reference (evaluate_calvin.py's rollout_hi3 temporal
+# ensemble, 3 queries per 10 steps) | chunk (8-step open loop).
+vla_adapter_calvin_schedule: reference
 
 # Per-subtask rows go to <train_folder>/eval_logs/<ckpt>/calvin_ABCD_D/result.csv
 # (flower/evaluation/eval_records.py); csv_dir overrides that directory.

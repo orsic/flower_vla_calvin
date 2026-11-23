@@ -1621,6 +1621,75 @@ Run folders are under `train_logs/<group>/<run>`. "W&B host" is where the run tr
 
 They were trained before `ffba3d2` and evaluated before `ca969a8`. Their run folders are on goldberry. No valid LIBERO-Goal, -Spatial or -Object run exists.
 
+## VLA-Adapter
+
+[VLA-Adapter](https://github.com/OpenHelix-Team/VLA-Adapter) (Prismatic VLM on Qwen2.5-0.5B with an L1-regression action head) evaluated in this repo's LIBERO and CALVIN harnesses with its public Pro checkpoints, `VLA-Adapter/LIBERO-Long-Pro` and `VLA-Adapter/CALVIN-ABC-Pro` (see the README's VLA-Adapter section for the setup). The evaluations share FlowerVLA's rollout seeds, initial states, warm-up and CALVIN chains, so every episode pairs with a FlowerVLA episode.
+
+All inputs, against the published numbers: LIBERO-10 90.4% over 500 episodes (92.6% with VLA-Adapter's own warm-up; published 96.4%), CALVIN 4.41 (trained on ABC→D; published 4.50).
+
+### One input withheld (public checkpoints)
+
+Removed and masked as for FlowerVLA (README, VLA-Adapter section): a removed camera or prompt leaves its tokens out at full-layout positions, removed proprio leaves its token out of the action head; masking replaces a camera's pixels by their per-channel mean, blanks the instruction in the prompt template, or replaces proprio by its training-mean state. Two differences from FlowerVLA: masked proprio is the mean *state* (VLA-Adapter's training data isn't here), not the mean conditioning vector; and the camera-removed rows below delete the patch tokens, so the action head sees compacted positions. They will be rerun with the masked forward the dropout training uses.
+
+**LIBERO-10**, paired with FlowerVLA no dropout + proprio (`libero_10_static+wrist+lang+proprio_2026-09-18_16-47-17` / `-22` / `-49`, seeds 42 / 5 / 100) on episodes 0–19 of each task (200 episodes). FlowerVLA as mean ± sd over seeds; the last column counts paired episodes only one model solves, summed over the three seeds:
+
+| condition | VLA-Adapter | FlowerVLA | only VLA-Adapter / only FlowerVLA |
+|---|---|---|---|
+| all inputs | 90.5 | 91.5 ± 3.0 | 43 / 49 |
+| static camera removed | 0.0 | 47.0 ± 10.8 | 0 / 282 |
+| wrist camera removed | 31.5 | 0.0 ± 0.0 | 189 / 0 |
+| language removed | 9.0 | 1.3 ± 2.3 | 54 / 8 |
+| proprio removed | 90.5 | 52.0 ± 4.0 | 247 / 16 |
+| static camera masked | 0.0 | 48.0 ± 4.4 | 0 / 288 |
+| wrist camera masked | 6.5 | 0.0 ± 0.0 | 39 / 0 |
+| instruction blanked | 59.5 | 72.8 ± 1.2 | 60 / 140 |
+| proprio masked | 91.0 | 90.5 ± 3.3 | 50 / 47 |
+
+- **The two models depend on opposite cameras.** VLA-Adapter fails without the static camera, removed or masked, and keeps 31.5% without the wrist camera; FlowerVLA keeps about half its success without the static camera and fails without the wrist camera.
+- **VLA-Adapter ignores proprioception on LIBERO** (90.5% removed, 91.0% masked); FlowerVLA drops to 52% without it but recovers fully with its mean.
+- **Without the instruction both nearly fail**; a blank instruction inside the template costs VLA-Adapter more (59.5%) than FlowerVLA (72.8%).
+
+**CALVIN**, paired with FlowerVLA no dropout + proprio (`calvin_abcd_d/2026-10-14_13-37-34` / `2026-10-14_13-37-42` / `2026-10-27_22-04-48`, seeds 42 / 5 / 100) on the same 1000 chains. avg_seq_len; FlowerVLA as mean ± sd over seeds; the last column counts paired chains that get further with one model than with the other, summed over the three seeds. VLA-Adapter's checkpoint is trained on ABC→D, FlowerVLA's on ABCD→D:
+
+| condition | VLA-Adapter | FlowerVLA | further: VLA-Adapter / FlowerVLA |
+|---|---|---|---|
+| all inputs | 4.41 | 4.46 ± 0.10 | 339 / 464 |
+| static camera removed | 1.16 | 1.71 ± 0.26 | 480 / 1278 |
+| wrist camera removed | 0.07 | 1.30 ± 0.16 | 39 / 1689 |
+| language removed | 0.10 | 0.04 ± 0.04 | 233 / 85 |
+| proprio removed | 1.08 | 3.73 ± 0.15 | 198 / 2474 |
+| static camera masked | 1.28 | 1.68 ± 0.24 | 593 / 1071 |
+| wrist camera masked | 0.07 | 0.84 ± 0.21 | 45 / 1223 |
+| instruction blanked | 0.08 | 0.07 ± 0.04 | 180 / 187 |
+| proprio masked | 1.01 | 4.05 ± 0.33 | 116 / 2719 |
+
+- **On CALVIN VLA-Adapter depends on proprioception**, unlike on LIBERO: removing it (1.08) or replacing it by its mean state (1.01) costs over three quarters of the chain length. FlowerVLA loses much less (3.73 removed) and recovers with its mean conditioning (4.05).
+- **It needs the wrist camera** (0.07 without it, removed or masked; FlowerVLA 1.30 / 0.84) and loses more than FlowerVLA without the static camera too (1.16 vs 1.71).
+- **Without language both fail**, as every CALVIN model does.
+
+The CALVIN language-removed row ran with the earlier removal by deletion; at full-layout positions that is the same computation as the masking used since, up to floating-point order. The camera-removed rows of both tables used deletion, which compacted the action head's positions; they are to be rerun with masking once GPUs are free (VLA-Adapter dropout training currently occupies all four). The CALVIN eval's printed summary for the proprio-removed run (5.49) is wrong: `flower_evaluate.print_and_save` filters rows by the camera and language flags only, so it counted the all-inputs rows too; `result.csv` and the table above are keyed on all four flags.
+
+### Whole-modality dropout (`subset`), LIBERO-10
+
+VLA-Adapter fine-tuned from its base VLM on `libero_10_no_noops` with FlowerVLA's `subset` dropout (`flower/vla_adapter/finetune_dropout.py`: each sample keeps a non-empty subset of static camera, wrist camera, language and proprio with weight 2^|S|, the dropped inputs masked out of the LLM and the action head). Upstream's recipe for 40–48 GB GPUs (LoRA r64, lr 2e-4, batch 8 per GPU) on 4 GPUs, global batch 32, 100k steps (the same number of samples as upstream's 200k steps at batch 16), with upstream's LR decay at the end (step 100k of 100,005, as its recipe decays at 200k of 200,005). A scheduled shutdown stopped the first run at about step 53k (`train_logs/vla_adapter_libero_10_dropout/2026-11-20_17-11-35`); it was continued from its step-50k checkpoint with `--resume_from` (`2026-11-21_20-10-21`), which restores the merged VLA, the action head and the proprio projector exactly (a 10-step resume at learning rate 0 reproduces the 50k checkpoint bit for bit) but not AdamW's moments, which upstream does not save.
+
+Evaluated with all inputs and each input removed (`./run.sh pipeline-vla-adapter libero --no-masked --checkpoint <run>/<run id>--<step>_chkpt`), on episodes 0–19 of each task (200 episodes) with the harness warm-up, so every row pairs episode for episode with the public checkpoint and with FlowerVLA. FlowerVLA columns are the 3-seed means of the [`subset`](#whole-modality-dropout-subset) and no dropout + proprio models; the last column counts paired episodes only one of the final dropout checkpoint and the public one solves, with the input removed:
+
+| inputs | VLA-Adapter `subset`, 100k | `subset`, 50k | VLA-Adapter public, removed | public, masked | FlowerVLA `subset` + proprio | FlowerVLA no dropout + proprio | only 100k / only public |
+|---|---|---|---|---|---|---|---|
+| all four | 88.0 | 83.0 | 90.5 | — | 95.8 | 91.5 | 10 / 15 |
+| no static camera | 73.0 | 68.5 | 0.0 | 0.0 | 90.2 | 47.0 | 146 / 0 |
+| no wrist camera | 71.0 | 61.0 | 31.5 | 6.5 | 70.8 | 0.0 | 96 / 17 |
+| no language | 77.5 | 75.0 | 9.0 | 59.5 (blank instruction) | 85.8 | 1.3 | 140 / 3 |
+| no proprio | 87.0 | 85.0 | 90.5 | 91.0 | 96.5 | 52.0 | 9 / 16 |
+
+- **Dropout makes VLA-Adapter robust to a missing camera or instruction.** The public checkpoint fails without the static camera (0.0) or language (9.0) and keeps 31.5 without the wrist camera; the dropout checkpoint keeps 73.0, 77.5 and 71.0, never more than 17 points below its own all-inputs result, and almost never fails an episode the public one solves (0, 3 and 17).
+- **It costs 2.5 points with all inputs** (88.0 vs 90.5; 10 vs 15 paired episodes, within the noise of 200 episodes). At step 50k the gap was 7.5 points; the second half of training raised every row by 2–10 points, most without the wrist camera (61.0 → 71.0).
+- **Proprioception is barely used** (87.0 without it), as by the public checkpoint.
+- **Against FlowerVLA `subset`**, the same dropout on a different model, it is 8–17 points lower with all inputs and without the static camera, language or proprio, and equal without the wrist camera (71.0 vs 70.8).
+
+The public checkpoint's camera-removed rows used the earlier removal by deletion, not masking (see above); its masked static result is also 0.0, but its wrist-removed 31.5 is to be rerun.
+
 ## Across the benchmarks
 
 - **Language matters only when the scene is ambiguous.** CALVIN needs it to know which of several tasks to do. MimicGen does not: a model trained without it scores 51.2%, the same as with it (51.7%). On LIBERO-10, dropout models lose about 10 points without it (82–85% vs 92–96%).

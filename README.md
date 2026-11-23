@@ -2421,6 +2421,114 @@ Baseline checkpoint (`mbreuss/flower_libero_10`), spot check at small `n_eval`:
 
 ---
 
+## VLA-Adapter Evaluation
+
+[VLA-Adapter](https://github.com/OpenHelix-Team/VLA-Adapter) (a Prismatic VLM on Qwen2.5-0.5B with
+an L1-regression action head and a proprio projector) runs inside this repo's LIBERO and CALVIN
+harnesses, so its evals share our seeds, init states, `result.csv` records and multi-GPU split.
+`flower/evaluation/vla_adapter_policy.py` wraps it behind the rollout interface the harnesses call
+on FLOWERVLA (`step` / `step_batch` / `reset`), selected with `policy=vla_adapter`. Inference goes
+through VLA-Adapter's own loaders and `get_action` (the `VLA-Adapter/` submodule); only the
+evaluator glue is ours, mirroring its reference evaluators:
+
+- **LIBERO** (`run_libero_eval.py`): both cameras rotated 180°, state = eef pos + axis-angle +
+  gripper qpos, 8-step chunks executed open-loop, gripper binarized and inverted.
+- **CALVIN** (`evaluate_calvin.py:rollout_hi3`): raw static/wrist images, state =
+  `robot_obs[:7] + robot_obs[-1:]`, and its temporal ensemble (3 queries per 10 steps, overlapping
+  chunks averaged; `vla_adapter_calvin_schedule=chunk` for a plain 8-step open loop).
+
+It needs its own image (`transformers==4.40.1` and a TensorFlow data stack) built on the CALVIN one.
+
+Inputs are withheld through the same `eval_modalities` keys as for FlowerVLA, and results land in
+the same layout (`use_*` key columns, `masked_*` / `blank_instruction` subdirs).
+`forward_chunk` re-implements VLA-Adapter's `predict_action` with inputs left out; with all
+inputs it is bit-identical to VLA-Adapter's own `get_action` (`tests/test_vla_adapter_equivalence.py`).
+
+| input | removed | masked |
+|---|---|---|
+| static / wrist camera | its 256 patch tokens masked out of attention (LLM and action head); every token keeps its full-layout position | normalized pixels replaced per channel by their mean |
+| language | the whole prompt masked out (its first chat token stays, anchoring the layout like FlowerVLA's `<Flow>`) | instruction blanked inside the prompt template |
+| proprio | its token masked out of the action head's adapter attention | the training-mean state from `dataset_statistics.json` |
+
+Unlike FlowerVLA's masked proprio (the mean of its proprio *conditioning* over training samples),
+VLA-Adapter's training data isn't available here, so the mean is taken in state space.
+
+```bash
+./run.sh build-vla-adapter        # flower-vla-adapter:latest, needs ./run.sh build-calvin
+./run.sh download-vla-adapter     # VLA-Adapter/LIBERO-Long-Pro + CALVIN-ABC-Pro -> /saves/checkpoints/vla_adapter/
+CUDA_VISIBLE_DEVICES=0,1 ./run.sh eval-vla-adapter          # LIBERO-10, 50 episodes/task
+CUDA_VISIBLE_DEVICES=2,3 ./run.sh eval-calvin-vla-adapter   # CALVIN, 1000 chains on scene D
+# All inputs, each input removed, each input masked (scripts/vla_adapter_pipeline.py); LIBERO
+# at 20 episodes/task, the episodes FlowerVLA's LIBERO-10 evals cover. Then copies the results
+# to <ckpt>/artifact/ under FlowerVLA's artifact member names (libero_orig.csv / calvin.csv,
+# <variant>/...). PIPELINE_RESUME=1 skips what is already recorded.
+CUDA_VISIBLE_DEVICES=0,1 ./run.sh pipeline-vla-adapter libero
+CUDA_VISIBLE_DEVICES=2,3 ./run.sh pipeline-vla-adapter calvin
+```
+
+`result.csv` lands under the checkpoint dir, e.g.
+`/saves/checkpoints/vla_adapter/LIBERO-Long-Pro/eval_logs/LIBERO-Long-Pro/orig_libero_10/`.
+VLA-Adapter renders LIBERO at 256 (`env_img_res`), as in its reference eval. It keeps the
+harness's warm-up (5 steps of a zero action, which half-closes the gripper), so every episode
+starts from the same state as FlowerVLA's and the two pair episode by episode (rollout seeds,
+init states, CALVIN chains). The reference warm-up (10 steps, gripper open) is
+`num_steps_wait=10 wait_gripper=-1.0`.
+
+### Fine-tuning VLA-Adapter with whole-modality dropout
+
+`flower/vla_adapter/finetune_dropout.py` runs upstream `vla-scripts/finetune.py` unchanged
+(data, LoRA, DDP, checkpoints) and only wraps its forward pass: each training sample keeps a
+non-empty subset of (static camera, wrist camera, language, proprio) drawn as in FlowerVLA's
+`subset` strategy (weight 2^|S|), and the dropped inputs are masked out of the LLM and the action
+head at unchanged positions (`flower/vla_adapter/masked_forward.py`, the same masks the evaluation
+uses for a removed input). With every input kept it gives exactly upstream's loss
+(`tests/test_vla_adapter_equivalence.py`). `--modality_dropout none` trains the upstream recipe.
+
+```bash
+./run.sh download-vla-adapter-train   # libero_10_no_noops RLDS + Prismatic Qwen2.5-0.5B base VLM
+# Upstream's 40-48GB-GPU recipe, no gradient accumulation: batch 8 per GPU, LoRA r64, lr 2e-4,
+# 200k steps (~0.9 s/step on 2 RTX A6000, ~2 days), checkpoint every 25k steps (3.2 GB each),
+# then evaluates the last checkpoint with all inputs and each removed (SKIP_PIPELINE=1 to skip).
+CUDA_VISIBLE_DEVICES=0,1 ./run.sh train-vla-adapter-dropout
+# Evaluate another checkpoint the same way:
+./run.sh pipeline-vla-adapter libero --checkpoint /saves/train_logs/vla_adapter_libero_10_dropout/<ts>/<run>--<step>_chkpt --no-masked
+```
+
+To continue a run from one of its checkpoints, repeat its command with `--resume_from`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 ./run.sh train-vla-adapter-dropout --max_steps 100005 --num_steps_before_decay 100000 \
+    --resume_from /saves/train_logs/vla_adapter_libero_10_dropout/<ts>/<run id>--50000_chkpt
+```
+
+Upstream's `--resume` alone would rebuild the VLA from the base VLM and reload only the action
+head and proprio projector; `--resume_from` also serves the checkpoint's merged VLA weights
+(LoRA + action queries) as the starting point and as the base each save merges the new LoRA into,
+and shifts `--num_steps_before_decay` so the LR decay lands at the same total step. Steps,
+`--max_steps` and checkpoint names count from the original start. Upstream saves no optimizer
+state, so AdamW restarts cold. A 10-step resume at learning rate 0 reproduces the 50k checkpoint
+bit for bit.
+
+The base VLM's Qwen2.5 is loaded without FlashAttention-2 (not in the image); upstream only reads
+its weights from it. Upstream writes `config.json.back.*` backups into
+`VLA-Adapter/pretrained_models/configs/` at every launch.
+
+Integration check with the public checkpoints (RTX A6000; VLA-Adapter reports H100 numbers):
+
+| benchmark | checkpoint | ours | reported |
+|---|---|---|---|
+| LIBERO-10, harness warm-up (default) | LIBERO-Long-Pro | 90.4% (500 episodes) | — |
+| LIBERO-10, reference warm-up | LIBERO-Long-Pro | 92.6% (500 episodes) | 96.4% |
+| CALVIN ABC→D, avg. length | CALVIN-ABC-Pro | 4.41 (1000 chains) | 4.50 |
+
+CALVIN chain success 1–5: 98.3 / 94.3 / 88.8 / 82.8 / 76.5% (reported: 98.5 / … / 80.0%). Our
+harness gives each subtask `ep_len=360` steps; the reference loop allows up to 800. The LIBERO gap
+that remains after matching the warm-up is uniform across tasks (every task 0–12 points under the
+reference log shipped with the checkpoint); untested differences are robosuite 1.4.0 (ours, pinned
+for LIBERO) vs 1.4.1, per-episode env seeding, and GPU numerics.
+
+---
+
 ## Acknowledgements
 
 This work is only possible because of the code from the following open-source projects and datasets. We thank all authors for their work:

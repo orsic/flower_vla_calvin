@@ -43,6 +43,15 @@
 #   ./run.sh open-loop-calvin <train_run_dir> [...]  Open-loop per-timestep loss on the validation split, per combo
 #   ./run.sh analyze-open-loop [...]      Figures + summaries from every open-loop-calvin result
 #   ./run.sh open-loop-tables [...]       CSV tables of every open-loop-calvin result
+#   ./run.sh build-vla-adapter            Build the VLA-Adapter image (flower-vla-adapter:latest, needs build-calvin)
+#   ./run.sh download-vla-adapter         Download VLA-Adapter's LIBERO-Long-Pro + CALVIN-ABC-Pro checkpoints
+#   ./run.sh eval-vla-adapter [...]       LIBERO-10 eval of VLA-Adapter (LIBERO-Long-Pro) in flower_eval_libero.py
+#   ./run.sh eval-calvin-vla-adapter [...]  CALVIN eval of VLA-Adapter (CALVIN-ABC-Pro) in flower_evaluate.py
+#   ./run.sh pipeline-vla-adapter <libero|calvin> [--checkpoint DIR] [--no-masked]
+#                                          VLA-Adapter with all inputs, each removed, each masked
+#   ./run.sh download-vla-adapter-train   LIBERO-10 RLDS + base VLM for VLA-Adapter fine-tuning
+#   ./run.sh train-vla-adapter-dropout [...]  Fine-tune VLA-Adapter on LIBERO-10 with whole-modality dropout,
+#                                          then evaluates all inputs + each removed (SKIP_PIPELINE=1 to skip)
 #
 # Valid benchmarks: libero_10, libero_90, libero_spatial, libero_object, libero_goal
 #
@@ -633,6 +642,14 @@ case "$CMD" in
         "$REPO_ROOT"
     ;;
 
+  build-vla-adapter)
+    # Needs flower-vla-calvin:latest (./run.sh build-calvin).
+    podman build \
+        --tag flower-vla-adapter:latest \
+        --file "$REPO_ROOT/scripts/podman/Containerfile.vla-adapter" \
+        "$REPO_ROOT"
+    ;;
+
   extract-calvin)
     # One-time: writes <split>/extracted/ into both CALVIN_DATA_DIR/task_ABCD_D splits.
     # Already-extracted splits are skipped (pass -f to overwrite).
@@ -669,6 +686,151 @@ case "$CMD" in
         python flower/evaluation/flower_evaluate.py \
         "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)" \
         "$@"
+    ;;
+
+  download-vla-adapter)
+    # Into /saves/checkpoints/vla_adapter/<name>; the dir name keeps "Pro", from which
+    # VLA-Adapter picks the Pro action head.
+    podman-compose -f "$COMPOSE" run --rm -T shell-vla-adapter python -c '
+from huggingface_hub import snapshot_download
+for name in ("LIBERO-Long-Pro", "CALVIN-ABC-Pro"):
+    print(snapshot_download(f"VLA-Adapter/{name}", local_dir=f"/saves/checkpoints/vla_adapter/{name}"))
+'
+    ;;
+
+  download-vla-adapter-train)
+    # Training inputs for ./run.sh train-vla-adapter-dropout: the LIBERO-10 RLDS dataset
+    # VLA-Adapter trains on (openvla/modified_libero_rlds, no-noops) and its base VLM (config +
+    # the checkpoint prismatic.models.load reads). The VLM dir name must stay: upstream
+    # finetune.py branches on it.
+    podman-compose -f "$COMPOSE" run --rm -T shell-vla-adapter python -c '
+from huggingface_hub import snapshot_download
+print(snapshot_download("openvla/modified_libero_rlds", repo_type="dataset",
+    allow_patterns=["libero_10_no_noops/*"], local_dir="/saves/datasets/libero_rlds"))
+print(snapshot_download("Stanford-ILIAD/prism-qwen25-extra-dinosiglip-224px-0_5b",
+    allow_patterns=["config.json", "config.yaml", "checkpoints/step-020792-epoch-01-loss=0.5268.pt"],
+    local_dir="/saves/checkpoints/vla_adapter/prism-qwen25-extra-dinosiglip-224px-0_5b"))
+'
+    ;;
+
+  eval-vla-adapter)
+    # VLA-Adapter in the LIBERO harness (flower/evaluation/vla_adapter_policy.py): renders at
+    # 256 like its reference eval, the harness's warm-up (so episodes pair with FlowerVLA's;
+    # num_steps_wait=10 wait_gripper=-1.0 for the reference's), 50 episodes per task. result.csv lands under the checkpoint
+    # dir (train_folder). LIBERO_VARIANT=plus|pro and benchmark_name= work as for FlowerVLA.
+    podman-compose -f "$COMPOSE" run --rm -T eval-vla-adapter \
+        python flower/evaluation/flower_eval_libero.py \
+        policy=vla_adapter \
+        benchmark_name=libero_10 \
+        train_folder=/saves/checkpoints/vla_adapter/LIBERO-Long-Pro \
+        checkpoint=/saves/checkpoints/vla_adapter/LIBERO-Long-Pro \
+        dataset_path=/workspace \
+        log_dir=/saves/eval_logs \
+        env_img_res=256 \
+        n_eval=50 \
+        num_videos=0 \
+        log_wandb=False \
+        "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)" \
+        "$@"
+    ;;
+
+  eval-calvin-vla-adapter)
+    # VLA-Adapter in the CALVIN harness, 1000 chains on task_ABCD_D's validation scene D;
+    # vla_adapter_calvin_schedule=chunk for plain 8-step open loop.
+    podman-compose -f "$COMPOSE" run --rm -T eval-vla-adapter \
+        python flower/evaluation/flower_evaluate.py \
+        policy=vla_adapter \
+        train_folder=/saves/checkpoints/vla_adapter/CALVIN-ABC-Pro \
+        checkpoint=/saves/checkpoints/vla_adapter/CALVIN-ABC-Pro \
+        "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)" \
+        "$@"
+    ;;
+
+  pipeline-vla-adapter)
+    # VLA-Adapter's evals with all inputs, each input removed and each masked
+    # (scripts/vla_adapter_pipeline.py), in FlowerVLA's result layout under the checkpoint
+    # dir, then collected under FlowerVLA's artifact member names (<ckpt>/artifact/).
+    # PIPELINE_RESUME=1 skips the evals result.csv already holds.
+    if [[ $# -lt 1 || ( "$1" != libero && "$1" != calvin ) ]]; then
+        echo "Usage: ./run.sh pipeline-vla-adapter <libero|calvin> [--checkpoint DIR] [--no-masked]" >&2
+        exit 1
+    fi
+    benchmark="$1"; shift
+    flags=()
+    [[ -n "${PIPELINE_RESUME:-}" ]] && flags+=(--resume)
+    plan="$(podman-compose -f "$COMPOSE" run --rm -T shell-vla-adapter \
+        python scripts/vla_adapter_pipeline.py plan --benchmark "$benchmark" "${flags[@]}" "$@")"
+
+    mapfile -t plan_lines <<< "$plan"
+
+    i=0
+    for line in "${plan_lines[@]}"; do
+        IFS=$'\t' read -r -a fields <<< "$line"
+        [[ ${#fields[@]} -eq 0 ]] && continue
+        script="${fields[0]}"
+        overrides=("${fields[@]:1}")
+        i=$((i + 1))
+        podman-compose -f "$COMPOSE" run --rm -T eval-vla-adapter \
+            python "$script" \
+            "${overrides[@]}" \
+            "hydra.run.dir=/saves/hydra_outputs/$(date +%Y-%m-%d_%H-%M-%S)_${i}"
+    done
+
+    podman-compose -f "$COMPOSE" run --rm -T shell-vla-adapter \
+        python scripts/vla_adapter_pipeline.py collect --benchmark "$benchmark" "$@"
+    ;;
+
+  train-vla-adapter-dropout)
+    # VLA-Adapter fine-tuned on LIBERO-10 with FlowerVLA's whole-modality dropout (subset;
+    # flower/vla_adapter/finetune_dropout.py around upstream vla-scripts/finetune.py), with
+    # upstream's recipe for 40-48GB GPUs (README "How to Train on Larger VRAM GPUs"): batch 8
+    # per GPU, no accumulation, LoRA r64 merged at each save, lr 2e-4, 200k steps. One torchrun
+    # process per CUDA_VISIBLE_DEVICES entry (default 0,1). Checkpoints every 25k steps (~3 GB
+    # each) under /saves/train_logs/vla_adapter_libero_10_dropout/<ts>/; then evaluates the
+    # last one with all inputs and each removed (SKIP_PIPELINE=1 to skip). Extra flags go to
+    # finetune.py and win, e.g. --max_steps 50 --save_freq 25 for a smoke run.
+    # Needs ./run.sh download-vla-adapter-train.
+    gpus="${CUDA_VISIBLE_DEVICES:-0,1}"
+    nproc=$(awk -F, '{print NF}' <<< "$gpus")
+    run_dir="/saves/train_logs/vla_adapter_libero_10_dropout/$(date +%Y-%m-%d_%H-%M-%S)"
+    CUDA_VISIBLE_DEVICES="$gpus" podman-compose -f "$COMPOSE" run --rm -T train-vla-adapter \
+        torchrun --standalone --nnodes 1 --nproc-per-node "$nproc" flower/vla_adapter/finetune_dropout.py \
+        --modality_dropout subset \
+        --vlm_path /saves/checkpoints/vla_adapter/prism-qwen25-extra-dinosiglip-224px-0_5b \
+        --config_file_path pretrained_models/configs \
+        --data_root_dir /saves/datasets/libero_rlds \
+        --dataset_name libero_10_no_noops \
+        --run_root_dir "$run_dir" \
+        --use_film False \
+        --num_images_in_input 2 \
+        --use_proprio True \
+        --use_lora True \
+        --use_fz False \
+        --use_minivlm True \
+        --image_aug True \
+        --num_steps_before_decay 200000 \
+        --max_steps 200005 \
+        --save_freq 25000 \
+        --save_latest_checkpoint_only False \
+        --merge_lora_during_training True \
+        --batch_size 8 \
+        --grad_accumulation_steps 1 \
+        --learning_rate 2e-4 \
+        --lora_rank 64 \
+        --use_pro_version True \
+        --wandb_project vla_adapter_libero_10_dropout \
+        --run_id_note subset \
+        "$@"
+    if [[ -z "${SKIP_PIPELINE:-}" ]]; then
+        # The last checkpoint dir, <run_dir>/<run id>--<step>_chkpt.
+        last="$(podman-compose -f "$COMPOSE" run --rm -T shell-vla-adapter \
+            bash -c "ls -d $run_dir/*_chkpt | sort -V | tail -n 1")"
+        if [[ -z "$last" ]]; then
+            echo "No checkpoint under $run_dir; skipping the evaluation" >&2
+            exit 1
+        fi
+        CUDA_VISIBLE_DEVICES="$gpus" "$0" pipeline-vla-adapter libero --checkpoint "$last" --no-masked
+    fi
     ;;
 
   pipeline-calvin)
