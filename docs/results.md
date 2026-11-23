@@ -1644,7 +1644,7 @@ All inputs, against the published numbers: LIBERO-10 90.4% over 500 episodes (92
 
 ### One input withheld (public checkpoints)
 
-Removed and masked as for FlowerVLA (README, VLA-Adapter section): a removed camera or prompt leaves its tokens out at full-layout positions, removed proprio leaves its token out of the action head; masking replaces a camera's pixels by their per-channel mean, blanks the instruction in the prompt template, or replaces proprio by its training-mean state. Two differences from FlowerVLA: masked proprio is the mean *state* (VLA-Adapter's training data isn't here), not the mean conditioning vector; and the camera-removed rows below delete the patch tokens, so the action head sees compacted positions. They will be rerun with the masked forward the dropout training uses.
+Removed and masked as for FlowerVLA (README, VLA-Adapter section): a removed camera's patch tokens or the prompt are masked out of attention at unchanged full-layout positions, in the LLM and in the action head, and removed proprio's token is masked out of the action head; masking replaces a camera's pixels by their per-channel mean, blanks the instruction in the prompt template, or replaces proprio by its training-mean state. One difference from FlowerVLA: masked proprio is the mean *state* (VLA-Adapter's training data isn't here), not the mean conditioning vector.
 
 **LIBERO-10**, paired with FlowerVLA no dropout + proprio (`libero_10_static+wrist+lang+proprio_2026-09-18_16-47-17` / `-22` / `-49`, seeds 42 / 5 / 100) on episodes 0–19 of each task (200 episodes). FlowerVLA as mean ± sd over seeds; the last column counts paired episodes only one model solves, summed over the three seeds:
 
@@ -1652,7 +1652,7 @@ Removed and masked as for FlowerVLA (README, VLA-Adapter section): a removed cam
 |---|---|---|---|
 | all inputs | 90.5 | 91.5 ± 3.0 | 43 / 49 |
 | static camera removed | 0.0 | 47.0 ± 10.8 | 0 / 282 |
-| wrist camera removed | 31.5 | 0.0 ± 0.0 | 189 / 0 |
+| wrist camera removed | 31.0 | 0.0 ± 0.0 | 186 / 0 |
 | language removed | 9.0 | 1.3 ± 2.3 | 54 / 8 |
 | proprio removed | 90.5 | 52.0 ± 4.0 | 247 / 16 |
 | static camera masked | 0.0 | 48.0 ± 4.4 | 0 / 288 |
@@ -1660,7 +1660,7 @@ Removed and masked as for FlowerVLA (README, VLA-Adapter section): a removed cam
 | instruction blanked | 59.5 | 72.8 ± 1.2 | 60 / 140 |
 | proprio masked | 91.0 | 90.5 ± 3.3 | 50 / 47 |
 
-- **The two models depend on opposite cameras.** VLA-Adapter fails without the static camera, removed or masked, and keeps 31.5% without the wrist camera; FlowerVLA keeps about half its success without the static camera and fails without the wrist camera.
+- **The two models depend on opposite cameras.** VLA-Adapter fails without the static camera, removed or masked, and keeps 31.0% without the wrist camera; FlowerVLA keeps about half its success without the static camera and fails without the wrist camera.
 - **VLA-Adapter ignores proprioception on LIBERO** (90.5% removed, 91.0% masked); FlowerVLA drops to 52% without it but recovers fully with its mean.
 - **Without the instruction both nearly fail**; a blank instruction inside the template costs VLA-Adapter more (59.5%) than FlowerVLA (72.8%).
 
@@ -1669,8 +1669,8 @@ Removed and masked as for FlowerVLA (README, VLA-Adapter section): a removed cam
 | condition | VLA-Adapter | FlowerVLA | further: VLA-Adapter / FlowerVLA |
 |---|---|---|---|
 | all inputs | 4.41 | 4.46 ± 0.10 | 339 / 464 |
-| static camera removed | 1.16 | 1.71 ± 0.26 | 480 / 1278 |
-| wrist camera removed | 0.07 | 1.30 ± 0.16 | 39 / 1689 |
+| static camera removed | 1.22 | 1.71 ± 0.26 | 500 / 1248 |
+| wrist camera removed | 0.08 | 1.30 ± 0.16 | 47 / 1675 |
 | language removed | 0.10 | 0.04 ± 0.04 | 233 / 85 |
 | proprio removed | 1.08 | 3.73 ± 0.15 | 198 / 2474 |
 | static camera masked | 1.28 | 1.68 ± 0.24 | 593 / 1071 |
@@ -1679,10 +1679,10 @@ Removed and masked as for FlowerVLA (README, VLA-Adapter section): a removed cam
 | proprio masked | 1.01 | 4.05 ± 0.33 | 116 / 2719 |
 
 - **On CALVIN VLA-Adapter depends on proprioception**, unlike on LIBERO: removing it (1.08) or replacing it by its mean state (1.01) costs over three quarters of the chain length. FlowerVLA loses much less (3.73 removed) and recovers with its mean conditioning (4.05).
-- **It needs the wrist camera** (0.07 without it, removed or masked; FlowerVLA 1.30 / 0.84) and loses more than FlowerVLA without the static camera too (1.16 vs 1.71).
+- **It needs the wrist camera** (0.08 removed, 0.07 masked; FlowerVLA 1.30 / 0.84) and loses more than FlowerVLA without the static camera too (1.22 vs 1.71).
 - **Without language both fail**, as every CALVIN model does.
 
-The CALVIN language-removed row ran with the earlier removal by deletion; at full-layout positions that is the same computation as the masking used since, up to floating-point order. The camera-removed rows of both tables used deletion, which compacted the action head's positions; they are to be rerun with masking once GPUs are free (VLA-Adapter dropout training currently occupies all four). The CALVIN eval's printed summary for the proprio-removed run (5.49) is wrong: `flower_evaluate.print_and_save` filters rows by the camera and language flags only, so it counted the all-inputs rows too; `result.csv` and the table above are keyed on all four flags.
+The first version of this evaluation removed inputs by deleting their tokens, which for a camera also compacted the action head's task-key positions. The camera-removed rows of both tables were rerun with masking (the language- and proprio-removed rows are the same computation either way, up to floating-point order); the reruns moved them by at most one episode on LIBERO-10 (static 0.0 → 0.0, wrist 31.5 → 31.0) and by 0.06 on CALVIN (static 1.16 → 1.22, wrist 0.07 → 0.08). The CALVIN eval's printed summary for the proprio-removed run (5.49) is wrong: `flower_evaluate.print_and_save` filters rows by the camera and language flags only, so it counted the all-inputs rows too; `result.csv` and the table above are keyed on all four flags.
 
 ### Whole-modality dropout (`subset`), LIBERO-10
 
@@ -1694,16 +1694,14 @@ Evaluated with all inputs and each input removed (`./run.sh pipeline-vla-adapter
 |---|---|---|---|---|---|---|---|
 | all four | 88.0 | 83.0 | 90.5 | — | 95.8 | 91.5 | 10 / 15 |
 | no static camera | 73.0 | 68.5 | 0.0 | 0.0 | 90.2 | 47.0 | 146 / 0 |
-| no wrist camera | 71.0 | 61.0 | 31.5 | 6.5 | 70.8 | 0.0 | 96 / 17 |
+| no wrist camera | 71.0 | 61.0 | 31.0 | 6.5 | 70.8 | 0.0 | 97 / 17 |
 | no language | 77.5 | 75.0 | 9.0 | 59.5 (blank instruction) | 85.8 | 1.3 | 140 / 3 |
 | no proprio | 87.0 | 85.0 | 90.5 | 91.0 | 96.5 | 52.0 | 9 / 16 |
 
-- **Dropout makes VLA-Adapter robust to a missing camera or instruction.** The public checkpoint fails without the static camera (0.0) or language (9.0) and keeps 31.5 without the wrist camera; the dropout checkpoint keeps 73.0, 77.5 and 71.0, never more than 17 points below its own all-inputs result, and almost never fails an episode the public one solves (0, 3 and 17).
+- **Dropout makes VLA-Adapter robust to a missing camera or instruction.** The public checkpoint fails without the static camera (0.0) or language (9.0) and keeps 31.0 without the wrist camera; the dropout checkpoint keeps 73.0, 77.5 and 71.0, never more than 17 points below its own all-inputs result, and almost never fails an episode the public one solves (0, 3 and 17).
 - **It costs 2.5 points with all inputs** (88.0 vs 90.5; 10 vs 15 paired episodes, within the noise of 200 episodes). At step 50k the gap was 7.5 points; the second half of training raised every row by 2–10 points, most without the wrist camera (61.0 → 71.0).
 - **Proprioception is barely used** (87.0 without it), as by the public checkpoint.
 - **Against FlowerVLA `subset`**, the same dropout on a different model, it is 8–17 points lower with all inputs and without the static camera, language or proprio, and equal without the wrist camera (71.0 vs 70.8).
-
-The public checkpoint's camera-removed rows used the earlier removal by deletion, not masking (see above); its masked static result is also 0.0, but its wrist-removed 31.5 is to be rerun.
 
 ## Across the benchmarks
 
