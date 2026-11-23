@@ -276,18 +276,18 @@ Dirichlet keep 0.5 with the robot state as a fourth input (`model.use_proprio=Tr
 
 #### Whole-modality dropout, leave one out (`leave_one_out`), with proprioception
 
-`model.modality_dropout_strategy=leave_one_out`: the `subset` sampling restricted to the full set and the subsets missing exactly one input, still weighted 2^size (all four inputs 1/3, each 3-subset 1/6), so it trains on exactly the combinations evaluated here. Seed 42 so far (`calvin_abcd_d_dropout/2026-11-20_16-14-54`, batch 8 × 2, evaluated on all inputs and each one missing). avg_seq_len (5/5 %), against `subset` with proprioception (3 seeds, above) and no dropout + proprio (3 seeds):
+`model.modality_dropout_strategy=leave_one_out`: the `subset` sampling restricted to the full set and the subsets missing exactly one input, still weighted 2^size (all four inputs 1/3, each 3-subset 1/6), so it trains on exactly the combinations evaluated here. Seeds 42 (`calvin_abcd_d_dropout/2026-11-20_16-14-54`) and 5 (`2026-11-22_18-46-16`), batch 8 × 2, evaluated on all inputs and each one missing. avg_seq_len, mean ± sd over the seeds (5/5 %), against `subset` with proprioception (3 seeds, above) and no dropout + proprio (3 seeds):
 
-| inputs | leave one out (seed 42) | `subset` + proprio | no dropout + proprio |
-|---|---|---|---|
-| all four | **4.546** (81.7) | 4.453 ± 0.047 (79.0) | 4.455 ± 0.097 |
-| no proprio | 4.622 (84.8) | 4.408 ± 0.028 (77.1) | 3.73 |
-| no wrist camera (static+lang+proprio) | 4.346 (73.4) | 4.267 ± 0.041 (71.3) | 1.30 |
-| no static camera (wrist+lang+proprio) | 3.998 (59.7) | 3.880 ± 0.187 (57.2) | 1.71 |
-| no language | 0.160 (0.0) | 0.164 ± 0.020 (0.0) | 0.04 |
+| inputs | leave one out | per seed (42 / 5) | `subset` + proprio | no dropout + proprio |
+|---|---|---|---|---|
+| all four | **4.510 ± 0.052** (81.2) | 4.546 / 4.473 | 4.453 ± 0.047 (79.0) | 4.455 ± 0.097 |
+| no proprio | 4.480 ± 0.201 (81.5) | 4.622 / 4.338 | 4.408 ± 0.028 (77.1) | 3.73 |
+| no wrist camera (static+lang+proprio) | 4.337 ± 0.013 (74.5) | 4.346 / 4.328 | 4.267 ± 0.041 (71.3) | 1.30 |
+| no static camera (wrist+lang+proprio) | 3.881 ± 0.165 (56.8) | 3.998 / 3.765 | 3.880 ± 0.187 (57.2) | 1.71 |
+| no language | 0.144 ± 0.023 (0.0) | 0.160 / 0.127 | 0.164 ± 0.020 (0.0) | 0.04 |
 
-- **At or above `subset` in every row**, and with all inputs the highest CALVIN avg_seq_len so far (4.546). With one seed this is within `subset`'s seed spread (up to 0.37 without the static camera); seeds 5 and 100 are pending.
-- **Without proprioception it is even higher (4.62)**, so like `subset` it hardly relies on it.
+- **It matches `subset`, slightly above it with all inputs and without the wrist camera** (4.51 vs 4.45, 4.34 vs 4.27), the same without the static camera (3.88), all within about one seed sd. With all inputs it is the highest CALVIN result so far, but not by more than the seed spread. Seed 100 is pending.
+- **It hardly relies on proprioception** (4.48 without it; the seeds disagree, 4.62 and 4.34).
 - **Without language it fails**, as every CALVIN model does.
 
 ### Open loop along the demonstrations
@@ -526,19 +526,19 @@ Findings:
 
 #### Whole-modality dropout, leave one out (`leave_one_out`), with proprioception
 
-The `subset` sampling restricted to the full set and the subsets missing one input (all four 1/3, each 3-subset 1/6). Seed 42 so far (`mimicgen_dropout/2026-11-20_16-15-10`, batch 8 × 2), evaluated on all inputs and each one missing, 100 episodes per dataset. Success (%), against `subset` + proprio and no dropout + proprio (3 seeds each, above):
+The `subset` sampling restricted to the full set and the subsets missing one input (all four 1/3, each 3-subset 1/6). Seeds 42 (`mimicgen_dropout/2026-11-20_16-15-10`) and 5 (`2026-11-22_18-46-19`), batch 8 × 2, evaluated on all inputs and each one missing, 100 episodes per dataset. Success (%), mean ± sd over the seeds, against `subset` + proprio and no dropout + proprio (3 seeds each, above):
 
-| inputs | leave one out (seed 42) | `subset` + proprio | no dropout + proprio |
-|---|---|---|---|
-| all four | **48.5** | 46.3 ± 2.2 | 51.7 ± 2.3 |
-| no proprio | 45.0 | 42.6 ± 1.7 | 22.7 ± 1.5 |
-| no language | 48.5 | 46.4 ± 2.5 | 0.0 |
-| no wrist camera | 28.6 | 29.1 ± 1.0 | 1.0 ± 0.7 |
-| no static camera | 23.4 | 21.1 ± 1.4 | 2.9 ± 0.2 |
+| inputs | leave one out | per seed (42 / 5) | `subset` + proprio | no dropout + proprio |
+|---|---|---|---|---|
+| all four | **50.0 ± 2.1** | 48.5 / 51.5 | 46.3 ± 2.2 | 51.7 ± 2.3 |
+| no proprio | 46.4 ± 2.0 | 45.0 / 47.8 | 42.6 ± 1.7 | 22.7 ± 1.5 |
+| no language | 49.8 ± 1.8 | 48.5 / 51.0 | 46.4 ± 2.5 | 0.0 |
+| no wrist camera | 29.0 ± 0.6 | 28.6 / 29.4 | 29.1 ± 1.0 | 1.0 ± 0.7 |
+| no static camera | 23.4 ± 0.1 | 23.4 / 23.3 | 21.1 ± 1.4 | 2.9 ± 0.2 |
 
-- **With all inputs it is 2 points above `subset`, still 3 below no dropout** (48.5 vs 46.3 and 51.7; within one to two seed sds of each).
-- **With one input missing it matches `subset`**: language costs nothing, proprioception 3.5 points, either camera about half the success.
-- Seeds 5 and 100 are pending.
+- **With all inputs it is the closest dropout model to no dropout** (50.0 vs 51.7, within one sd), and 3.7 points above `subset` (46.3).
+- **With one input missing it matches or beats `subset`**: about 4 points better without proprio or language, the same without the wrist camera, 2 points better without the static camera.
+- Seed 100 is pending.
 
 ### Task family × difficulty, all inputs (%)
 
@@ -1020,7 +1020,7 @@ By physical perturbation size, all inputs, each range doubled as in [perturbatio
 | no wrist camera | **58.8 ± 7.0** | 64.5 / 61.0 / 51.0 | **70.8 ± 3.2** | 69.5 / 74.5 / 68.5 | 0.0 |
 
 - **With all inputs and without proprio, language or the static camera it matches `subset`**, within 1–2 points and the seed spreads.
-- **Without the wrist camera it is 12 points lower** (58.8 vs 70.8), and its seeds disagree (51.0–64.5). Training on samples that miss two or more inputs, which `leave_one_out` never sees, helps `subset` without the wrist camera, the input LIBERO-10 relies on most. On CALVIN and MimicGen `leave_one_out` matched or beat `subset` (seed 42 so far).
+- **Without the wrist camera it is 12 points lower** (58.8 vs 70.8), and its seeds disagree (51.0–64.5). Training on samples that miss two or more inputs, which `leave_one_out` never sees, helps `subset` without the wrist camera, the input LIBERO-10 relies on most. On CALVIN and MimicGen `leave_one_out` matches or beats `subset` (seeds 42 and 5).
 
 ### No dropout, trained without one input
 
